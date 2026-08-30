@@ -1,0 +1,28 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f5f7fa; }
+#app { height: 100vh; }
+.page-card { background: #fff; border-radius: 8px; padding: 16px; }
+.mono { font-family: Consolas, Menlo, monospace; }
+
+/* 聊天消息 markdown */
+.md-body { line-height: 1.7; word-break: break-word; }
+.md-body table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.md-body th, .md-body td { border: 1px solid #dcdfe6; padding: 4px 10px; }
+.md-body th { background: #f5f7fa; }
+.md-body code { background: #f1f3f5; padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+.md-body pre { background: #282c34; color: #abb2bf; padding: 10px; border-radius: 6px; overflow-x: auto; }
+.md-body pre code { background: transparent; color: inherit; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 { margin: 10px 0 6px; font-size: 15px; }
+
+/* 聊天气泡 */
+.bubble-user, .bubble-ai { max-width: 86%; border-radius: 10px; padding: 10px 14px; font-size: 14px; }
+.bubble-user { background: #409eff; color: #fff; margin-left: auto; }
+.bubble-ai { background: #fff; border: 1px solid #e4e7ed; }
+.chat-row { display: flex; margin: 10px 0; align-items: flex-start; gap: 8px; }
+.chat-row.user { justify-content: flex-end; }
+.tool-chip { display: inline-flex; align-items: center; gap: 4px; background: #ecf5ff; color: #409eff;
+  border-radius: 4px; padding: 2px 8px; font-size: 12px; margin: 2px 4px 2px 0; }
+.confirm-card { border: 1px solid #f3d19e; background: #fdf6ec; border-radius: 8px; padding: 12px; margin: 8px 0; font-size: 13px; }
+.diff-added { color: #67c23a; }
+.diff-removed { color: #f56c6c; }
+.diff-changed { color: #e6a23c; }
