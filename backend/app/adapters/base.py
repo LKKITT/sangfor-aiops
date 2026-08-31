@@ -98,6 +98,32 @@ class StaticRoute:
 
 
 @dataclass
+class NetworkObject:
+    """网络对象（IP 组 / 主机对象）。"""
+    id: str
+    name: str
+    type: str = "ipgroup"                     # ipgroup / host / range
+    members: str = ""                         # 逗号分隔的网段/IP 列表
+    comment: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class ServiceConfig:
+    """自定义服务（协议 + 端口）。"""
+    id: str
+    name: str
+    protocol: str = "TCP"                     # TCP / UDP / ICMP
+    ports: str = ""                           # 如 80,443 或 9090-9092
+    comment: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class DeviceStatus:
     sw_version: str
     model: str
@@ -153,10 +179,16 @@ class DeviceClient(ABC):
     async def get_acl_rules(self) -> list[AclRule]: ...
 
     @abstractmethod
-    async def get_user_bindings(self) -> list[UserBinding]: ...
+    async def get_user_bindings(self, keyword: str = "") -> list[UserBinding]: ...
 
     @abstractmethod
     async def get_static_routes(self) -> list[StaticRoute]: ...
+
+    @abstractmethod
+    async def get_network_objects(self) -> list[NetworkObject]: ...
+
+    @abstractmethod
+    async def get_services(self) -> list[ServiceConfig]: ...
 
     # ---- 配置快照 ----
     async def snapshot_config(self) -> dict:
@@ -164,6 +196,7 @@ class DeviceClient(ABC):
         interfaces, routes = await self.get_interfaces(), await self.get_static_routes()
         nat, acl = await self.get_nat_rules(), await self.get_acl_rules()
         bindings = await self.get_user_bindings()
+        objects, services = await self.get_network_objects(), await self.get_services()
         status = await self.get_status()
         return {
             "meta": {
@@ -173,6 +206,8 @@ class DeviceClient(ABC):
                 "sw_version": status.sw_version,
                 "model": status.model,
             },
+            "objects": [o.to_dict() for o in objects],
+            "services": [s.to_dict() for s in services],
             "interfaces": [i.to_dict() for i in interfaces],
             "static_routes": [r.to_dict() for r in routes],
             "nat_rules": [n.to_dict() for n in nat],

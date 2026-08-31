@@ -34,6 +34,17 @@ def init_database():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_client_cache():
+    """每个用例独立事件循环：清空工厂的共享客户端缓存，避免跨 loop 复用报错。"""
+    from app.adapters import factory
+    factory._clients.clear()
+    factory._client_signatures.clear()
+    yield
+    factory._clients.clear()
+    factory._client_signatures.clear()
+
+
 @pytest.fixture()
 def device_id():
     device = db.upsert_device({

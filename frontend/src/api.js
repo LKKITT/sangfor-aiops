@@ -55,7 +55,21 @@ export async function chatStream(path, body, onEvent) {
 
 // ---------- 业务 API ----------
 
+export async function apiPut(path, body = {}) {
+  const resp = await fetch(BASE + path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  return resp.json()
+}
+
 export const Health = { get: () => apiGet('/api/health') }
+export const Settings = {
+  get: () => apiGet('/api/settings'),
+  save: (d) => apiPost('/api/settings', d)
+}
 export const Devices = {
   list: () => apiGet('/api/devices'),
   add: (d) => apiPost('/api/devices', d),
@@ -67,6 +81,8 @@ export const Devices = {
   nat: (id) => apiGet(`/api/devices/${id}/nat`),
   acl: (id) => apiGet(`/api/devices/${id}/acl`),
   bindings: (id) => apiGet(`/api/devices/${id}/bindings`),
+  objects: (id) => apiGet(`/api/devices/${id}/objects`),
+  services: (id) => apiGet(`/api/devices/${id}/services`),
   snapshot: (id) => apiGet(`/api/devices/${id}/snapshot`),
   checkup: (id) => apiPost(`/api/devices/${id}/checkup`),
   lastCheckup: (id) => apiGet(`/api/devices/${id}/checkup/last`)
@@ -76,6 +92,7 @@ export const Backups = {
   create: (dev, label) => apiPost(`/api/devices/${dev}/backups`, { label }),
   remove: (dev, id) => apiDelete(`/api/devices/${dev}/backups/${id}`),
   downloadUrl: (dev, id) => `/api/devices/${dev}/backups/${id}/file`,
+  exportUrl: (dev, id) => `/api/devices/${dev}/backups/${id}/snapshot/export`,
   diff: (a, b) => apiGet(`/api/backups/diff?a=${a}&b=${b}`),
   restorePreview: (dev, id) => apiPost(`/api/devices/${dev}/backups/${id}/restore/preview`),
   restoreApply: (dev, id) => apiPost(`/api/devices/${dev}/backups/${id}/restore/apply`, { confirm: true })
@@ -83,6 +100,7 @@ export const Backups = {
 export const Updates = {
   overview: (dev) => apiGet(`/api/devices/${dev}/updates`),
   advice: (dev) => apiGet(`/api/devices/${dev}/upgrade-advice`),
-  refresh: () => apiPost('/api/updates/refresh')
+  refresh: () => apiPost('/api/updates/refresh'),
+  softwareList: (product, force = false) => apiGet(`/api/software-list?product=${product}&force=${force}`)
 }
 export const Audit = { list: () => apiGet('/api/chat/audit') }

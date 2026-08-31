@@ -27,7 +27,7 @@
 | 1 | AF 8.0.x 官方 REST API 覆盖 1235 个操作：登录（`POST /api/v1/namespaces/{ns}/login` 换取 token 放 Cookie）、接口/路由/NAT（`/nats`）/应用控制策略（`/appcontrols/policys`）/黑白名单/HA/管理员 CRUD、状态中心（cpuusage/memoryusage/diskusage/systemversion 等）、引用关系与完整性校验 | 配置查询/变更/状态监控全部走官方 REST API |
 | 2 | **官方 API 不提供配置文件备份/恢复端点**；AF 配置备份走 Web 控制台下载 `.conf`（私有格式），AC 为 `.bcf`（官方明确不可查看） | 备份分两层设计：**结构化配置快照**（API 拉取，可解析/可视化/可恢复）+ **配置文件归档**（私有格式，只存储与 SHA256 校验，不解析） |
 | 3 | AC 开放接口需 api-key + IP 白名单 + BA 账户，文档仅随设备发布 | 适配层预留 AC 扩展点，比赛落地以 AF 为主 |
-| 4 | support.sangfor.com.cn 为 Vue SPA，正文（发布说明/软件下载）需客户/伙伴身份认证；**官网安全中心 PSIRT 公告详情页公开可抓取**；bbs.sangfor.com.cn 社区帖公开 | 更新信息采用**多源适配器**：官方平台（可选 Cookie 认证抓取）+ PSIRT（公开）+ 内置知识库快照（离线兜底），全部标注来源 |
+| 4 | **版本发布说明页面免认证可抓取**（AF: productDocument category_id=360973；AC: category_id=324129），内容为页面内嵌 JSON，含各版本【新增】/【优化】条目与详细说明；软件下载列表与部分正文需登录 Cookie；**官网安全中心 PSIRT 公告详情页公开可抓取** | 更新信息采用**多源适配器**：发布说明免认证按版本精确解析（真实条目优先，缺失版本回退内置知识库）+ 软件列表（界面配置 Cookie 抓取）+ PSIRT（公开）+ 内置知识库（兜底），全部标注来源 |
 | 5 | AF 8.0.50 为新旧架构分界（跨架构不可直升）；新架构链 8.0.48→…→8.0.95→8.0.106→8.0.107；AC 11.0+ 可直升 13.0.121；升级需重启、双机按双机方案；8.0.85 存在 mbuf 占满已知问题（8.0.107 修复） | 升级建议引擎内置版本知识库与升级路线图，输出"是否升级/路径/时机/行动清单" |
 
 ## 3. 总体架构
@@ -105,7 +105,7 @@ sangfor-agent/
 
 **DeviceClient 抽象**统一设备能力：`login/keepalive`、`get_status/interfaces/nat_rules/acl_rules/user_bindings/static_routes`、`snapshot_config()`（结构化快照）、`apply_change(ChangeOp)`（变更）、`backup_config_file/restore_config_file`（配置文件，尽力而为）。
 
-**AfRestClient** 按官方 API 实现：token 放 Cookie、失败码 1003/1012 自动重登（带并发锁）、`_start/_length` 分页、统一 `{code,message,data}` 封套解析。
+**AfRestClient** 按官方 API 实现：token 放 Cookie、失败码 1003/1012 自动重登（带并发锁）、`_start/_length` 分页、统一 `{code,message,data}` 封套解析；并针对**真实设备实测做了兼容层**（详见 §4.1.1）。
 
 **AF 模拟器**是保证比赛演示可离线完整跑通的关键：
 - 与官方 API **同构**（相同 URL 结构、响应封套、错误码 1002/1003/1404/1409），`AfRestClient` 无差别访问；
@@ -113,12 +113,25 @@ sangfor-agent/
 - 状态中心指标随时间小幅波动，界面"活"起来；支持配置文件下载（模拟 `.conf` 私有格式）与上传恢复（格式校验 + 重启模拟）；
 - 两种运行形态：进程内 ASGI（后端默认，免端口）或独立进程（`scripts/run_simulator.py`），均可被真实适配器直连联调。
 
+**§4.1.1 真实设备兼容层（已在 AF 8.0.45.380 实测验证）**
+
+| 差异点 | 适配方案 |
+|--------|----------|
+| 设备 HTTPS 使用旧密码套件（TLS1.2 + AES256-SHA，OpenSSL 默认安全等级握手失败） | permissive SSL 上下文：不校验证书 + SECLEVEL=0 |
+| 读取端点需要 `/api/v1` 前缀（登录同），无前缀被 302 到登录页 | 统一 `/api/v1/namespaces/{ns}/...`，模拟器镜像注册同构路由 |
+| 列表响应为 `{items:[...]}`（新版文档为 `list`），主键为 `uuid` 而非 `id` | `_rows()` 双形态兼容；字段映射层按 `uuid` 探测分支 |
+| 接口/策略/NAT/路由字段为嵌套结构（ipv4.staticIp、src/dst 对象、natType/dnat/snat、action 整数枚举） | 逐类型字段映射：策略 action 实测 **0=拒绝、1=允许**（以 Default Policy 兜底拒绝与放行策略命中行为佐证）；`lastHitTime=1970` 映射为命中 0 |
+| 无聚合状态端点（status/summary 返回未找到 API） | 降级为逐项查询 cpuusage/memoryusage/diskusage/uptimes 并做字段防御解析 |
+| API 并发会话数限制（超限报"当前在线用户已超过最大并发用户限制"） | **按设备缓存已登录客户端**复用 token（每设备仅 1 会话），调用方共享、应用退出统一登出 |
+| 绑定/对象/服务等端点随版本而异 | 可选端点失败自动降级为空列表并记录 capability_gaps，不阻塞快照/体检 |
+| 系统预置服务/对象（uuid 大段为 0）未引用属正常 | 分析引擎跳过系统内置条目的未引用检查，避免误报 |
+
 **接入真实设备**：前端"添加设备"选"真实设备"，填 `https://设备IP` 与 API 账号即可；同一套适配代码，无需改动。
 
 ### 4.2 自动化备份与快速恢复
 
 **双层备份**（对应调研结论 2）：
-1. **结构化配置快照**：经 API 拉取接口/路由/NAT/ACL/绑定全量配置为规范化 JSON——可解析、可视化、可 diff、可恢复，是智能化管理的数据基座；
+1. **结构化配置快照**：经 API 拉取网络对象、自定义服务、接口、静态路由、NAT、ACL、用户绑定全量配置为规范化 JSON——可解析、可视化、可 diff、可恢复，并可一键导出为可读 JSON（支持设备故障后向第三方设备迁移参照与审计存档）；
 2. **配置文件归档**：调用设备配置文件下载端点获取 `.conf` 原件归档，SHA256 完整性校验；真实设备若该端点不可用则自动降级为"仅快照备份"并在审计中记录（诚实标注，不假装成功）。
 
 **触发方式**：手动（界面/对话"创建备份"）、定时（APScheduler 每日 02:00 全设备自动备份）、**联动式**（恢复执行前、Agent 变更执行前自动生成 `pre_change` 安全备份）。
@@ -131,7 +144,7 @@ sangfor-agent/
         → 用户确认 → 自动生成安全备份 → 按序回放（先删→再改→后建）
         → 任一步失败立即停止并报告（现场保留，可用安全备份回退）
 ```
-恢复以备份为目标态反推变更计划，只下发必要的最小变更集，避免全量覆盖风险。
+恢复以备份为目标态反推变更计划，只下发必要的最小变更集，避免全量覆盖风险；**回放顺序按依赖安全编排**：先创建/更新网络对象与自定义服务（被引用方），再处理策略/路由，最后删策略、删对象/服务，避免恢复过程中引用悬空。
 
 ### 4.3 自然语言配置管理（Agent 工具集）
 
@@ -164,6 +177,7 @@ sangfor-agent/
 | 过宽权限 | any→any 全放行 ACL_ANY_ANY；高危端口（22/23/3389/445/1433/3306/21）对公网暴露 ACL_DANGEROUS_PORT；过宽 SNAT NAT_BROAD；DNAT 暴露内部管理端口 NAT_MGMT_EXPOSE | high/medium |
 | 资源异常 | CPU/内存/磁盘/mbuf 双阈值（预警+严重）RES_*；会话数水位 RES_SESSION。其中 mbuf 检查显式关联 AF 8.0.85 已知问题 | high/medium |
 | 绑定与路由 | 重复 IP 绑定、同 MAC 多 IP、静态绑定缺 MAC、缺默认路由 BIND_*/ROUTE_NO_DEFAULT | high/low |
+| 对象与服务 | 未被引用的网络对象/自定义服务 OBJ_UNREFERENCED/SVC_UNREFERENCED；包含 0.0.0.0/0 的过宽对象 OBJ_BROAD；自定义服务含高危端口 SVC_DANGEROUS_PORT | medium/low |
 
 匹配域判定支持 CIDR 包含关系（ipaddress 模块）、zone/服务 token 集合包含、`IP:PORT` 端口提取。输出：体检得分（100 - 高危15/中危6/低危2 加权扣分）+ 分级报告（说明/建议/涉及规则），可修复项携带**结构化 fix plan**，经"让 AI 一键修复"进入对话确认流执行（执行前自动备份）。
 
@@ -173,7 +187,7 @@ sangfor-agent/
 
 | 来源 | 可达性 | 实现 |
 |------|--------|------|
-| 官方平台 support.sangfor.com.cn（新版本发布信息/软件列表） | 正文需客户/伙伴认证 | 按调研确认的 URL 模式抓取；支持 `.env` 配置登录 Cookie 抓取认证内容；未认证/动态渲染时明确返回 `auth_required/parse_empty` 并降级 |
+| 官方平台 support.sangfor.com.cn | **发布说明免认证可抓**（正文存于页面内嵌 JSON，按版本段落解析【新增】/【优化】条目+说明，如 AF 8.0.107「应用控制策略支持基于 mac 管控」「URL 防护支持 DoT/DoH 识别」等真实条目）；软件下载列表需登录（productSoftware/list?product_id=13/22） | 解析器三层适配：内嵌 JSON 提取 → 版本段落切分（AF 8.0.107版本…/AC&SG13.0.121）→ 【标记】条目 + 无标记散文段特性短句；**Cookie 支持界面『平台设置』可视化配置**（存数据库，优先于 .env）；未认证时明确降级并说明原因 |
 | 官网安全中心 PSIRT 公告（sec_center） | 详情页公开 | 抓取公告详情解析（标题/CVSS/影响版本/修复方案），失败降级内置快照 |
 | 内置版本知识库 | 离线可用 | 调研固化的 AF/AC 版本发布说明（新增/优化/修复条目）、已知问题、EOL 状态、PSIRT 通告（真实编号 SF-PSIRT-20220472 等），标注 `builtin_snapshot` |
 

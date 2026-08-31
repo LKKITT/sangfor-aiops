@@ -157,6 +157,18 @@ def check_acl_rules(acl_rules: list[dict]) -> list[RiskItem]:
                     "任意源到任意目的全部放行，绕过所有细粒度管控，是横向移动的温床",
                     "按最小权限原则拆分为具体网段/服务；如确需全放行请明确业务理由并留档",
                     [outer["id"]], None))
+            # 内外网互访全放行（多区域 any 服务，如真实设备常见的 lan,wan→lan,wan 全放行）
+            zones_src = {z.strip().lower() for z in str(outer.get("src_zone", "")).split(",") if z.strip()}
+            zones_dst = {z.strip().lower() for z in str(outer.get("dst_zone", "")).split(",") if z.strip()}
+            if str(outer.get("service", "")).lower() in ANY and \
+                    ({"lan", "wan"} <= zones_src or {"lan", "wan"} <= zones_dst or
+                     (zones_src and zones_dst and zones_src & {"trust", "lan"} and zones_dst & {"untrust", "wan"})):
+                items.append(RiskItem(
+                    "ACL_ALL_ZONE_ALLOW", "high", "过宽权限",
+                    f"策略「{outer['name']}」({outer['id']}) 对 {'/'.join(sorted(zones_src))} → {'/'.join(sorted(zones_dst))} 的全部服务放行",
+                    "内外网全服务放行等于没有访问控制，任意终端可访问任意服务，暴露面最大",
+                    "按业务需要收敛为具体的服务与网段白名单；确需全放行的场景应开启日志并配合入侵防护",
+                    [outer["id"]], None))
             # 高危端口暴露
             if _from_external(outer):
                 for port in _parse_ports(outer.get("service", "")) | _parse_ports(outer.get("dst_addr", "")):
@@ -307,7 +319,51 @@ def check_routes(routes: list[dict]) -> list[RiskItem]:
 
 
 def _from_external(rule: dict) -> bool:
-    return str(rule.get("src_zone", "")).lower() in ANY or str(rule.get("src_zone", "")).lower() in {"untrust", "外网"}
+    zone = str(rule.get("src_zone", "")).lower()
+    return zone in ANY or zone in {"untrust", "外网", "wan"} or "wan" in zone.split(",")
+
+
+def check_rule_conflicts(resource: str, rule: dict, existing: list[dict]) -> list[dict]:
+    """定向核实：只检查这一条新增/修改的策略与现有策略的匹配域重叠与动作冲突。
+
+    返回与该规则相关的冲突/重叠项（不涉及任何无关配置）。
+    """
+    out: list[dict] = []
+    rid = str(rule.get("id") or "")
+    for other in existing:
+        if str(other.get("id")) == rid:      # 修改场景跳过自身
+            continue
+        if not other.get("enabled", True):
+            continue
+        overlap = _rule_covers(rule, other) or _rule_covers(other, rule)
+        if not overlap:
+            continue
+        if resource == "acl":
+            same = str(rule.get("action", "")).lower() == str(other.get("action", "")).lower()
+            out.append({
+                "level": "medium" if same else "high",
+                "rule_id": other.get("id"), "rule_name": other.get("name"),
+                "text": (f"与现有策略「{other.get('name')}」匹配域重叠（{other.get('src_zone', 'any')}:"
+                         f"{other.get('src_addr', 'any')} → {other.get('dst_zone', 'any')}:"
+                         f"{other.get('dst_addr', 'any')} 服务={other.get('service', 'any')}，"
+                         f"动作={other.get('action')}）"),
+                "suggestion": ("两者动作相同：本规则可能被靠前的该规则遮蔽或造成重复"
+                               if same else
+                               "两者动作相反：设备自上而下匹配，若该规则靠前，本策略可能永不生效"),
+            })
+        elif resource == "nat":
+            same_addr = str(rule.get("translated_addr", "")) == str(other.get("translated_addr", ""))
+            out.append({
+                "level": "low" if same_addr else "medium",
+                "rule_id": other.get("id"), "rule_name": other.get("name"),
+                "text": (f"与现有{rule.get('type', 'SNAT')}策略「{other.get('name')}」匹配域重叠"
+                         f"（源 {other.get('src_zone', 'any')}:{other.get('src_addr', 'any')}，"
+                         f"转换→{other.get('translated_addr', '')}）"),
+                "suggestion": ("转换地址相同，靠后规则不会命中，属冗余"
+                               if same_addr else
+                               "匹配域重叠但转换地址不同，实际命中的是靠前的策略，请确认顺序符合预期"),
+            })
+    return out
 
 
 def _same_match(a: dict, b: dict) -> bool:
@@ -315,15 +371,98 @@ def _same_match(a: dict, b: dict) -> bool:
     return all(str(a.get(k, "")).lower() == str(b.get(k, "")).lower() for k in keys)
 
 
+# ---------------- 对象/服务与基础配置检查 ----------------
+
+def _text_referenced(name: str, rules: list[dict], fields=("src_addr", "dst_addr", "service",
+                                                           "app", "translated_addr")) -> bool:
+    """对象/服务名是否被任意策略字段引用（含逗号分隔成员匹配）。"""
+    for r in rules:
+        for f in fields:
+            val = str(r.get(f, "") or "")
+            if name and name in {t.strip() for t in val.replace("，", ",").split(",")}:
+                return True
+    return False
+
+
+def _is_builtin_entry(entry: dict) -> bool:
+    """设备系统预置的对象/服务（uuid 大段为 0 或 isdefault 标记，如『全部』『any』）不参与未引用/过宽检查。"""
+    if entry.get("isdefault"):
+        return True
+    uid = str(entry.get("id") or entry.get("uuid") or "")
+    if not uid or len(uid) < 16:
+        return False
+    return len(uid.replace("0", "")) <= 4
+
+
+def check_objects(objects: list[dict], acl_rules: list[dict], nat_rules: list[dict]) -> list[RiskItem]:
+    items: list[RiskItem] = []
+    all_rules = acl_rules + nat_rules
+    for o in objects:
+        if _is_builtin_entry(o):
+            continue
+        name = str(o.get("name", ""))
+        if not _text_referenced(name, all_rules):
+            items.append(RiskItem(
+                "OBJ_UNREFERENCED", "low", "空策略",
+                f"网络对象「{name}」({o.get('id')}) 未被任何策略引用（{o.get('comment') or '未注明用途'}）",
+                "长期未引用的对象徒增维护成本，且可能被误用于新策略",
+                "确认无用后删除；在用对象建议在备注中说明引用场景",
+                [o.get("id", "")], None))
+        for member in str(o.get("members", "")).replace("，", ",").split(","):
+            member = member.strip()
+            try:
+                network = ipaddress.ip_network(member, strict=False)
+            except ValueError:
+                continue
+            if network.prefixlen == 0:
+                items.append(RiskItem(
+                    "OBJ_BROAD", "medium", "过宽权限",
+                    f"网络对象「{name}」({o.get('id')}) 包含 0.0.0.0/0（全部地址）",
+                    "引用该对象的策略实际匹配任意地址，等价于 any，容易被放大权限",
+                    "拆分对象，收敛到实际业务网段",
+                    [o.get("id", "")], None))
+    return items
+
+
+def check_services(services: list[dict], acl_rules: list[dict], nat_rules: list[dict]) -> list[RiskItem]:
+    items: list[RiskItem] = []
+    all_rules = acl_rules + nat_rules
+    for s in services:
+        if _is_builtin_entry(s):
+            continue
+        name = str(s.get("name", ""))
+        referenced = _text_referenced(name, all_rules, fields=("service", "app"))
+        if not referenced:
+            items.append(RiskItem(
+                "SVC_UNREFERENCED", "low", "空策略",
+                f"自定义服务「{name}」({s.get('id')}) 未被任何策略引用（{s.get('comment') or '未注明用途'}）",
+                "长期未引用的服务定义徒增维护成本",
+                "确认无用后删除", [s.get("id", "")], None))
+        for port in _parse_ports(s.get("ports", "")):
+            if port in DANGEROUS_PORTS:
+                items.append(RiskItem(
+                    "SVC_DANGEROUS_PORT", "medium", "过宽权限",
+                    f"自定义服务「{name}」({s.get('id')}) 包含 {DANGEROUS_PORTS[port]}(端口 {port})，请确认引用它的策略是否对公网开放",
+                    "高危端口经自定义服务放行时容易被忽视，与直接放行同样危险",
+                    "核查引用该服务的策略源/目的区域，收敛暴露范围",
+                    [s.get("id", "")], None))
+    return items
+
+
 # ---------------- 汇总 ----------------
 
-def run_checks(snapshot: dict, status: dict) -> dict:
+def run_checks(snapshot: dict, status: dict, device_type: str = "") -> dict:
     items: list[RiskItem] = []
     items += check_acl_rules(snapshot.get("acl_rules") or [])
     items += check_nat_rules(snapshot.get("nat_rules") or [])
+    items += check_objects(snapshot.get("objects") or [],
+                           snapshot.get("acl_rules") or [], snapshot.get("nat_rules") or [])
+    items += check_services(snapshot.get("services") or [],
+                            snapshot.get("acl_rules") or [], snapshot.get("nat_rules") or [])
     items += check_status(status)
     items += check_bindings(snapshot.get("user_bindings") or [])
-    items += check_routes(snapshot.get("static_routes") or [])
+    if device_type != "ac":   # AC 开放接口不暴露路由，缺省路由检查不适用
+        items += check_routes(snapshot.get("static_routes") or [])
 
     order = {"high": 0, "medium": 1, "low": 2}
     items.sort(key=lambda x: (order[x.severity], x.category))

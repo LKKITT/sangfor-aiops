@@ -23,8 +23,55 @@
             </div>
             <div v-if="m.confirm.warning" style="color: #b88230; margin-bottom: 6px">⚠ {{ m.confirm.warning }}</div>
 
+            <!-- 定向冲突核实（只针对本配置） -->
+            <div v-if="m.confirm.conflicts?.length" style="margin-bottom: 8px">
+              <div style="font-size: 12px; color: #909399; margin-bottom: 4px">
+                定向核实：本配置与现有配置的冲突/重叠（{{ m.confirm.conflicts.length }} 项，不含无关配置）
+              </div>
+              <div v-for="(cf, ci) in m.confirm.conflicts" :key="ci"
+                   style="font-size: 12px; background: #fff; border-left: 3px solid #e6a23c; padding: 4px 8px; margin-bottom: 4px">
+                <el-tag :type="cf.level === 'high' ? 'danger' : cf.level === 'medium' ? 'warning' : 'info'" size="small">
+                  {{ cf.level === 'high' ? '冲突' : cf.level === 'medium' ? '重叠' : '冗余' }}
+                </el-tag>
+                {{ cf.text }}
+                <div style="color: #909399; margin-top: 2px">{{ cf.suggestion }}</div>
+              </div>
+            </div>
+            <div v-else-if="m.confirm.conflicts && m.confirm.op !== 'delete'" style="font-size: 12px; color: #67c23a; margin-bottom: 6px">
+              ✓ 定向核实：与现有配置无冲突、无重叠
+            </div>
+
+            <!-- AC 绑定创建：交互式表单（用户名/IP/MAC/免认证/限制登录，默认永久有效） -->
+            <div v-if="isBindingCreate(m.confirm)" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
+              <el-form label-width="92px" size="small" style="max-width: 460px">
+                <el-form-item label="用户名">
+                  <el-input v-model="bindForm.user" placeholder="用户名，如：张三" />
+                </el-form-item>
+                <el-form-item label="IP 地址">
+                  <el-input v-model="bindForm.ip" placeholder="如：192.168.1.1" />
+                </el-form-item>
+                <el-form-item label="MAC 地址">
+                  <el-input v-model="bindForm.mac" placeholder="如：11-22-33-44-55-66" />
+                </el-form-item>
+                <el-form-item label="免认证">
+                  <el-switch v-model="bindForm.noauth" />
+                  <span class="bind-note">开启后该用户流量不经认证直接放行</span>
+                </el-form-item>
+                <el-form-item label="限制登录">
+                  <el-switch v-model="bindForm.limitlogon" />
+                  <span class="bind-note">开启后限制该绑定登录</span>
+                </el-form-item>
+                <el-form-item label="有效期">
+                  <el-tag size="small" type="success">永久有效（noauth.expire_time=0）</el-tag>
+                </el-form-item>
+                <el-form-item label="描述">
+                  <el-input v-model="bindForm.comment" placeholder="选填" />
+                </el-form-item>
+              </el-form>
+            </div>
+
             <!-- 规则变更 before/after -->
-            <div v-if="m.confirm.before || m.confirm.after" class="mono" style="font-size: 12px; background:#fff; border-radius:6px; padding:8px; border:1px solid #f3d19e;">
+            <div v-if="!isBindingCreate(m.confirm) && (m.confirm.before || m.confirm.after)" class="mono" style="font-size: 12px; background:#fff; border-radius:6px; padding:8px; border:1px solid #f3d19e;">
               <div v-if="m.confirm.before" class="diff-removed">- {{ fmtRule(m.confirm.before) }}</div>
               <div v-if="m.confirm.after" class="diff-added">+ {{ fmtRule(m.confirm.after) }}</div>
             </div>
@@ -80,7 +127,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch, onMounted } from 'vue'
+import { ref, reactive, nextTick, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { store, currentDevice } from '../store.js'
@@ -101,12 +148,15 @@ const quickPrompts = [
 const TOOL_NAMES = {
   get_device_status: '查询设备状态', get_interfaces: '查询接口', get_nat_rules: '查询 NAT',
   get_acl_rules: '查询访问控制策略', get_user_bindings: '查询用户绑定', get_static_routes: '查询路由',
+  get_network_objects: '查询网络对象', get_services: '查询自定义服务',
   run_config_checkup: '运行配置体检', create_backup: '创建备份', list_backups: '查询备份列表',
   diff_backups: '对比备份差异', get_software_updates: '获取软件更新信息', get_upgrade_advice: '生成升级建议',
   get_audit_logs: '查询审计日志', restore_backup: '生成恢复计划', execute_restore: '执行恢复',
   create_nat_rule: '新建 NAT', update_nat_rule: '修改 NAT', delete_nat_rule: '删除 NAT',
   create_acl_rule: '新建策略', update_acl_rule: '修改策略', delete_acl_rule: '删除策略',
-  create_user_binding: '新建绑定', update_user_binding: '修改绑定', delete_user_binding: '删除绑定'
+  create_user_binding: '新建绑定', update_user_binding: '修改绑定', delete_user_binding: '删除绑定',
+  create_network_object: '新建网络对象', update_network_object: '修改网络对象', delete_network_object: '删除网络对象',
+  create_service: '新建自定义服务', update_service: '修改自定义服务', delete_service: '删除自定义服务'
 }
 
 onMounted(() => { if (!messages.value.length) pushHello() })
@@ -146,14 +196,8 @@ function send(preset) {
 }
 
 function reactiveMsg() {
-  const m = { role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null }
-  return new Proxy(m, {
-    set(target, key, value) {
-      target[key] = value
-      if (key === 'text') scrollBottom()
-      return true
-    }
-  })
+  // Vue reactive：流式 token 逐段触发重渲染（自定义 Proxy 会绕过响应式导致一次性出现）
+  return reactive({ role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null })
 }
 
 function handleEvent(ev, aiMsg) {
@@ -175,6 +219,7 @@ function handleEvent(ev, aiMsg) {
   }
   if (ev.type === 'confirm_required') {
     aiMsg.confirm = { ...ev.action, status: 'pending' }
+    if (isBindingCreate(ev.action)) syncBindForm(ev.action)
     scrollBottom()
     return
   }
@@ -189,13 +234,35 @@ function handleEvent(ev, aiMsg) {
   if (ev.type === 'done') return
 }
 
+const bindForm = reactive({ user: '', ip: '', mac: '', noauth: false, limitlogon: false, comment: '' })
+
+function isBindingCreate(confirm) {
+  return confirm?.op === 'create' && (confirm?.resource === 'binding' || confirm?.tool_name === 'create_user_binding')
+}
+
+function syncBindForm(confirm) {
+  const a = confirm?.after || {}
+  bindForm.user = a.user || ''
+  bindForm.ip = a.ip || ''
+  bindForm.mac = a.mac || ''
+  bindForm.noauth = !!a.noauth
+  bindForm.limitlogon = !!a.limitlogon
+  bindForm.comment = a.comment || a.desc || ''
+}
+
 function confirmAction(msg, approved) {
   const dev = currentDevice()
   confirming.value = true
   const contMsg = reactiveMsg()
   messages.value.push(contMsg)
+  let edited = null
+  if (approved && isBindingCreate(msg.confirm)) {
+    edited = { data: { user: bindForm.user, ip: bindForm.ip, mac: bindForm.mac,
+                       noauth: bindForm.noauth, limitlogon: bindForm.limitlogon,
+                       comment: bindForm.comment } }
+  }
   chatStream('/api/chat/confirm', {
-    action_id: msg.confirm.action_id, device_id: dev.id, approved
+    action_id: msg.confirm.action_id, device_id: dev.id, approved, edited
   }, ev => handleEvent(ev, contMsg))
     .catch(e => { contMsg.text += `\n\n**连接失败**：${e.message}` })
     .finally(() => {
@@ -230,6 +297,7 @@ function allPlanItems(plan) {
 .chat-input { padding: 10px 14px; }
 .quick { margin-bottom: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .trace { margin-bottom: 6px; }
+.bind-note { font-size: 12px; color: #909399; margin-left: 8px; }
 .typing { color: #909399; font-size: 13px; }
 .dots { animation: blink 1s infinite; }
 @keyframes blink { 50% { opacity: 0.2; } }

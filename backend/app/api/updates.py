@@ -1,7 +1,7 @@
 """软件更新信息 API。"""
 from fastapi import APIRouter, HTTPException
 
-from app.adapters.factory import create_client
+from app.adapters.factory import get_client
 from app import db
 from app.services import update_service, upgrade_advisor
 
@@ -12,19 +12,23 @@ async def _current_version(device_id: str) -> str:
     device = db.get_device(device_id)
     if not device:
         raise HTTPException(404, "设备不存在")
-    client = create_client(device)
-    try:
-        await client.login()
-        status = await client.get_status()
-        return status.sw_version, (status.to_dict())
-    finally:
-        await client.aclose()
+    client = await get_client(device_id)
+    status = await client.get_status()
+    return status.sw_version, status.to_dict()
 
 
 @router.get("/devices/{device_id}/updates")
 async def get_updates(device_id: str) -> dict:
     version, _ = await _current_version(device_id)
     return await update_service.get_update_overview(version)
+
+
+@router.get("/software-list")
+async def software_list(product: str = "af", force: bool = False) -> dict:
+    """官方软件更新列表（AF: product_id=13 / AC: product_id=22），支持已配置 Cookie 抓取。"""
+    if product not in ("af", "ac"):
+        raise HTTPException(400, "product 仅支持 af / ac")
+    return await update_service.get_software_list(product, force=force)
 
 
 @router.get("/devices/{device_id}/upgrade-advice")

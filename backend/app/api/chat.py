@@ -22,6 +22,7 @@ class ConfirmIn(BaseModel):
     action_id: str
     device_id: str
     approved: bool
+    edited: dict | None = None   # 用户在确认卡片上编辑后的参数（如绑定表单）
 
 
 def _sse_events(generator):
@@ -54,7 +55,8 @@ async def confirm(payload: ConfirmIn):
     if not action:
         raise HTTPException(404, "确认任务不存在")
     return _sse_events(orchestrator.resume_confirm(action["conv_id"], payload.action_id,
-                                                   payload.approved, payload.device_id))
+                                                   payload.approved, payload.device_id,
+                                                   edited=payload.edited))
 
 
 @router.get("/conversations")

@@ -83,6 +83,45 @@
                     title="升级固件操作本身涉及业务中断，须由工程师在维护窗口执行；Agent 负责建议、备份与检查。" />
         </div>
       </div>
+
+      <!-- 官方软件更新列表 -->
+      <div class="page-card" style="margin-top: 12px">
+        <div class="col-title" style="display: flex; align-items: center; gap: 10px">
+          官方软件更新列表（support.sangfor.com.cn）
+          <el-tag size="small" :type="cookieReady ? 'success' : 'warning'">
+            {{ cookieReady ? '已配置平台 Cookie' : '未配置 Cookie（正文需认证，可在「平台设置」配置）' }}
+          </el-tag>
+          <el-button size="small" text type="primary" @click="loadSoftwareList(true)" :loading="softLoading">
+            重新抓取
+          </el-button>
+        </div>
+        <el-tabs v-model="softTab">
+          <el-tab-pane v-for="p in [{ k: 'af', name: '下一代防火墙 AF' }, { k: 'ac', name: '上网行为管理 AC' }]"
+                       :key="p.k" :label="p.name" :name="p.k">
+            <div v-if="softwareList[p.k]?.status === 'ok' && softwareList[p.k]?.items?.length">
+              <el-table :data="softwareList[p.k].items" size="small" border stripe max-height="360">
+                <el-table-column type="index" label="#" width="50" />
+                <el-table-column prop="name" label="版本/升级包" min-width="300">
+                  <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
+                </el-table-column>
+                <el-table-column prop="size" label="大小" width="90" />
+                <el-table-column prop="published" label="发布时间" width="120" />
+                <el-table-column prop="md5" label="MD5" min-width="180">
+                  <template #default="{ row }"><span class="mono" style="font-size: 11px">{{ row.md5 || '-' }}</span></template>
+                </el-table-column>
+              </el-table>
+              <div class="hint" style="margin-top: 6px">
+                来源：{{ softwareList[p.k].source }} · 抓取时间 {{ softwareList[p.k].fetched_at }}
+                <span v-if="softwareList[p.k].from_cache">（缓存）</span>
+                · 下载需在官方平台登录后进行
+              </div>
+            </div>
+            <el-alert v-else-if="softwareList[p.k]?.status" type="warning" :closable="false"
+                      :title="`未获取到列表：${softwareList[p.k].reason || softwareList[p.k].status}`" />
+            <el-empty v-else description="加载中" :image-size="60" />
+          </el-tab-pane>
+        </el-tabs>
+      </div>
     </div>
     <div v-else>
       <el-empty description="加载中" />
@@ -94,10 +133,32 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { store, currentDevice } from '../store.js'
-import { Updates } from '../api.js'
+import { Updates, Settings } from '../api.js'
 
 const advice = ref(null)
 const refreshing = ref(false)
+
+// 官方软件更新列表
+const softTab = ref('af')
+const softwareList = ref({})
+const softLoading = ref(false)
+const cookieReady = ref(false)
+
+async function loadSoftwareList(force = false) {
+  softLoading.value = true
+  try {
+    const results = await Promise.all([
+      Updates.softwareList('af', force),
+      Updates.softwareList('ac', force)
+    ])
+    softwareList.value = { af: results[0], ac: results[1] }
+  } catch (e) { ElMessage.error(String(e.message || e)) } finally { softLoading.value = false }
+}
+
+async function loadCookieState() {
+  const s = await Settings.get().catch(() => null)
+  cookieReady.value = !!(s && s.support_cookie_source !== 'none')
+}
 
 const riskType = computed(() => ({ high: 'danger', medium: 'warning', low: 'info' }[advice.value?.risk] || 'info'))
 const catIconName = cat => ({ 新增功能: 'CirclePlusFilled', 安全修复: 'WarningFilled', 已知问题修复: 'CircleCheckFilled', 优化: 'TopRight' }[cat] || 'InfoFilled')
@@ -115,11 +176,12 @@ async function refresh() {
     const r = await Updates.refresh()
     ElMessage.info(`官方平台：${r.official.status}${r.official.reason ? '（' + r.official.reason + '）' : ''}；PSIRT：${r.psirt.status}`)
     await load()
+    await loadSoftwareList()
   } finally { refreshing.value = false }
 }
 
 watch(() => store.currentDeviceId, load)
-onMounted(load)
+onMounted(() => { load(); loadSoftwareList(); loadCookieState() })
 </script>
 
 <style scoped>

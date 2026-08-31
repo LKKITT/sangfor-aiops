@@ -47,13 +47,13 @@ class SimulatorState:
              "src_addr": "192.168.0.0/16", "dst_addr": "any", "service": "any", "app": "any",
              "action": "allow", "hit_count": 1582334, "log": False, "comment": "上网基本策略"},
             {"id": "acl-002", "name": "允许服务器区访问外网Web", "enabled": True, "src_zone": "dmz", "dst_zone": "untrust",
-             "src_addr": "172.16.2.0/24", "dst_addr": "any", "service": "HTTP/HTTPS", "app": "any",
+             "src_addr": "服务器区网段", "dst_addr": "any", "service": "Web服务,ERP端口", "app": "any",
              "action": "allow", "hit_count": 88211, "log": True, "comment": ""},
             {"id": "acl-003", "name": "禁止财务区访问外网", "enabled": True, "src_zone": "trust", "dst_zone": "untrust",
-             "src_addr": "192.168.10.0/24", "dst_addr": "any", "service": "any", "app": "any",
+             "src_addr": "财务网段", "dst_addr": "any", "service": "any", "app": "any",
              "action": "deny", "hit_count": 0, "log": True, "comment": "财务网段禁止出网"},
             {"id": "acl-004", "name": "放行外部访问服务器445", "enabled": True, "src_zone": "untrust", "dst_zone": "dmz",
-             "src_addr": "any", "dst_addr": "172.16.2.10", "service": "TCP/445", "app": "any",
+             "src_addr": "any", "dst_addr": "官网服务器", "service": "TCP/445", "app": "any",
              "action": "allow", "hit_count": 412, "log": False, "comment": "历史遗留：文件共享"},
             {"id": "acl-005", "name": "允许RDP远程到服务器区", "enabled": True, "src_zone": "untrust", "dst_zone": "dmz",
              "src_addr": "any", "dst_addr": "any", "service": "TCP/3389", "app": "any",
@@ -62,10 +62,10 @@ class SimulatorState:
              "src_addr": "192.168.99.0/24", "dst_addr": "any", "service": "any", "app": "any",
              "action": "allow", "hit_count": 0, "log": False, "comment": "2025-08 割接临时策略"},
             {"id": "acl-007", "name": "允许内网查询DNS", "enabled": True, "src_zone": "trust", "dst_zone": "untrust",
-             "src_addr": "192.168.0.0/16", "dst_addr": "any", "service": "UDP/53", "app": "any",
+             "src_addr": "192.168.0.0/16", "dst_addr": "any", "service": "DNS服务", "app": "any",
              "action": "allow", "hit_count": 0, "log": False, "comment": ""},
             {"id": "acl-008", "name": "允许服务器区访问外网Web副本", "enabled": True, "src_zone": "dmz", "dst_zone": "untrust",
-             "src_addr": "172.16.2.0/24", "dst_addr": "any", "service": "HTTP/HTTPS", "app": "any",
+             "src_addr": "服务器区网段", "dst_addr": "any", "service": "Web服务", "app": "any",
              "action": "allow", "hit_count": 0, "log": True, "comment": "疑与 acl-002 重复"},
             {"id": "acl-009", "name": "默认拒绝出接口访问", "enabled": True, "src_zone": "any", "dst_zone": "any",
              "src_addr": "any", "dst_addr": "any", "service": "any", "app": "any",
@@ -89,7 +89,7 @@ class SimulatorState:
              "service": "TCP/13389", "translated_addr": "172.16.2.5:3389", "translated_port": "3389",
              "hit_count": 86, "log": False, "comment": "旧运维系统，建议改VPN"},
             {"id": "nat-005", "name": "DMZ区上网SNAT", "enabled": True, "type": "SNAT",
-             "src_zone": "dmz", "dst_zone": "untrust", "src_addr": "172.16.2.0/24", "dst_addr": "any",
+             "src_zone": "dmz", "dst_zone": "untrust", "src_addr": "服务器区网段", "dst_addr": "any",
              "service": "any", "translated_addr": "202.96.1.2", "translated_port": "",
              "hit_count": 91234, "log": True, "comment": ""},
             {"id": "nat-006", "name": "备用SNAT-联通", "enabled": True, "type": "SNAT",
@@ -108,6 +108,28 @@ class SimulatorState:
              "binding_type": "static", "enabled": False, "comment": "已报废未清理"},
             {"id": "ub-005", "user": "访客-VLAN99", "ip": "192.168.99.0/24", "mac": "",
              "binding_type": "dynamic", "enabled": True, "comment": "访客网段动态绑定"},
+        ]
+        self.objects = [
+            {"id": "obj-001", "name": "财务网段", "type": "ipgroup", "members": "192.168.10.0/24",
+             "comment": "财务部终端"},
+            {"id": "obj-002", "name": "服务器区网段", "type": "ipgroup", "members": "172.16.2.0/24",
+             "comment": "DMZ 全部服务器"},
+            {"id": "obj-003", "name": "官网服务器", "type": "ipgroup", "members": "172.16.2.10",
+             "comment": "对外发布主机"},
+            {"id": "obj-004", "name": "废弃网段", "type": "ipgroup", "members": "192.168.200.0/24",
+             "comment": "已下线业务，未再引用"},
+        ]
+        self.services = [
+            {"id": "svc-001", "name": "Web服务", "protocol": "TCP", "ports": "80,443",
+             "comment": "HTTP/HTTPS"},
+            {"id": "svc-002", "name": "DNS服务", "protocol": "UDP", "ports": "53",
+             "comment": "域名解析"},
+            {"id": "svc-003", "name": "ERP端口", "protocol": "TCP", "ports": "8443,9090-9092",
+             "comment": "ERP 应用端口段"},
+            {"id": "svc-004", "name": "数据库端口", "protocol": "TCP", "ports": "3306,1433",
+             "comment": "MySQL/SQL Server，预留"},
+            {"id": "svc-005", "name": "遗留服务", "protocol": "TCP", "ports": "8081",
+             "comment": "旧系统遗留，未再引用"},
         ]
         # 状态基线（模拟器在基线上做小幅波动）
         self.status_base = {
@@ -144,7 +166,8 @@ class SimulatorState:
     def render_conf_file(self) -> bytes:
         lines = [f"#SANGFOR-AF-CONF-V{self.version}#", f"#SERIAL={DEVICE_SERIAL}#",
                  f"#EXPORTED={datetime.now().isoformat(timespec='seconds')}#", "#BEGIN-PRIV-DATA#"]
-        for section, rows in (("interfaces", self.interfaces), ("static_routes", self.static_routes),
+        for section, rows in (("objects", self.objects), ("services", self.services),
+                              ("interfaces", self.interfaces), ("static_routes", self.static_routes),
                               ("acl_rules", self.acl_rules), ("nat_rules", self.nat_rules),
                               ("user_bindings", self.user_bindings)):
             lines.append(f"[{section}]")

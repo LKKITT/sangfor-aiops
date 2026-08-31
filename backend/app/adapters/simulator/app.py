@@ -233,6 +233,89 @@ def create_simulator_app(state=STATE) -> FastAPI:
             _err(1404, f"策略 {rid} 不存在")
         return _ok()
 
+    # ---------- 网络对象 / 自定义服务 ----------
+    @app.get(API + "/ipgroups")
+    async def get_objects(request: Request):
+        _check_token(request)
+        return _ok({"list": state.objects, "total": len(state.objects)})
+
+    @app.post(API + "/ipgroups")
+    async def create_object(request_data: dict, request: Request):
+        _check_token(request)
+        row = _body_dict(request_data)
+        if not row.get("name"):
+            _err(1400, "对象名称不能为空")
+        if any(o["name"] == row.get("name") for o in state.objects):
+            _err(1409, f"对象 {row.get('name')} 已存在")
+        new_id = row.get("id") or state.next_id("obj")
+        if any(o["id"] == new_id for o in state.objects):
+            _err(1409, f"对象 ID {new_id} 已存在")
+        row["id"] = new_id
+        row.setdefault("type", "ipgroup")
+        state.objects.append(row)
+        return _ok(row)
+
+    @app.patch(API + "/ipgroups/{rid}")
+    async def patch_object(rid: str, request_data: dict, request: Request):
+        _check_token(request)
+        body = _body_dict(request_data)
+        for i, row in enumerate(state.objects):
+            if row["id"] == rid:
+                row.update(body)
+                state.objects[i] = row
+                return _ok(row)
+        _err(1404, f"对象 {rid} 不存在")
+
+    @app.delete(API + "/ipgroups/{rid}")
+    async def delete_object(rid: str, request: Request):
+        _check_token(request)
+        before = len(state.objects)
+        state.objects = [o for o in state.objects if o["id"] != rid]
+        if len(state.objects) == before:
+            _err(1404, f"对象 {rid} 不存在")
+        return _ok()
+
+    @app.get(API + "/services")
+    async def get_services(request: Request):
+        _check_token(request)
+        return _ok({"list": state.services, "total": len(state.services)})
+
+    @app.post(API + "/services")
+    async def create_service(request_data: dict, request: Request):
+        _check_token(request)
+        row = _body_dict(request_data)
+        if not row.get("name"):
+            _err(1400, "服务名称不能为空")
+        if any(s["name"] == row.get("name") for s in state.services):
+            _err(1409, f"服务 {row.get('name')} 已存在")
+        new_id = row.get("id") or state.next_id("svc")
+        if any(s["id"] == new_id for s in state.services):
+            _err(1409, f"服务 ID {new_id} 已存在")
+        row["id"] = new_id
+        row.setdefault("protocol", "TCP")
+        state.services.append(row)
+        return _ok(row)
+
+    @app.patch(API + "/services/{rid}")
+    async def patch_service(rid: str, request_data: dict, request: Request):
+        _check_token(request)
+        body = _body_dict(request_data)
+        for i, row in enumerate(state.services):
+            if row["id"] == rid:
+                row.update(body)
+                state.services[i] = row
+                return _ok(row)
+        _err(1404, f"服务 {rid} 不存在")
+
+    @app.delete(API + "/services/{rid}")
+    async def delete_service(rid: str, request: Request):
+        _check_token(request)
+        before = len(state.services)
+        state.services = [s for s in state.services if s["id"] != rid]
+        if len(state.services) == before:
+            _err(1404, f"服务 {rid} 不存在")
+        return _ok()
+
     # ---------- IP-MAC 绑定 ----------
     @app.get(API + "/userbindings")
     async def get_bindings(request: Request):
@@ -310,4 +393,10 @@ def create_simulator_app(state=STATE) -> FastAPI:
                 row["hit_count"] = row.get("hit_count", 0) + 1
         return _ok()
 
+    # 镜像注册 /api/v1 前缀路由，与真实 AF 设备路径形态保持一致
+    from fastapi.routing import APIRoute
+    for route in [r for r in app.routes if isinstance(r, APIRoute) and r.path.startswith(API)]:
+        app.router.routes.append(APIRoute(
+            "/api/v1" + route.path, endpoint=route.endpoint,
+            methods=list(route.methods), include_in_schema=False))
     return app

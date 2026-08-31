@@ -43,9 +43,37 @@ async def test_interfaces_and_snapshot(client):
     interfaces = await client.get_interfaces()
     assert any(i.name == "eth1" and i.zone == "untrust" for i in interfaces)
     snapshot = await client.snapshot_config()
-    for section in ("interfaces", "static_routes", "nat_rules", "acl_rules", "user_bindings"):
-        assert isinstance(snapshot[section], list) and snapshot[section]
+    for section in ("objects", "services", "interfaces", "static_routes",
+                    "nat_rules", "acl_rules", "user_bindings"):
+        assert isinstance(snapshot[section], list) and snapshot[section], section
     assert snapshot["meta"]["sw_version"].startswith("8.0.")
+    # 对象/服务内容抽查
+    assert any(o["name"] == "财务网段" for o in snapshot["objects"])
+    assert any(s["name"] == "Web服务" for s in snapshot["services"])
+
+
+@pytest.mark.asyncio
+async def test_object_and_service_crud(client):
+    obj = await client.apply_change(ChangeOp(
+        op="create", resource="object",
+        data={"name": "测试网段", "members": "10.50.0.0/16", "comment": "pytest"}))
+    obj_id = obj["data"]["id"]
+    objs = await client.get_network_objects()
+    assert any(o.id == obj_id and o.members == "10.50.0.0/16" for o in objs)
+
+    await client.apply_change(ChangeOp(op="update", resource="object", target_id=obj_id,
+                                       data={"members": "10.51.0.0/16"}))
+    objs = await client.get_network_objects()
+    assert any(o.id == obj_id and o.members == "10.51.0.0/16" for o in objs)
+    await client.apply_change(ChangeOp(op="delete", resource="object", target_id=obj_id))
+
+    svc = await client.apply_change(ChangeOp(
+        op="create", resource="service",
+        data={"name": "测试端口", "protocol": "TCP", "ports": "7070"}))
+    svc_id = svc["data"]["id"]
+    services = await client.get_services()
+    assert any(s.id == svc_id and s.ports == "7070" for s in services)
+    await client.apply_change(ChangeOp(op="delete", resource="service", target_id=svc_id))
 
 
 @pytest.mark.asyncio

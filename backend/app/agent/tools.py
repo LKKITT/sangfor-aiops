@@ -12,7 +12,7 @@ from app import db
 from app.adapters.base import ChangeOp, DeviceClient
 from app.services import config_service
 from app.services import update_service, upgrade_advisor
-from app.services.analyzer import run_checks
+from app.services.analyzer import run_checks, check_rule_conflicts
 from app.agent import guardrails
 
 ToolHandler = Callable[[DeviceClient, dict, dict], Awaitable[Any]]
@@ -75,6 +75,22 @@ async def _h_bindings(client: DeviceClient, args: dict, device: dict) -> list[di
     return [b.to_dict() for b in await client.get_user_bindings()]
 
 
+async def _h_objects(client: DeviceClient, args: dict, device: dict) -> list[dict]:
+    rows = [o.to_dict() for o in await client.get_network_objects()]
+    kw = str(args.get("keyword", "")).strip().lower()
+    if kw:
+        rows = [r for r in rows if kw in json.dumps(r, ensure_ascii=False).lower()]
+    return rows
+
+
+async def _h_services(client: DeviceClient, args: dict, device: dict) -> list[dict]:
+    rows = [s.to_dict() for s in await client.get_services()]
+    kw = str(args.get("keyword", "")).strip().lower()
+    if kw:
+        rows = [r for r in rows if kw in json.dumps(r, ensure_ascii=False).lower()]
+    return rows
+
+
 async def _h_routes(client: DeviceClient, args: dict, device: dict) -> list[dict]:
     return [r.to_dict() for r in await client.get_static_routes()]
 
@@ -82,7 +98,7 @@ async def _h_routes(client: DeviceClient, args: dict, device: dict) -> list[dict
 async def _h_checkup(client: DeviceClient, args: dict, device: dict) -> dict:
     snapshot = await client.snapshot_config()
     status = (await client.get_status()).to_dict()
-    report = run_checks(snapshot, status)
+    report = run_checks(snapshot, status, device.get("type", ""))
     report["summary_text"] = (
         f"体检得分 {report['score']}/100（{report['grade']}）：高危 {report['counts']['high']} 项、"
         f"中危 {report['counts']['medium']} 项、低危 {report['counts']['low']} 项，"
@@ -141,33 +157,46 @@ NAT_FIELDS = ("type", "src_zone", "dst_zone", "src_addr", "dst_addr", "service",
               "translated_addr", "translated_port", "name", "comment", "log", "enabled")
 ACL_FIELDS = ("src_zone", "dst_zone", "src_addr", "dst_addr", "service", "app",
               "action", "name", "comment", "log", "enabled")
-BIND_FIELDS = ("user", "ip", "mac", "binding_type", "comment", "enabled")
+BIND_FIELDS = ("user", "ip", "mac", "binding_type", "comment", "enabled", "noauth", "limitlogon")
+OBJECT_FIELDS = ("name", "type", "members", "comment")
+SERVICE_FIELDS = ("name", "protocol", "ports", "comment")
+
+# 变更计划展示所需的资源映射
+_RESOURCE_SECTION = {"nat": ("nat_rules", "NAT 策略"), "acl": ("acl_rules", "访问控制策略"),
+                     "binding": ("user_bindings", "用户绑定"),
+                     "object": ("objects", "网络对象"), "service": ("services", "自定义服务")}
+_RESOURCE_FIELDS = {"nat": NAT_FIELDS, "acl": ACL_FIELDS, "binding": BIND_FIELDS,
+                    "object": OBJECT_FIELDS, "service": SERVICE_FIELDS}
 
 
 async def _prepare_rule_change(client: DeviceClient, args: dict, device: dict) -> dict:
     """通用变更计划生成：返回含变更前后对照的确认卡片数据。"""
     resource = args["_resource"]
     op = args["_op"]
-    section = {"nat": "nat_rules", "acl": "acl_rules", "binding": "user_bindings"}[resource]
-    resource_cn = {"nat": "NAT 策略", "acl": "访问控制策略", "binding": "用户绑定"}[resource]
-    rules = await client.snapshot_config()
+    section, resource_cn = _RESOURCE_SECTION[resource]
+    snapshot = await client.snapshot_config()
     before = None
     target_id = str(args.get("rule_id", ""))
-    for r in rules.get(section) or []:
+    for r in snapshot.get(section) or []:
         if str(r.get("id")) == target_id:
             before = r
             break
-    data = {k: v for k, v in (args.get("data") or {}).items() if k in
-            (NAT_FIELDS if resource == "nat" else ACL_FIELDS if resource == "acl" else BIND_FIELDS)}
+    data = {k: v for k, v in (args.get("data") or {}).items() if k in _RESOURCE_FIELDS[resource]}
     after = dict(before or {})
     after.update(data)
     title = {"create": f"新建{resource_cn}", "update": f"修改{resource_cn}「{before.get('name', target_id) if before else target_id}」",
              "delete": f"删除{resource_cn}「{before.get('name', target_id) if before else target_id}」"}[op]
+    # 定向核实：只检查这一条配置与现有配置的冲突/重叠（不做全量体检）
+    conflicts = []
+    if op in ("create", "update") and resource in ("nat", "acl") and after:
+        section = _RESOURCE_SECTION[resource][0]
+        conflicts = check_rule_conflicts(resource, after, snapshot.get(section) or [])
     return {
         "title": title,
         "resource": resource, "resource_cn": resource_cn, "op": op, "target_id": target_id,
         "before": before, "after": after if op != "delete" else None,
         "fields": sorted(data.keys()),
+        "conflicts": conflicts,
         "warning": _change_warning(resource, op, before, after),
     }
 
@@ -180,6 +209,14 @@ def _change_warning(resource: str, op: str, before: dict | None, after: dict | N
         return "注意：该策略放行全部服务，请确认符合最小权限原则"
     if resource == "nat" and op == "update" and before and before.get("type") == "DNAT":
         return "注意：修改 DNAT 映射会影响对外发布的业务可达性"
+    if resource == "object" and after and str(after.get("members", "")).find("0.0.0.0") >= 0:
+        return "注意：对象包含 0.0.0.0/0 等价于任意地址，引用它的策略将被放大权限"
+    if resource == "service" and after and after.get("ports"):
+        return "注意：修改服务端口会影响所有引用该服务的策略"
+    if resource == "binding" and after:
+        return ("注意：免认证开启后该用户来源将不经认证直接放行，请确认场景；"
+                "绑定默认永久有效" if (after.get("noauth") or after.get("limitlogon")) else
+                "绑定默认永久有效；如需免认证/限制登录请在卡片中调整")
     return ""
 
 
@@ -231,6 +268,14 @@ TOOLS: list[Tool] = [
         "properties": {"keyword": {"type": "string", "description": "过滤关键词"}},
     }, _h_acl),
     Tool("get_user_bindings", "获取 IP-MAC 用户绑定列表", {"type": "object", "properties": {}}, _h_bindings),
+    Tool("get_network_objects", "获取网络对象（IP组/主机对象）列表", {
+        "type": "object",
+        "properties": {"keyword": {"type": "string", "description": "过滤关键词"}},
+    }, _h_objects),
+    Tool("get_services", "获取自定义服务（协议+端口）列表", {
+        "type": "object",
+        "properties": {"keyword": {"type": "string", "description": "过滤关键词"}},
+    }, _h_services),
     Tool("get_static_routes", "获取静态路由列表", {"type": "object", "properties": {}}, _h_routes),
     Tool("run_config_checkup", "运行配置合理性体检：规则冲突/空策略/过宽权限/资源异常，返回风险清单与修复建议",
          {"type": "object", "properties": {}}, _h_checkup),
@@ -292,9 +337,19 @@ def _register_write_tools() -> None:
                   ACL_FIELDS),
         rule_tool("update_acl_rule", "acl", "update", "修改访问控制策略字段（如停用 enabled=false、收紧匹配域）", ACL_FIELDS),
         rule_tool("delete_acl_rule", "acl", "delete", "删除访问控制策略", ACL_FIELDS),
-        rule_tool("create_user_binding", "binding", "create", "新建 IP-MAC 用户绑定（user/ip/mac 必填）", BIND_FIELDS),
+        rule_tool("create_user_binding", "binding", "create", "新建 IP-MAC 绑定（user/ip/mac 必填；AC 设备可带 noauth=免认证、limitlogon=限制登录，布尔值，默认均关闭即永久有效仅绑定）", BIND_FIELDS),
         rule_tool("update_user_binding", "binding", "update", "修改用户绑定", BIND_FIELDS),
         rule_tool("delete_user_binding", "binding", "delete", "删除用户绑定", BIND_FIELDS),
+        rule_tool("create_network_object", "object", "create",
+                  "新建网络对象（IP组）。data：name 必填，members 为网段/IP 逗号分隔，comment 建议填写",
+                  OBJECT_FIELDS),
+        rule_tool("update_network_object", "object", "update", "修改网络对象成员或备注", OBJECT_FIELDS),
+        rule_tool("delete_network_object", "object", "delete", "删除网络对象（需确认无策略引用）", OBJECT_FIELDS),
+        rule_tool("create_service", "service", "create",
+                  "新建自定义服务。data：name 必填，protocol(TCP/UDP)，ports 如 80,443 或 9090-9092",
+                  SERVICE_FIELDS),
+        rule_tool("update_service", "service", "update", "修改自定义服务端口或协议", SERVICE_FIELDS),
+        rule_tool("delete_service", "service", "delete", "删除自定义服务（需确认无策略引用）", SERVICE_FIELDS),
     ])
 
 

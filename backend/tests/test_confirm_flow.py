@@ -16,12 +16,8 @@ async def _prepare_pending(conv_id: str, device_id: str, tool_name: str, args: d
     """模拟编排器生成变更计划并挂起（与 orchestrator 逻辑一致，含内部参数模板合并）。"""
     tool = TOOLS_BY_NAME[tool_name]
     merged = {**WRITE_TOOL_TEMPLATE.get(tool_name, {}), **args}
-    client = await get_client(device_id)
-    try:
-        await client.login()
-        plan = await tool.prepare(client, merged, db.get_device(device_id))
-    finally:
-        await client.aclose()
+    client = await get_client(device_id)   # 共享客户端，不关闭
+    plan = await tool.prepare(client, merged, db.get_device(device_id))
     action = db.create_pending_action({
         "id": db.new_id("act_"), "conv_id": conv_id, "tool_name": tool_name,
         "args_json": json.dumps({"tool_call_id": "call_test", "args": merged},
@@ -49,12 +45,8 @@ async def test_confirm_flow_approve_executes(device_id):
 
     # 设备侧真实生效
     client = await get_client(device_id)
-    try:
-        await client.login()
-        rules = {r.id: r for r in await client.get_acl_rules()}
-        assert rules["acl-005"].log is False
-    finally:
-        await client.aclose()
+    rules = {r.id: r for r in await client.get_acl_rules()}
+    assert rules["acl-005"].log is False
     # 审计记录
     logs = db.list_audit(limit=30)
     assert any("update_acl_rule" in l["action"] and l["result"] == "executed" for l in logs)
@@ -67,12 +59,8 @@ async def test_confirm_flow_reject(device_id):
     action_id = await _prepare_pending(
         conv["id"], device_id, "delete_acl_rule", {"rule_id": "acl-007"})
     client = await get_client(device_id)
-    try:
-        await client.login()
-        before = {r.id for r in await client.get_acl_rules()}
-        assert "acl-007" in before
-    finally:
-        await client.aclose()
+    before = {r.id for r in await client.get_acl_rules()}
+    assert "acl-007" in before
 
     orch = AgentOrchestrator()
     async for ev in orch.resume_confirm(conv["id"], action_id, False, device_id):
@@ -82,12 +70,8 @@ async def test_confirm_flow_reject(device_id):
     assert db.get_pending_action(action_id)["status"] == "rejected"
 
     client = await get_client(device_id)
-    try:
-        await client.login()
-        after = {r.id for r in await client.get_acl_rules()}
-        assert "acl-007" in after          # 拒绝后规则未被删除
-    finally:
-        await client.aclose()
+    after = {r.id for r in await client.get_acl_rules()}
+    assert "acl-007" in after          # 拒绝后规则未被删除
 
 
 @pytest.mark.asyncio

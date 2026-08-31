@@ -22,6 +22,8 @@ from app import db
 VOLATILE_FIELDS = {"hit_count", "rx_kbps", "tx_kbps"}
 # 参与备份/恢复的配置节（key → 中文名）
 SECTIONS = {
+    "objects": "网络对象",
+    "services": "自定义服务",
     "user_bindings": "用户绑定",
     "acl_rules": "访问控制策略",
     "nat_rules": "NAT 策略",
@@ -29,10 +31,25 @@ SECTIONS = {
     "interfaces": "网络接口",
 }
 # 快照节名 → 适配器资源名（恢复回放时使用）
-RESOURCE_OF_SECTION = {"user_bindings": "binding", "acl_rules": "acl",
+RESOURCE_OF_SECTION = {"objects": "object", "services": "service",
+                       "user_bindings": "binding", "acl_rules": "acl",
                        "nat_rules": "nat", "static_routes": "route"}
-# 恢复执行顺序：先删旧，后更新，再创建；接口仅支持更新（不删接口）
-RESTORE_ORDER = ["user_bindings", "acl_rules", "nat_rules", "static_routes"]
+_SECTION_OF_RESOURCE = {v: k for k, v in RESOURCE_OF_SECTION.items()}
+# 支持恢复回放的配置节（接口仅可视化对比，不做恢复）
+RESTORE_SECTIONS = ["objects", "services", "user_bindings", "acl_rules",
+                    "nat_rules", "static_routes"]
+# 依赖安全的回放顺序：先建对象/服务（被引用方），再改规则，最后删规则、删对象/服务
+_PLAN_ORDER = [
+    ("create", "objects"), ("create", "services"),
+    ("update", "objects"), ("update", "services"),
+    ("create", "user_bindings"), ("create", "acl_rules"), ("create", "nat_rules"),
+    ("create", "static_routes"),
+    ("update", "user_bindings"), ("update", "acl_rules"), ("update", "nat_rules"),
+    ("update", "static_routes"),
+    ("delete", "user_bindings"), ("delete", "acl_rules"), ("delete", "nat_rules"),
+    ("delete", "static_routes"),
+    ("delete", "objects"), ("delete", "services"),
+]
 
 
 @dataclass
@@ -52,8 +69,9 @@ class RestorePlan:
         by_op = {"delete": [], "update": [], "create": []}
         for op in self.ops:
             name = op.data.get("name") or op.current.get("name") or op.target_id
+            section = _SECTION_OF_RESOURCE.get(op.resource, op.resource)
             by_op[op.op].append({
-                "resource": op.resource, "resource_cn": SECTIONS.get(op.resource, op.resource),
+                "resource": op.resource, "resource_cn": SECTIONS.get(section, section),
                 "target_id": op.target_id, "name": name,
                 "data": op.data, "current": op.current,
             })
@@ -68,17 +86,13 @@ class RestorePlan:
 
 async def create_backup(device_id: str, label: str, kind: str = "manual",
                         created_by: str = "user") -> dict:
-    client: DeviceClient = await get_client(device_id)
+    client: DeviceClient = await get_client(device_id)   # 共享客户端
+    snapshot = await client.snapshot_config()
+    file_bytes, filename = b"", ""
     try:
-        await client.login()
-        snapshot = await client.snapshot_config()
-        file_bytes, filename = b"", ""
-        try:
-            file_bytes, filename = await client.backup_config_file()
-        except (DeviceError, NotImplementedError) as e:
-            db.audit("backup.file_skipped", {"reason": str(e)}, device_id=device_id, result="degraded")
-    finally:
-        await client.aclose()
+        file_bytes, filename = await client.backup_config_file()
+    except (DeviceError, NotImplementedError) as e:
+        db.audit("backup.file_skipped", {"reason": str(e)}, device_id=device_id, result="degraded")
 
     backup_id = db.new_id("bk_")
     file_path, file_sha = "", ""
@@ -172,32 +186,43 @@ def build_restore_plan(device_snapshot: dict, backup_snapshot: dict) -> RestoreP
     """由「备份快照(目标态)」与「当前设备快照」生成回放计划。
 
     以备份为目标态：当前设备多出的删除（delete）、不一致的更新（update）、
-    备份有而设备没有的重建（create）。按 RESTORE_ORDER 保证依赖顺序。
+    备份有而设备没有的重建（create）。按依赖安全顺序编排（_PLAN_ORDER）：
+    先创建/更新网络对象与自定义服务（被引用方），再处理规则，
+    最后删规则、删对象/服务，避免恢复过程中出现引用悬空。
     """
     plan = RestorePlan(device_id=backup_snapshot.get("meta", {}).get("device_id", ""),
                        backup_id="")
-    for section in RESTORE_ORDER:
+    op_index: dict[tuple, ChangeOp] = {}
+    for section in RESTORE_SECTIONS:
         backup_list = {r.get("id"): r for r in (backup_snapshot.get(section) or [])}
         device_list = {r.get("id"): r for r in (device_snapshot.get(section) or [])}
-        # 1) 设备有、备份没有 → 删除
-        for rid, cur in device_list.items():
+        resource = RESOURCE_OF_SECTION[section]
+        for rid, cur in device_list.items():          # 设备有、备份没有 → 删除
             if rid not in backup_list:
-                plan.ops.append(ChangeOp(op="delete", resource=RESOURCE_OF_SECTION[section], target_id=rid, current=cur))
-        # 2) 两边都有但内容不一致 → 更新
-        for rid, goal in backup_list.items():
+                op_index[(section, "delete", rid)] = ChangeOp(
+                    op="delete", resource=resource, target_id=rid, current=cur)
+        for rid, goal in backup_list.items():          # 两边都有但内容不一致 → 更新
             if rid not in device_list:
                 continue
             cur = _norm_rule(device_list[rid])
             tgt = _norm_rule(goal)
             if any(cur.get(k) != tgt.get(k) for k in set(cur) | set(tgt) if k not in VOLATILE_FIELDS):
-                plan.ops.append(ChangeOp(op="update", resource=RESOURCE_OF_SECTION[section], target_id=rid,
-                                         data=goal, current=device_list[rid]))
-        # 3) 备份有、设备没有 → 创建
-        for rid, goal in backup_list.items():
+                op_index[(section, "update", rid)] = ChangeOp(
+                    op="update", resource=resource, target_id=rid,
+                    data=goal, current=device_list[rid])
+        for rid, goal in backup_list.items():          # 备份有、设备没有 → 创建
             if rid not in device_list:
                 data = dict(goal)
                 data["id"] = rid
-                plan.ops.append(ChangeOp(op="create", resource=RESOURCE_OF_SECTION[section], target_id=rid, data=data))
+                op_index[(section, "create", rid)] = ChangeOp(
+                    op="create", resource=resource, target_id=rid, data=data)
+    # 按依赖安全顺序展开
+    for op_kind, section in _PLAN_ORDER:
+        for (sec, kind, rid), op in list(op_index.items()):
+            if sec == section and kind == op_kind:
+                plan.ops.append(op)
+                op_index.pop((sec, kind, rid))
+    plan.ops.extend(op_index.values())   # 兜底：未匹配到的操作仍按序追加
     return plan
 
 
@@ -206,11 +231,7 @@ async def restore_preview(device_id: str, backup_id: str) -> dict:
     if not backup or backup["device_id"] != device_id:
         raise ValueError("备份记录不存在或不属于该设备")
     client = await get_client(device_id)
-    try:
-        await client.login()
-        device_snapshot = await client.snapshot_config()
-    finally:
-        await client.aclose()
+    device_snapshot = await client.snapshot_config()
     plan = build_restore_plan(device_snapshot, json.loads(backup["snapshot_json"]))
     plan.backup_id = backup_id
     s = plan.summary()
@@ -229,7 +250,6 @@ async def restore_apply(device_id: str, backup_id: str, operator: str = "user") 
     client = await get_client(device_id)
     executed, errors = [], []
     try:
-        await client.login()
         device_snapshot = await client.snapshot_config()
         plan = build_restore_plan(device_snapshot, json.loads(backup["snapshot_json"]))
         plan.backup_id = backup_id
@@ -247,8 +267,8 @@ async def restore_apply(device_id: str, backup_id: str, operator: str = "user") 
                                                "target_id": op.target_id, "error": str(e)},
                          device_id=device_id, actor=operator, result="failed")
                 break   # 失败即停，保留现场，可用 safety 备份回退
-    finally:
-        await client.aclose()
+    except DeviceError as e:
+        errors.append({"op": "snapshot", "resource": "-", "target_id": "-", "error": str(e)})
     db.audit("restore.apply", {"backup_id": backup_id, "executed": len(executed),
                                "failed": len(errors), "safety_backup": safety["id"]},
              device_id=device_id, actor=operator, result="ok" if not errors else "partial")
@@ -265,10 +285,6 @@ async def restore_config_file(device_id: str, backup_id: str, operator: str = "u
     if sha != backup["file_sha256"]:
         raise ValueError("配置文件完整性校验失败（SHA256 不匹配），已中止恢复")
     client = await get_client(device_id)
-    try:
-        await client.login()
-        result = await client.restore_config_file(data)
-    finally:
-        await client.aclose()
+    result = await client.restore_config_file(data)
     db.audit("restore.config_file", {"backup_id": backup_id}, device_id=device_id, actor=operator)
     return {"ok": True, "detail": result}

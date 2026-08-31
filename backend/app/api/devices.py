@@ -1,11 +1,12 @@
 """设备与配置可视化 API。"""
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app import db
-from app.adapters.factory import create_client
+from app.adapters.factory import get_client
 from app.services.analyzer import run_checks
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
@@ -77,27 +78,20 @@ def remove_device(device_id: str) -> dict:
 @router.post("/{device_id}/test")
 async def test_device(device_id: str) -> dict:
     device = _require(device_id)
-    client = create_client(device)
     try:
-        await client.login()
+        client = await get_client(device_id)   # 共享客户端（复用登录会话）
         status = await client.get_status()
         return {"ok": True, "sw_version": status.sw_version, "model": status.model}
     except Exception as e:   # noqa: BLE001
         return {"ok": False, "error": str(e)}
-    finally:
-        await client.aclose()
 
 
 # ---------------- 实时配置查询（可视化面板数据源） ----------------
 
 async def _with_client(device_id: str, fn) -> Any:
-    device = _require(device_id)
-    client = create_client(device)
-    try:
-        await client.login()
-        return await fn(client)
-    finally:
-        await client.aclose()
+    _require(device_id)
+    client = await get_client(device_id)   # 共享客户端，复用登录会话
+    return await fn(client)
 
 
 @router.get("/{device_id}/status")
@@ -129,8 +123,23 @@ async def get_acl(device_id: str) -> list[dict]:
 
 
 @router.get("/{device_id}/bindings")
-async def get_bindings(device_id: str) -> list[dict]:
-    rows = await _with_client(device_id, lambda c: c.get_user_bindings())
+async def get_bindings(device_id: str, keyword: str = "") -> list[dict]:
+    rows = await _with_client(device_id, lambda c: c.get_user_bindings(keyword))
+    kw = keyword.strip().lower()
+    if kw:   # 非开放接口设备本地过滤
+        rows = [r for r in rows if kw in json.dumps(r.to_dict(), ensure_ascii=False).lower()]
+    return [r.to_dict() for r in rows]
+
+
+@router.get("/{device_id}/objects")
+async def get_objects(device_id: str) -> list[dict]:
+    rows = await _with_client(device_id, lambda c: c.get_network_objects())
+    return [r.to_dict() for r in rows]
+
+
+@router.get("/{device_id}/services")
+async def get_services(device_id: str) -> list[dict]:
+    rows = await _with_client(device_id, lambda c: c.get_services())
     return [r.to_dict() for r in rows]
 
 
@@ -154,7 +163,7 @@ async def run_checkup(device_id: str) -> dict:
     async def do(client) -> dict:
         snapshot = await client.snapshot_config()
         status = (await client.get_status()).to_dict()
-        return run_checks(snapshot, status)
+        return run_checks(snapshot, status, device.get("type", ""))
 
     report = await _with_client(device_id, do)
     report["device_name"] = device["name"]

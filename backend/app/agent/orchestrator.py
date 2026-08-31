@@ -25,6 +25,7 @@ from app.agent import guardrails
 from app.agent.prompts import SYSTEM_PROMPT, device_context_message
 from app.agent.tools import TOOLS, TOOLS_BY_NAME, TOOL_SCHEMAS
 from app.config import settings
+from app.services.app_settings import get_llm_config
 
 MAX_TOOL_ROUNDS = 8
 TOOL_RESULT_LIMIT = 8000
@@ -34,15 +35,21 @@ HISTORY_LIMIT = 24
 WRITE_TOOL_TEMPLATE = {t.name: getattr(t, "internal", {}) for t in TOOLS if getattr(t, "internal", None)}
 
 
-def _llm() -> AsyncOpenAI | None:
-    if not settings.llm_api_key or settings.llm_api_key.startswith("your-"):
-        return None
-    return AsyncOpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url, timeout=120)
-
-
 class AgentOrchestrator:
     def __init__(self) -> None:
-        self._client = _llm()
+        self._client = None
+        self._client_cfg = None
+
+    def _llm(self) -> AsyncOpenAI | None:
+        """按当前配置（界面平台设置 > .env）返回 LLM 客户端；配置变化时自动重建。"""
+        cfg = get_llm_config()
+        if not cfg["api_key"] or cfg["api_key"].startswith("your-"):
+            return None
+        key = (cfg["base_url"], cfg["api_key"], cfg["model"])
+        if self._client is None or self._client_cfg != key:
+            self._client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=120)
+            self._client_cfg = key
+        return self._client
 
     # ================= 对话入口 =================
 
@@ -53,7 +60,7 @@ class AgentOrchestrator:
         db.touch_conversation(conv_id, title=user_message)
         yield {"type": "meta", "conv_id": conv_id, "device_id": device_id}
 
-        if self._client is None:
+        if self._llm() is None:
             async for ev in self._offline_reply(conv_id, user_message, device_id, device):
                 yield ev
             return
@@ -63,7 +70,7 @@ class AgentOrchestrator:
     # ================= 确认流恢复 =================
 
     async def resume_confirm(self, conv_id: str, action_id: str, approved: bool,
-                             device_id: str) -> AsyncGenerator[dict, None]:
+                             device_id: str, edited: dict | None = None) -> AsyncGenerator[dict, None]:
         action = db.get_pending_action(action_id)
         if not action or action["conv_id"] != conv_id:
             yield {"type": "error", "text": "确认任务不存在"}
@@ -75,6 +82,14 @@ class AgentOrchestrator:
         device = db.get_device(device_id) or {}
         payload = json.loads(action["args_json"])
         tool_call_id, tool_args = payload.get("tool_call_id", ""), payload.get("args", {})
+        # 用户在确认卡片上编辑过的参数（仅允许覆盖 data 内的业务字段，绝不改资源/操作类型）
+        if edited and isinstance(edited.get("data"), dict):
+            allowed = set(tool_args.get("data") or {}) | set(edited["data"].keys())
+            tool_args = {**tool_args,
+                         "data": {**(tool_args.get("data") or {}),
+                                  **{k: v for k, v in edited["data"].items() if k in allowed}}}
+            payload["args"] = tool_args
+            db.update_pending_action(action_id, args_json=json.dumps(payload, ensure_ascii=False))
         tool = TOOLS_BY_NAME.get(action["tool_name"])
 
         if not approved:
@@ -88,19 +103,7 @@ class AgentOrchestrator:
             guardrails.check_tool_call(action["tool_name"], tool_args, device)   # 执行前复核
             try:
                 client = await get_client(device_id)
-                try:
-                    await client.login()
-                    result = await tool.handler(client, tool_args, device)
-                finally:
-                    await client.aclose()
-                db.update_pending_action(action_id, status="executed",
-                                         result_json=json.dumps(result, ensure_ascii=False)[:4000])
-                guardrails.audit_tool(action["tool_name"], tool_args, "executed", conv_id, device_id)
-                db.add_message(conv_id, "tool", {
-                    "tool_call_id": tool_call_id, "name": action["tool_name"],
-                    "content": json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]})
-                yield {"type": "confirm_result", "action_id": action_id, "approved": True,
-                       "result": _compact_result(action["tool_name"], result)}
+                result = await tool.handler(client, tool_args, device)
             except guardrails.GuardrailError as e:
                 db.update_pending_action(action_id, status="blocked")
                 db.add_message(conv_id, "tool", {"tool_call_id": tool_call_id, "name": action["tool_name"],
@@ -116,8 +119,17 @@ class AgentOrchestrator:
                 db.add_message(conv_id, "tool", {"tool_call_id": tool_call_id, "name": action["tool_name"],
                                                  "content": err})
                 yield {"type": "confirm_result", "action_id": action_id, "approved": True, "failed": True}
+                return
+            db.update_pending_action(action_id, status="executed",
+                                     result_json=json.dumps(result, ensure_ascii=False)[:4000])
+            guardrails.audit_tool(action["tool_name"], tool_args, "executed", conv_id, device_id)
+            db.add_message(conv_id, "tool", {
+                "tool_call_id": tool_call_id, "name": action["tool_name"],
+                "content": json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]})
+            yield {"type": "confirm_result", "action_id": action_id, "approved": True,
+                   "result": _compact_result(action["tool_name"], result)}
 
-        if self._client is None:
+        if self._llm() is None:
             yield {"type": "done"}
             return
         async for ev in self._run_llm_loop(conv_id, device_id, device):
@@ -155,8 +167,8 @@ class AgentOrchestrator:
             text_parts: list[str] = []
             tool_calls: dict[int, dict] = {}
             try:
-                stream = await self._client.chat.completions.create(
-                    model=settings.llm_model, messages=messages, tools=TOOL_SCHEMAS,
+                stream = await self._llm().chat.completions.create(
+                    model=get_llm_config()["model"], messages=messages, tools=TOOL_SCHEMAS,
                     temperature=settings.llm_temperature, stream=True)
                 async for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
@@ -217,11 +229,7 @@ class AgentOrchestrator:
                     try:
                         guardrails.check_tool_call(name, args, device)
                         client = await get_client(device_id)
-                        try:
-                            await client.login()
-                            plan = await tool.prepare(client, args, device)
-                        finally:
-                            await client.aclose()
+                        plan = await tool.prepare(client, args, device)
                     except guardrails.GuardrailError as e:
                         db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
                                                          "content": f"该操作被安全护栏拦截：{e}"})
@@ -250,11 +258,7 @@ class AgentOrchestrator:
                 # ---- 只读工具：直接执行 ----
                 try:
                     client = await get_client(device_id)
-                    try:
-                        await client.login()
-                        result = await tool.handler(client, args, device)
-                    finally:
-                        await client.aclose()
+                    result = await tool.handler(client, args, device)
                     content = json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]
                     db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
                                                      "content": content})
@@ -291,8 +295,7 @@ class AgentOrchestrator:
         from app.services.analyzer import run_checks
 
         client = await get_client(device_id)
-        try:
-            await client.login()
+        if True:
             m = message.lower()
             if re.search(r"状态|健康|cpu|内存|资源", m):
                 s = (await client.get_status()).to_dict()
@@ -306,6 +309,18 @@ class AgentOrchestrator:
                 lines += [f"| {r['name']} | {r['zone'] or '-'} | {r['ip'] or '-'} | {r['status']} "
                           f"| {r['rx_kbps']}/{r['tx_kbps']} |" for r in rows]
                 return "**网络接口**\n" + "\n".join(lines)
+            if re.search(r"网络对象|ip组|ip组|地址组|对象", m) and "更新" not in m and "升级" not in m:
+                rows = [o.to_dict() for o in await client.get_network_objects()]
+                lines = ["| 对象 | 类型 | 成员 | 备注 |", "|---|---|---|---|"]
+                lines += [f"| {r['name']} | {r['type']} | {r['members']} | {r['comment'] or '-'} |"
+                          for r in rows]
+                return "**网络对象**\n" + "\n".join(lines)
+            if re.search(r"自定义服务|服务列表", m) or ("服务" in m and "升级" not in m and "更新" not in m):
+                rows = [s.to_dict() for s in await client.get_services()]
+                lines = ["| 服务 | 协议 | 端口 | 备注 |", "|---|---|---|---|"]
+                lines += [f"| {r['name']} | {r['protocol']} | {r['ports']} | {r['comment'] or '-'} |"
+                          for r in rows]
+                return "**自定义服务**\n" + "\n".join(lines)
             if re.search(r"nat|地址转换", m):
                 rules = [n.to_dict() for n in await client.get_nat_rules()]
                 lines = ["| ID | 名称 | 类型 | 源 | 目的 | 服务 | 转换 | 启用 | 命中 |",
@@ -357,9 +372,7 @@ class AgentOrchestrator:
                         f"- 理由：{'; '.join(r['text'] for r in advice['reasons'])}")
             return ("我是深信服售后技术支持 Agent。当前为**离线兜底模式**，可回答：设备状态 / 接口 / NAT / "
                     "访问控制策略 / 用户绑定 / 配置体检 / 备份列表 / 升级建议。"
-                    "配置 backend/.env 中的 LLM_API_KEY 后即可使用完整自然语言对话（含配置变更与恢复）。")
-        finally:
-            await client.aclose()
+                    "配置 backend/.env 或『平台设置』中的 LLM_API_KEY 后即可使用完整自然语言对话（含配置变更与恢复）。")
 
 
 def _compact_result(name: str, result) -> str:

@@ -18,3 +18,6 @@ data/backups/
 # 环境与日志
 .env
 *.log
+
+# 厂商 API 文档（版权原因不上传）
+api/*.pdf

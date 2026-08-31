@@ -22,6 +22,7 @@
               </div>
               <div class="bk-actions">
                 <el-button size="small" text type="primary" @click="download(b)">下载配置文件</el-button>
+                <el-button size="small" text type="success" @click="exportSnapshot(b)">导出快照 JSON</el-button>
                 <el-button size="small" text type="warning" @click="previewRestore(b)">恢复此备份</el-button>
                 <el-button size="small" text type="danger" @click="removeBackup(b)">删除</el-button>
               </div>
@@ -115,7 +116,7 @@ const restoreTarget = ref(null)
 const restoring = ref(false)
 
 const kindName = k => ({ manual: '手动', scheduled: '自动', pre_change: '变更前安全备份' }[k] || k)
-const sectionName = s => ({ user_bindings: '用户绑定', acl_rules: '访问控制策略', nat_rules: 'NAT 策略', static_routes: '静态路由', interfaces: '网络接口' }[s] || s)
+const sectionName = s => ({ objects: '网络对象', services: '自定义服务', user_bindings: '用户绑定', acl_rules: '访问控制策略', nat_rules: 'NAT 策略', static_routes: '静态路由', interfaces: '网络接口' }[s] || s)
 
 async function load() {
   const dev = currentDevice()
@@ -146,6 +147,12 @@ async function createBackup() {
 function download(b) {
   const dev = currentDevice()
   window.open(Backups.downloadUrl(dev.id, b.id), '_blank')
+}
+
+function exportSnapshot(b) {
+  const dev = currentDevice()
+  // 可读 JSON 快照（网络对象/服务/路由/策略/绑定全量），供第三方设备迁移或审计存档
+  window.open(Backups.exportUrl(dev.id, b.id), '_blank')
 }
 
 async function removeBackup(b) {

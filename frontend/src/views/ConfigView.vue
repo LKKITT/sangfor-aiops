@@ -16,10 +16,14 @@
             <div class="stat-value">{{ status.session_count.toLocaleString() }} / {{ status.session_capacity.toLocaleString() }}</div>
           </div>
         </div>
+        <el-alert v-else-if="loadErrors.status" type="error" :closable="false"
+                  :title="`状态读取失败：${loadErrors.status}`" />
         <el-empty v-else description="加载中" />
       </el-tab-pane>
 
       <el-tab-pane label="网络接口" name="interfaces">
+        <el-alert v-if="interfaces.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
+                  :title="emptyHint('interfaces')" />
         <el-table :data="interfaces" size="small" border stripe>
           <el-table-column prop="name" label="接口" width="90" />
           <el-table-column prop="zone" label="区域" width="90">
@@ -43,6 +47,8 @@
       </el-tab-pane>
 
       <el-tab-pane :label="`NAT 策略（${nat.length}）`" name="nat">
+        <el-alert v-if="nat.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
+                  :title="emptyHint('nat')" />
         <el-table :data="nat" size="small" border stripe>
           <el-table-column prop="id" label="ID" width="90" />
           <el-table-column prop="name" label="名称" min-width="150" />
@@ -66,6 +72,8 @@
       </el-tab-pane>
 
       <el-tab-pane :label="`访问控制策略（${acl.length}）`" name="acl">
+        <el-alert v-if="acl.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
+                  :title="emptyHint('acl')" />
         <el-table :data="acl" size="small" border stripe>
           <el-table-column type="index" label="#" width="50" />
           <el-table-column prop="id" label="ID" width="90" />
@@ -90,7 +98,65 @@
         </el-table>
       </el-tab-pane>
 
+      <el-tab-pane :label="`静态路由（${routes.length}）`" name="routes">
+        <el-alert v-if="routes.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
+                  :title="emptyHint('routes')" />
+        <el-table :data="routes" size="small" border stripe>
+          <el-table-column prop="id" label="ID" width="110" />
+          <el-table-column prop="name" label="名称" min-width="140" />
+          <el-table-column label="目的网段" min-width="150">
+            <template #default="{ row }"><span class="mono">{{ row.dst }}</span></template>
+          </el-table-column>
+          <el-table-column label="下一跳" min-width="130">
+            <template #default="{ row }"><span class="mono">{{ row.next_hop }}</span></template>
+          </el-table-column>
+          <el-table-column prop="interface" label="出接口" width="100" />
+          <el-table-column prop="distance" label="优先级" width="80" />
+          <el-table-column label="启用" width="70">
+            <template #default="{ row }"><el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '是' : '否' }}</el-tag></template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <el-tab-pane :label="`网络对象（${objects.length}）`" name="objects">
+        <el-alert v-if="objects.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
+                  :title="emptyHint('objects')" />
+        <el-table :data="objects" size="small" border stripe>
+          <el-table-column prop="id" label="ID" width="90" />
+          <el-table-column prop="name" label="对象名称" min-width="140" />
+          <el-table-column prop="type" label="类型" width="90" />
+          <el-table-column label="成员地址" min-width="220">
+            <template #default="{ row }"><span class="mono">{{ row.members }}</span></template>
+          </el-table-column>
+          <el-table-column prop="comment" label="备注" min-width="150" />
+        </el-table>
+      </el-tab-pane>
+
+      <el-tab-pane :label="`自定义服务（${services.length}）`" name="services">
+        <el-alert v-if="services.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
+                  :title="emptyHint('services')" />
+        <el-table :data="services" size="small" border stripe>
+          <el-table-column prop="id" label="ID" width="90" />
+          <el-table-column prop="name" label="服务名称" min-width="140" />
+          <el-table-column prop="protocol" label="协议" width="90">
+            <template #default="{ row }"><el-tag size="small">{{ row.protocol }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="端口" min-width="160">
+            <template #default="{ row }"><span class="mono">{{ row.ports }}</span></template>
+          </el-table-column>
+          <el-table-column prop="comment" label="备注" min-width="150" />
+        </el-table>
+      </el-tab-pane>
+
       <el-tab-pane :label="`用户绑定（${bindings.length}）`" name="bindings">
+        <div style="display: flex; gap: 8px; margin-bottom: 8px">
+          <el-input v-model="bindKeyword" placeholder="按用户名 / IP / MAC 搜索（AC 开放接口需指定搜索词）"
+                    size="small" clearable style="max-width: 420px" @keyup.enter="searchBindings" />
+          <el-button size="small" type="primary" :loading="bindSearching" @click="searchBindings">搜索</el-button>
+          <el-button v-if="bindKeyword" size="small" text @click="clearBindSearch">清除</el-button>
+        </div>
+        <el-alert v-if="bindings.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
+                  :title="bindHint" />
         <el-table :data="bindings" size="small" border stripe>
           <el-table-column prop="user" label="用户" min-width="140" />
           <el-table-column prop="ip" label="IP" min-width="130" />
@@ -107,7 +173,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import { store, currentDevice } from '../store.js'
 import { Devices } from '../api.js'
@@ -118,6 +184,12 @@ const interfaces = ref([])
 const nat = ref([])
 const acl = ref([])
 const bindings = ref([])
+const objects = ref([])
+const services = ref([])
+const routes = ref([])
+const loadErrors = ref({})
+const bindKeyword = ref('')
+const bindSearching = ref(false)
 const trafficChart = ref(null)
 let chart = null
 let timer = null
@@ -130,22 +202,67 @@ const meters = [
 ]
 const meterColor = v => (v >= 85 ? '#f56c6c' : v >= 70 ? '#e6a23c' : '#67c23a')
 
+// 单个数据源失败不影响其它面板；错误分别展示
+async function fetchOne(dev, label, path, assign) {
+  try {
+    const r = await fetch(`/api/devices/${dev.id}/${path}`).then(resp => {
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      return resp.json()
+    })
+    assign(r)
+    delete loadErrors.value[label]
+  } catch (e) {
+    loadErrors.value = { ...loadErrors.value, [label]: String(e.message || e) }
+  }
+}
+
 async function load() {
   const dev = currentDevice()
   if (!dev) return
-  try {
-    const [s, itf, n, a, b] = await Promise.all([
-      Devices.status(dev.id), Devices.interfaces(dev.id),
-      Devices.nat(dev.id), Devices.acl(dev.id), Devices.bindings(dev.id)
-    ])
-    status.value = s
-    interfaces.value = itf
-    nat.value = n
-    acl.value = a
-    bindings.value = b
-    if (tab.value === 'interfaces') await renderTraffic()
-  } catch (e) { console.error(e) }
+  loadErrors.value = {}
+  await Promise.allSettled([
+    fetchOne(dev, 'status', 'status', r => { status.value = r }),
+    fetchOne(dev, 'interfaces', 'interfaces', r => { interfaces.value = r }),
+    fetchOne(dev, 'nat', 'nat', r => { nat.value = r }),
+    fetchOne(dev, 'acl', 'acl', r => { acl.value = r }),
+    fetchOne(dev, 'bindings', 'bindings', r => { bindings.value = r }),
+    fetchOne(dev, 'objects', 'objects', r => { objects.value = r }),
+    fetchOne(dev, 'services', 'services', r => { services.value = r }),
+    fetchOne(dev, 'routes', 'routes', r => { routes.value = r })
+  ])
+  if (tab.value === 'interfaces') await renderTraffic()
 }
+
+async function searchBindings() {
+  const dev = currentDevice()
+  if (!dev) return
+  bindSearching.value = true
+  await fetchOne(dev, 'bindings', `bindings?keyword=${encodeURIComponent(bindKeyword.value)}`,
+                 r => { bindings.value = r })
+  bindSearching.value = false
+}
+
+function clearBindSearch() {
+  bindKeyword.value = ''
+  load()
+}
+
+function emptyHint(section) {
+  const dev = currentDevice()
+  if (dev && dev.type === 'ac') {
+    return 'AC 经开放接口仅提供 状态 / 用户绑定 / 策略 / 在线用户 数据，此项配置不在开放接口范围内'
+  }
+  if (loadErrors.value[section]) return `读取失败：${loadErrors.value[section]}`
+  return '该设备当前无此配置数据'
+}
+
+const bindHint = computed(() => {
+  const dev = currentDevice()
+  if (bindKeyword.value) return `未找到与「${bindKeyword.value}」匹配的绑定记录`
+  if (dev && dev.type === 'ac') return 'AC 开放接口按用户名/IP/MAC 搜索绑定关系，请在上方输入关键词查询'
+  if (loadErrors.value.bindings) return `读取失败：${loadErrors.value.bindings}`
+  return '该设备当前无绑定数据'
+})
 
 async function renderTraffic() {
   await nextTick()

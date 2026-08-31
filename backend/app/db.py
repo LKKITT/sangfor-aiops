@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS update_cache (
     source TEXT NOT NULL,
     fetched_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -288,6 +293,23 @@ def get_update_cache(product: str, kind: str) -> Optional[dict]:
     d = _row_to_dict(row)
     d["payload"] = json.loads(d.pop("payload_json"))
     return d
+
+
+# ---------------- app settings（KV 配置，如支持平台 Cookie） ----------------
+
+def get_setting(key: str, default: str = "") -> str:
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key,value,updated_at) VALUES (:key,:value,:updated_at)"
+            " ON CONFLICT(key) DO UPDATE SET value=:value, updated_at=:updated_at",
+            {"key": key, "value": value, "updated_at": now()},
+        )
 
 
 # ---------------- backup file helpers ----------------

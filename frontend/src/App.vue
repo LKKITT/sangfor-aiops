@@ -34,12 +34,63 @@
 
       <div class="aside-footer">
         <el-button size="small" text @click="showAdd = true">+ 添加设备</el-button>
+        <el-button size="small" text @click="openSettings">
+          <el-icon><Setting /></el-icon> 平台设置
+        </el-button>
       </div>
     </el-aside>
 
     <el-main class="main">
       <component :is="views[store.view]" :key="store.view" />
     </el-main>
+
+    <el-dialog v-model="showSettings" title="平台设置" width="600px">
+      <el-collapse v-model="settingsTabs">
+        <el-collapse-item name="platform">
+          <template #title><b>深信服技术支持平台</b></template>
+          <el-alert type="info" :closable="false" style="margin-bottom: 12px; font-size: 12px"
+                    title="发布说明为免认证抓取；软件下载列表与部分正文需深信服客户/伙伴身份认证。在浏览器登录 support.sangfor.com.cn 后，复制请求 Cookie 粘贴到此处即可抓取认证内容。" />
+          <el-form label-width="110px">
+            <el-form-item label="平台 Cookie">
+              <el-input v-model="settingsForm.support_cookie" type="textarea" :rows="4"
+                        placeholder="粘贴浏览器登录 support.sangfor.com.cn 后的 Cookie（如 SF_COOKIE=xxx; SESSION=yyy）" />
+            </el-form-item>
+            <el-form-item label="当前状态">
+              <el-tag :type="settings.support_cookie_source === 'none' ? 'info' : 'success'" size="small">
+                {{ cookieStatusText }}
+              </el-tag>
+            </el-form-item>
+          </el-form>
+        </el-collapse-item>
+
+        <el-collapse-item name="llm">
+          <template #title><b>大模型（LLM）接入</b></template>
+          <el-alert type="info" :closable="false" style="margin-bottom: 12px; font-size: 12px"
+                    title="任意 OpenAI 兼容接口均可（智谱 GLM / DeepSeek / 通义 等）。保存后立即生效，无需重启；不配置则使用离线兜底模式。" />
+          <el-form label-width="110px">
+            <el-form-item label="API 地址">
+              <el-input v-model="settingsForm.llm_base_url" placeholder="https://open.bigmodel.cn/api/paas/v4" />
+            </el-form-item>
+            <el-form-item label="API Key">
+              <el-input v-model="settingsForm.llm_api_key" type="password" show-password
+                        :placeholder="settings.llm_api_key_set ? '已配置（留空保持不变，输入新值覆盖）' : 'sk-xxx 或厂商 API Key'" />
+            </el-form-item>
+            <el-form-item label="模型">
+              <el-input v-model="settingsForm.llm_model" placeholder="glm-4-flash / deepseek-chat 等" />
+            </el-form-item>
+            <el-form-item label="当前状态">
+              <el-tag :type="settings.llm_api_key_set ? 'success' : 'info'" size="small">
+                {{ settings.llm_api_key_set ? `已配置（${settings.llm_source === 'database' ? '界面保存' : '.env'}）· ${settings.llm_model}` : '未配置（离线兜底模式）' }}
+              </el-tag>
+            </el-form-item>
+          </el-form>
+        </el-collapse-item>
+      </el-collapse>
+      <template #footer>
+        <el-button @click="showSettings = false">取消</el-button>
+        <el-button type="primary" :loading="savingSettings" @click="saveSettings">保存</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="showAdd" title="添加设备" width="480px">
       <el-form label-width="90px">
@@ -56,10 +107,24 @@
             <el-radio value="real">真实设备</el-radio>
           </el-radio-group>
         </el-form-item>
-        <template v-if="form.mode === 'real'">
+        <template v-if="form.mode === 'real' && form.type === 'af'">
           <el-form-item label="设备地址"><el-input v-model="form.base_url" placeholder="https://192.168.1.1" /></el-form-item>
           <el-form-item label="API 账号"><el-input v-model="form.username" /></el-form-item>
           <el-form-item label="API 密码"><el-input v-model="form.password" type="password" show-password /></el-form-item>
+        </template>
+        <template v-if="form.mode === 'real' && form.type === 'ac'">
+          <el-form-item label="设备地址">
+            <el-input v-model="form.base_url" placeholder="http://10.68.5.1:9999（开放接口端口 9999）" />
+          </el-form-item>
+          <el-form-item label="共享密钥">
+            <el-input v-model="form.password" type="password" show-password
+                      placeholder="开放接口共享密钥（无需账号密码）" />
+          </el-form-item>
+          <el-form-item label=" ">
+            <span style="font-size: 12px; color: #909399">
+              AC 走开放接口（md5 共享密钥签名），需在设备上启用开放接口并将本机 IP 加入允许列表
+            </span>
+          </el-form-item>
         </template>
         <el-form-item label="只读模式"><el-switch v-model="form.readonly" /></el-form-item>
       </el-form>
@@ -75,7 +140,7 @@
 import { ref, computed, onMounted, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
 import { store, loadDevices, loadHealth, currentDevice } from './store.js'
-import { Devices } from './api.js'
+import { Devices, Settings } from './api.js'
 import ChatView from './views/ChatView.vue'
 import ConfigView from './views/ConfigView.vue'
 import BackupView from './views/BackupView.vue'
@@ -93,6 +158,43 @@ const views = {
 const showAdd = ref(false)
 const form = ref({ name: '', type: 'af', mode: 'real', base_url: '', username: '', password: '', readonly: false })
 const device = computed(currentDevice)
+
+// 平台设置（Cookie + LLM）
+const showSettings = ref(false)
+const savingSettings = ref(false)
+const settingsTabs = ref(['platform', 'llm'])
+const settings = ref({ support_cookie: '', support_cookie_source: 'none', llm_base_url: '', llm_model: '', llm_api_key_set: false, llm_source: 'none' })
+const settingsForm = ref({ support_cookie: '', llm_base_url: '', llm_api_key: '', llm_model: '' })
+const cookieStatusText = computed(() => ({
+  database: '已配置（界面保存，抓取认证内容）',
+  env: '已配置（.env）',
+  none: '未配置（使用公开来源 + 内置知识库）'
+}[settings.value.support_cookie_source] || '未配置'))
+
+async function openSettings() {
+  settings.value = await Settings.get().catch(() => settings.value)
+  settingsForm.value = {
+    support_cookie: settings.value.support_cookie || '',
+    llm_base_url: settings.value.llm_base_url || '',
+    llm_api_key: '',
+    llm_model: settings.value.llm_model || ''
+  }
+  showSettings.value = true
+}
+
+async function saveSettings() {
+  savingSettings.value = true
+  try {
+    const payload = { support_cookie: settingsForm.value.support_cookie }
+    if (settingsForm.value.llm_base_url) payload.llm_base_url = settingsForm.value.llm_base_url
+    if (settingsForm.value.llm_api_key) payload.llm_api_key = settingsForm.value.llm_api_key
+    if (settingsForm.value.llm_model) payload.llm_model = settingsForm.value.llm_model
+    settings.value = await Settings.save(payload)
+    await loadHealth()
+    ElMessage.success('已保存并即时生效')
+    showSettings.value = false
+  } catch (e) { ElMessage.error(String(e.message || e)) } finally { savingSettings.value = false }
+}
 
 onMounted(async () => {
   await Promise.all([loadDevices(), loadHealth()])
