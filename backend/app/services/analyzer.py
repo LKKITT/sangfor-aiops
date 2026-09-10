@@ -206,8 +206,39 @@ def check_acl_rules(acl_rules: list[dict]) -> list[RiskItem]:
     return items
 
 
+def _check_bnat(nat_rules: list[dict]) -> list[RiskItem]:
+    """检查BNAT（双向NAT）策略：内网地址通过防火墙外网接口访问内网服务器的双向地址转换。
+    不显示规则ID，使用人类可读描述。"""
+    items: list[RiskItem] = []
+    bnat_rules = [r for r in nat_rules if r.get("type") == "BNAT" and r.get("enabled", True)]
+    for r in bnat_rules:
+        name = r.get("name", "未命名")
+        service = r.get("service", "any")
+        src_addr = r.get("src_addr", "any")
+        dst_addr = r.get("dst_addr", "any")
+        translated = r.get("translated_addr", "")
+        desc_parts = [f"双向NAT策略「{name}」"]
+        if src_addr and src_addr != "any":
+            desc_parts.append(f"源地址 {src_addr}")
+        if dst_addr and dst_addr != "any":
+            desc_parts.append(f"外网地址 {dst_addr}")
+        if translated:
+            desc_parts.append(f"映射到内部 {translated}")
+        if service and service != "any":
+            desc_parts.append(f"服务 {service}")
+        evidence = "，".join(desc_parts)
+        items.append(RiskItem(
+            "NAT_BNAT", "medium", "双向NAT",
+            evidence,
+            "BNAT 同时匹配入方向和出方向流量，内网用户可通过外网口地址访问内网服务器，需确认访问范围和源地址是否合理收敛",
+            "核查源地址范围是否按需收敛，避免内网任意IP均可通过外网地址访问内部服务器",
+            [], None))
+    return items
+
+
 def check_nat_rules(nat_rules: list[dict]) -> list[RiskItem]:
     items: list[RiskItem] = []
+    items += _check_bnat(nat_rules)
     enabled = [r for r in nat_rules if r.get("enabled", True)]
     for i, outer in enumerate(enabled):
         if outer.get("type") == "SNAT" and str(outer.get("src_addr", "")).lower() in ANY \

@@ -8,14 +8,14 @@ from app import db
 from app.adapters.factory import get_client
 
 sys.path.insert(0, ".")
-from app.agent.orchestrator import WRITE_TOOL_TEMPLATE  # noqa: E402
 from app.agent.tools import TOOLS_BY_NAME  # noqa: E402
 
 
 async def _prepare_pending(conv_id: str, device_id: str, tool_name: str, args: dict) -> str:
     """模拟编排器生成变更计划并挂起（与 orchestrator 逻辑一致，含内部参数模板合并）。"""
     tool = TOOLS_BY_NAME[tool_name]
-    merged = {**WRITE_TOOL_TEMPLATE.get(tool_name, {}), **args}
+    internal = getattr(tool, "internal", None) or {}
+    merged = {**internal, **args}
     client = await get_client(device_id)   # 共享客户端，不关闭
     plan = await tool.prepare(client, merged, db.get_device(device_id))
     action = db.create_pending_action({

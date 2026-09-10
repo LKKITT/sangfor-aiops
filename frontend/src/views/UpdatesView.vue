@@ -88,8 +88,8 @@
       <div class="page-card" style="margin-top: 12px">
         <div class="col-title" style="display: flex; align-items: center; gap: 10px">
           官方软件更新列表（support.sangfor.com.cn）
-          <el-tag size="small" :type="cookieReady ? 'success' : 'warning'">
-            {{ cookieReady ? '已配置平台 Cookie' : '未配置 Cookie（正文需认证，可在「平台设置」配置）' }}
+          <el-tag size="small" :type="cookieReady ? 'success' : 'info'">
+            {{ cookieReady ? '平台 Cookie 已配置（.env）' : '未配置平台 Cookie（软件列表需认证，可在 backend/.env 配置 SANGFOR_SUPPORT_COOKIE）' }}
           </el-tag>
           <el-button size="small" text type="primary" @click="loadSoftwareList(true)" :loading="softLoading">
             重新抓取
@@ -157,7 +157,7 @@ async function loadSoftwareList(force = false) {
 
 async function loadCookieState() {
   const s = await Settings.get().catch(() => null)
-  cookieReady.value = !!(s && s.support_cookie_source !== 'none')
+  cookieReady.value = !!(s && s.platform_cookie_configured)
 }
 
 const riskType = computed(() => ({ high: 'danger', medium: 'warning', low: 'info' }[advice.value?.risk] || 'info'))

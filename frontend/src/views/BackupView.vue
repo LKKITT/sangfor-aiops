@@ -21,7 +21,7 @@
                 <el-tag v-if="b.file_sha256" size="small" type="success">含配置文件</el-tag>
               </div>
               <div class="bk-actions">
-                <el-button size="small" text type="primary" @click="download(b)">下载配置文件</el-button>
+                <el-button size="small" text type="primary" @click="generateReport(b)">生成报告</el-button>
                 <el-button size="small" text type="success" @click="exportSnapshot(b)">导出快照 JSON</el-button>
                 <el-button size="small" text type="warning" @click="previewRestore(b)">恢复此备份</el-button>
                 <el-button size="small" text type="danger" @click="removeBackup(b)">删除</el-button>
@@ -144,9 +144,9 @@ async function createBackup() {
   } catch (e) { ElMessage.error(String(e.message || e)) } finally { creating.value = false }
 }
 
-function download(b) {
+function generateReport(b) {
   const dev = currentDevice()
-  window.open(Backups.downloadUrl(dev.id, b.id), '_blank')
+  window.open(Backups.reportUrl(dev.id, b.id), '_blank')
 }
 
 function exportSnapshot(b) {

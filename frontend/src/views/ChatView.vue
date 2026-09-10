@@ -1,11 +1,93 @@
 <template>
   <div class="chat-page">
     <div class="chat-header page-card">
-      <b>AI 对话</b>
-      <span class="hint">支持自然语言查询/修改配置、配置体检、备份恢复、软件升级建议。修改类操作会先生成确认卡片。</span>
+      <div class="chat-header-top">
+        <div style="display: flex; align-items: center; gap: 14px">
+          <b>AI 对话</b>
+          <el-checkbox v-model="useKnowledge" size="small" title="勾选后，对话可检索深信服官方知识库（诸葛小T），回答将附带官方引用来源">
+            <span style="font-size: 13px"><el-icon style="vertical-align: -2px"><Search /></el-icon> 查询知识库</span>
+          </el-checkbox>
+        </div>
+        <div class="device-selector" v-if="store.devices.length">
+          <el-icon style="margin-right: 4px; vertical-align: -2px"><Monitor /></el-icon>
+          <el-select v-model="store.currentDeviceId" size="small" style="width: 260px"
+                     @change="onDeviceChange" placeholder="选择目标设备">
+            <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
+                       :label="`${d.name}（${d.type === 'af' ? '防火墙' : '上网行为管理'}）`">
+              <span>{{ d.name }}</span>
+              <span style="float: right; color: #909399; font-size: 12px">
+                {{ d.type === 'af' ? 'AF' : 'AC' }} | {{ d.mode === 'simulator' ? '模拟器' : '真实设备' }}
+              </span>
+            </el-option>
+          </el-select>
+          <el-button size="small" text @click="refreshDevices" title="刷新设备列表">
+            <el-icon><Refresh /></el-icon>
+          </el-button>
+          <el-button size="small" text @click="showAddCard = true" title="添加设备">
+            <el-icon><Plus /></el-icon>
+          </el-button>
+        </div>
+      </div>
+      <div class="hint" v-if="store.devices.length">支持自然语言查询/修改配置、配置体检、备份恢复、软件升级建议。修改类操作会先生成确认卡片。</div>
     </div>
 
-    <div class="chat-body page-card" ref="scrollRef">
+    <!-- 添加设备卡片 -->
+    <div v-if="showAddCard" class="page-card add-device-card">
+      <div class="add-device-header">
+        <b>添加设备</b>
+        <el-button size="small" text @click="showAddCard = false"><el-icon><Close /></el-icon></el-button>
+      </div>
+      <el-form label-width="90px" size="small">
+        <el-form-item label="名称"><el-input v-model="addForm.name" placeholder="如：AF-办公网防火墙" /></el-form-item>
+        <el-form-item label="类型">
+          <el-radio-group v-model="addForm.type">
+            <el-radio value="af">下一代防火墙 AF</el-radio>
+            <el-radio value="ac">上网行为管理 AC</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="接入方式">
+          <el-radio-group v-model="addForm.mode">
+            <el-radio value="simulator">内置模拟器</el-radio>
+            <el-radio value="real">真实设备</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <template v-if="addForm.mode === 'real' && addForm.type === 'af'">
+          <el-form-item label="设备地址"><el-input v-model="addForm.base_url" placeholder="https://192.168.1.1" /></el-form-item>
+          <el-form-item label="API 账号"><el-input v-model="addForm.username" /></el-form-item>
+          <el-form-item label="API 密码"><el-input v-model="addForm.password" type="password" show-password /></el-form-item>
+        </template>
+        <template v-if="addForm.mode === 'real' && addForm.type === 'ac'">
+          <el-form-item label="设备 IP"><el-input v-model="addForm.device_ip" placeholder="192.168.1.1" /></el-form-item>
+          <el-form-item label="共享密钥"><el-input v-model="addForm.password" type="password" show-password /></el-form-item>
+        </template>
+        <el-form-item label="只读模式"><el-switch v-model="addForm.readonly" /></el-form-item>
+        <el-form-item v-if="addTestResult" label="测连接">
+          <span :style="{ color: addTestResult.ok ? '#67c23a' : '#f56c6c', fontSize: '12px' }">
+            {{ addTestResult.message || addTestResult.error }}
+          </span>
+        </el-form-item>
+      </el-form>
+      <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px">
+        <el-button size="small" :loading="addTesting" @click="testConnection">测试连接</el-button>
+        <el-button size="small" @click="showAddCard = false; addTestResult = null">取消</el-button>
+        <el-button size="small" type="primary" @click="addDevice">确定添加</el-button>
+      </div>
+    </div>
+
+    <!-- 无设备时的引导 -->
+    <div v-if="!store.devices.length" class="page-card no-device-card">
+      <el-empty description="暂无设备">
+        <template #image>
+          <el-icon style="font-size: 64px; color: #c0c4cc"><Monitor /></el-icon>
+        </template>
+        <p>请先添加一台深信服设备（AF 防火墙或 AC 上网行为管理），然后即可通过自然语言进行配置管理和查询。</p>
+        <el-button type="primary" @click="goToDevices">
+          <el-icon><Plus /></el-icon> 添加设备
+        </el-button>
+      </el-empty>
+    </div>
+
+    <div v-if="store.devices.length" class="chat-body page-card" ref="scrollRef">
       <div v-for="(m, i) in messages" :key="i" class="chat-row" :class="m.role">
         <div v-if="m.role === 'assistant'" class="bubble-ai">
           <div v-if="m.trace?.length" class="trace">
@@ -22,6 +104,11 @@
               {{ m.confirm.title }}
             </div>
             <div v-if="m.confirm.warning" style="color: #b88230; margin-bottom: 6px">⚠ {{ m.confirm.warning }}</div>
+
+            <!-- 高危操作标识 -->
+            <div v-if="isHighRisk(m.confirm)" style="margin-bottom: 8px; padding: 6px 10px; background: #fef0f0; border-radius: 4px; border: 1px solid #fde2e2; font-size: 12px; color: #f56c6c">
+              <el-icon><WarningFilled /></el-icon> <b>高危操作</b>：{{ highRiskReason(m.confirm) }}
+            </div>
 
             <!-- 定向冲突核实（只针对本配置） -->
             <div v-if="m.confirm.conflicts?.length" style="margin-bottom: 8px">
@@ -41,7 +128,7 @@
               ✓ 定向核实：与现有配置无冲突、无重叠
             </div>
 
-            <!-- AC 绑定创建：交互式表单（用户名/IP/MAC/免认证/限制登录，默认永久有效） -->
+            <!-- AC 绑定创建：交互式表单 -->
             <div v-if="isBindingCreate(m.confirm)" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
               <el-form label-width="92px" size="small" style="max-width: 460px">
                 <el-form-item label="用户名">
@@ -70,8 +157,68 @@
               </el-form>
             </div>
 
+            <!-- NAT/ACL 创建/修改：交互式表单 -->
+            <div v-if="isResourceEdit(m.confirm, 'nat')" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
+              <el-form label-width="100px" size="small" style="max-width: 480px">
+                <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+                <el-form-item label="源区域"><el-input v-model="editForm.src_zone" placeholder="trust / untrust / dmz" /></el-form-item>
+                <el-form-item label="目的区域"><el-input v-model="editForm.dst_zone" placeholder="trust / untrust / dmz" /></el-form-item>
+                <el-form-item label="源地址"><el-input v-model="editForm.src_addr" /></el-form-item>
+                <el-form-item label="目的地址"><el-input v-model="editForm.dst_addr" /></el-form-item>
+                <el-form-item label="服务"><el-input v-model="editForm.service" /></el-form-item>
+                <el-form-item label="转换地址"><el-input v-model="editForm.translated_addr" /></el-form-item>
+                <el-form-item label="启用"><el-switch v-model="editForm.enabled" /></el-form-item>
+                <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
+              </el-form>
+            </div>
+
+            <!-- ACL 创建/修改：交互式表单 -->
+            <div v-if="isResourceEdit(m.confirm, 'acl')" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
+              <el-form label-width="100px" size="small" style="max-width: 480px">
+                <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+                <el-form-item label="源区域"><el-input v-model="editForm.src_zone" placeholder="trust / untrust / dmz" /></el-form-item>
+                <el-form-item label="目的区域"><el-input v-model="editForm.dst_zone" placeholder="trust / untrust / dmz" /></el-form-item>
+                <el-form-item label="源地址"><el-input v-model="editForm.src_addr" /></el-form-item>
+                <el-form-item label="目的地址"><el-input v-model="editForm.dst_addr" /></el-form-item>
+                <el-form-item label="服务"><el-input v-model="editForm.service" /></el-form-item>
+                <el-form-item label="动作">
+                  <el-radio-group v-model="editForm.action">
+                    <el-radio value="allow">允许</el-radio>
+                    <el-radio value="deny">拒绝</el-radio>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item label="启用"><el-switch v-model="editForm.enabled" /></el-form-item>
+                <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
+              </el-form>
+            </div>
+
+            <!-- 网络对象 创建/修改：交互式表单 -->
+            <div v-if="isResourceEdit(m.confirm, 'object')" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
+              <el-form label-width="100px" size="small" style="max-width: 480px">
+                <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+                <el-form-item label="成员地址"><el-input v-model="editForm.members" placeholder="如：10.0.0.0/24, 192.168.1.5" /></el-form-item>
+                <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
+              </el-form>
+            </div>
+
+            <!-- 自定义服务 创建/修改：交互式表单 -->
+            <div v-if="isResourceEdit(m.confirm, 'service')" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
+              <el-form label-width="100px" size="small" style="max-width: 480px">
+                <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+                <el-form-item label="协议">
+                  <el-radio-group v-model="editForm.protocol">
+                    <el-radio value="TCP">TCP</el-radio>
+                    <el-radio value="UDP">UDP</el-radio>
+                    <el-radio value="TCP/UDP">TCP/UDP</el-radio>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item label="端口"><el-input v-model="editForm.ports" placeholder="如：80,443 或 8000-9000" /></el-form-item>
+                <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
+              </el-form>
+            </div>
+
             <!-- 规则变更 before/after -->
-            <div v-if="!isBindingCreate(m.confirm) && (m.confirm.before || m.confirm.after)" class="mono" style="font-size: 12px; background:#fff; border-radius:6px; padding:8px; border:1px solid #f3d19e;">
+            <div v-if="!isBindingCreate(m.confirm) && !isResourceEdit(m.confirm) && (m.confirm.before || m.confirm.after)" class="mono" style="font-size: 12px; background:#fff; border-radius:6px; padding:8px; border:1px solid #f3d19e;">
               <div v-if="m.confirm.before" class="diff-removed">- {{ fmtRule(m.confirm.before) }}</div>
               <div v-if="m.confirm.after" class="diff-added">+ {{ fmtRule(m.confirm.after) }}</div>
             </div>
@@ -104,6 +251,24 @@
             <el-tag v-else-if="m.confirm.status === 'rejected'" type="info" size="small">已拒绝</el-tag>
             <el-tag v-else size="small">{{ m.confirm.status }}</el-tag>
           </div>
+
+          <!-- 高危操作二次确认弹窗 -->
+          <el-dialog v-model="showSecondConfirm" title="二次确认" width="420px" :close-on-click-modal="false">
+            <div style="padding: 10px 0">
+              <div style="font-size: 24px; text-align: center; color: #f56c6c; margin-bottom: 12px">
+                <el-icon style="font-size: 48px"><WarningFilled /></el-icon>
+              </div>
+              <div style="text-align: center; font-weight: 600; margin-bottom: 8px">高危操作确认</div>
+              <div style="color: #606266; font-size: 13px; text-align: center; margin-bottom: 16px">{{ secondConfirmReason }}</div>
+              <div style="color: #f56c6c; font-size: 12px; text-align: center; background: #fef0f0; padding: 8px; border-radius: 4px">
+                此操作可能影响业务，请确认已充分评估风险
+              </div>
+            </div>
+            <template #footer>
+              <el-button @click="showSecondConfirm = false; secondConfirmCallback = null">取消</el-button>
+              <el-button type="danger" @click="doSecondConfirm">确认执行高危操作</el-button>
+            </template>
+          </el-dialog>
         </div>
 
         <div v-else class="bubble-user">{{ m.text }}</div>
@@ -114,36 +279,59 @@
       </div>
     </div>
 
-    <div class="chat-input page-card">
+    <div v-if="store.devices.length" class="chat-input page-card">
       <div class="quick">
         <el-button v-for="q in quickPrompts" :key="q" size="small" round @click="send(q)" :disabled="streaming">{{ q }}</el-button>
       </div>
       <div style="display: flex; gap: 8px">
         <el-input v-model="input" placeholder="例如：帮我看一下外网接口流量，再把 3389 对公网暴露的策略收紧" @keyup.enter="send()" :disabled="streaming" />
         <el-button type="primary" @click="send()" :loading="streaming" style="width: 90px">发送</el-button>
+        <el-button v-if="streaming" type="danger" @click="stopChat" style="margin-left: 6px">
+          <el-icon><CircleCloseFilled /></el-icon> 终止
+        </el-button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, nextTick, watch, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, reactive, computed, nextTick, watch, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
-import { store, currentDevice } from '../store.js'
-import { chatStream } from '../api.js'
+import { store, currentDevice, loadDevices } from '../store.js'
+import { chatStream, Devices } from '../api.js'
 
 const md = new MarkdownIt({ breaks: true })
 const render = (text) => md.render(text || '')
 const input = ref('')
 const streaming = ref(false)
 const confirming = ref(false)
+// 知识库检索开关：勾选后对话可调用官方知识库工具
+const useKnowledge = ref(false)
+
+// 对话持久化：按设备ID存储消息列表
+const messagesMap = {}
 const messages = ref([])
+// 当前对话ID（续接对话时使用）
+let currentConvId = null
+// 终止对话：AbortController
+let abortController = null
+
 const scrollRef = ref(null)
-const quickPrompts = [
-  '查看设备运行状态', '体检一下设备配置有哪些风险', '看看 NAT 策略',
-  '把 445 端口对公网暴露的策略停用', '立即创建一次备份', '有新版本可以升级吗？'
-]
+const quickPrompts = computed(() => {
+  const dev = currentDevice()
+  if (!dev) return []
+  if (dev.type === 'ac') {
+    return [
+      '查看设备运行状态', '体检一下设备配置有哪些风险', '看看在线用户',
+      '查看上网策略', '查看用户绑定', '立即创建一次备份', '有新版本可以升级吗？'
+    ]
+  }
+  return [
+    '查看设备运行状态', '体检一下设备配置有哪些风险', '看看 NAT 策略',
+    '把 445 端口对公网暴露的策略停用', '立即创建一次备份', '有新版本可以升级吗？'
+  ]
+})
 
 const TOOL_NAMES = {
   get_device_status: '查询设备状态', get_interfaces: '查询接口', get_nat_rules: '查询 NAT',
@@ -152,24 +340,108 @@ const TOOL_NAMES = {
   run_config_checkup: '运行配置体检', create_backup: '创建备份', list_backups: '查询备份列表',
   diff_backups: '对比备份差异', get_software_updates: '获取软件更新信息', get_upgrade_advice: '生成升级建议',
   get_audit_logs: '查询审计日志', restore_backup: '生成恢复计划', execute_restore: '执行恢复',
+  search_official_knowledge: '查询官方知识库',
+  list_available_devices: '查询设备列表', add_device: '添加设备',
   create_nat_rule: '新建 NAT', update_nat_rule: '修改 NAT', delete_nat_rule: '删除 NAT',
   create_acl_rule: '新建策略', update_acl_rule: '修改策略', delete_acl_rule: '删除策略',
   create_user_binding: '新建绑定', update_user_binding: '修改绑定', delete_user_binding: '删除绑定',
   create_network_object: '新建网络对象', update_network_object: '修改网络对象', delete_network_object: '删除网络对象',
-  create_service: '新建自定义服务', update_service: '修改自定义服务', delete_service: '删除自定义服务'
+  create_service: '新建自定义服务', update_service: '修改自定义服务', delete_service: '删除自定义服务',
+  get_whiteblacklist: '查询黑白名单',
+  create_whiteblacklist: '添加黑白名单', update_whiteblacklist: '修改黑白名单', delete_whiteblacklist: '删除黑白名单'
 }
 
-onMounted(() => { if (!messages.value.length) pushHello() })
-watch(() => store.currentDeviceId, pushHello)
+// 添加设备相关
+const showAddCard = ref(false)
+const addForm = ref({ name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false })
+const addTesting = ref(false)
+const addTestResult = ref(null)
 
-function pushHello() {
-  const dev = currentDevice()
+function saveMessages() {
+  const devId = store.currentDeviceId
+  if (devId) messagesMap[devId] = JSON.parse(JSON.stringify(messages.value))
+}
+
+function loadMessages(devId) {
+  if (devId && messagesMap[devId]) {
+    messages.value = messagesMap[devId]
+  } else {
+    messages.value = []
+    pushHello(devId)
+  }
+}
+
+onMounted(async () => {
+  await loadDevices()
+  loadMessages(store.currentDeviceId)
+})
+watch(() => store.currentDeviceId, (newId, oldId) => {
+  if (newId && newId !== oldId) {
+    saveMessages(oldId)
+    currentConvId = null
+    loadMessages(newId)
+  }
+})
+
+function onDeviceChange() {
+  // 设备切换由 watch 自动触发
+}
+
+function refreshDevices() {
+  loadDevices()
+  ElMessage.success('设备列表已刷新')
+}
+
+function pushHello(devId) {
+  const dev = devId ? store.devices.find(d => d.id === devId) : currentDevice()
   if (!dev) return
   messages.value = [{
     role: 'assistant',
     text: `您好！我是深信服售后技术支持 Agent，当前目标设备：**${dev.name}**。\n\n可以试试：\n- "查看 NAT 策略"\n- "体检一下配置有哪些风险"\n- "把 445 端口对公网暴露的策略停用"\n- "马上要变更了，先备份一下"\n- "有新版本可以升级吗？"\n\n修改类操作我会先生成变更计划卡片，确认后才会下发设备。`,
     trace: [], confirm: null
   }]
+}
+
+async function testConnection() {
+  if (addForm.value.mode === 'simulator') {
+    addTestResult.value = { ok: true, message: '模拟器设备，无需测试连接' }
+    return
+  }
+  // AC 设备：将 IP 转为 http://{ip}:9999
+  const payload = { ...addForm.value }
+  if (payload.type === 'ac' && payload.device_ip) {
+    payload.base_url = `http://${payload.device_ip}:9999`
+  }
+  if (!payload.base_url) return ElMessage.warning('请填写设备地址')
+  addTesting.value = true
+  addTestResult.value = null
+  try {
+    addTestResult.value = await Devices.testConnection(payload)
+  } catch (e) {
+    addTestResult.value = { ok: false, error: String(e.message || e) }
+  } finally {
+    addTesting.value = false
+  }
+}
+
+async function addDevice() {
+  if (!addForm.value.name) return ElMessage.warning('设备名称不能为空')
+  // AC 设备：将 IP 转为 http://{ip}:9999
+  const payload = { ...addForm.value }
+  if (payload.type === 'ac' && payload.device_ip) {
+    payload.base_url = `http://${payload.device_ip}:9999`
+  }
+  if (payload.mode === 'real' && !payload.base_url) return ElMessage.warning('请填写设备地址')
+  try {
+    await Devices.add(payload)
+    await loadDevices()
+    showAddCard.value = false
+    addTestResult.value = null
+    addForm.value = { name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false }
+    ElMessage.success('设备添加成功')
+  } catch (e) {
+    ElMessage.error(String(e.message || e))
+  }
 }
 
 async function scrollBottom() {
@@ -190,9 +462,33 @@ function send(preset) {
   messages.value.push(aiMsg)
   scrollBottom()
 
-  chatStream('/api/chat', { message: text, device_id: dev.id }, ev => handleEvent(ev, aiMsg))
-    .catch(e => { aiMsg.text += `\n\n**连接失败**：${e.message}` })
-    .finally(() => { streaming.value = false; scrollBottom() })
+  abortController = new AbortController()
+  const body = { message: text, device_id: dev.id, use_knowledge: useKnowledge.value }
+  if (currentConvId) body.conv_id = currentConvId
+  chatStream('/api/chat', body, ev => handleEvent(ev, aiMsg), abortController.signal)
+    .catch(e => {
+      if (e.name === 'AbortError') return
+      aiMsg.text += `\n\n**连接失败**：${e.message}`
+    })
+    .finally(() => { streaming.value = false; abortController = null; scrollBottom() })
+}
+
+async function stopChat() {
+  if (abortController) {
+    // 先通知后端取消
+    if (currentConvId) {
+      try {
+        await fetch(`/api/chat/${currentConvId}/cancel`, { method: 'POST' })
+      } catch (_) { /* ignore */ }
+    }
+    abortController.abort()
+    streaming.value = false
+    // 添加取消消息
+    const msg = messages.value[messages.value.length - 1]
+    if (msg && msg.role === 'assistant') {
+      msg.text += '\n\n*对话已终止*'
+    }
+  }
 }
 
 function reactiveMsg() {
@@ -201,7 +497,10 @@ function reactiveMsg() {
 }
 
 function handleEvent(ev, aiMsg) {
-  if (ev.type === 'meta') return
+  if (ev.type === 'meta') {
+    currentConvId = ev.conv_id || currentConvId
+    return
+  }
   if (ev.type === 'token') { aiMsg.text += ev.text; return }
   if (ev.type === 'tool_call') {
     aiMsg._currentTool = TOOL_NAMES[ev.name] || ev.name
@@ -220,6 +519,10 @@ function handleEvent(ev, aiMsg) {
   if (ev.type === 'confirm_required') {
     aiMsg.confirm = { ...ev.action, status: 'pending' }
     if (isBindingCreate(ev.action)) syncBindForm(ev.action)
+    if (isResourceEdit(ev.action, 'nat') || isResourceEdit(ev.action, 'acl') ||
+        isResourceEdit(ev.action, 'object') || isResourceEdit(ev.action, 'service')) {
+      syncEditForm(ev.action)
+    }
     scrollBottom()
     return
   }
@@ -236,6 +539,18 @@ function handleEvent(ev, aiMsg) {
 
 const bindForm = reactive({ user: '', ip: '', mac: '', noauth: false, limitlogon: false, comment: '' })
 
+// 资源编辑表单（NAT / ACL / 网络对象 / 自定义服务）
+const editForm = reactive({
+  name: '', src_zone: '', dst_zone: '', src_addr: '', dst_addr: '',
+  service: '', translated_addr: '', enabled: true, action: 'allow',
+  protocol: 'TCP', ports: '', members: '', comment: ''
+})
+
+// 高危操作二次确认
+const showSecondConfirm = ref(false)
+const secondConfirmReason = ref('')
+let secondConfirmCallback = null
+
 function isBindingCreate(confirm) {
   return confirm?.op === 'create' && (confirm?.resource === 'binding' || confirm?.tool_name === 'create_user_binding')
 }
@@ -250,17 +565,115 @@ function syncBindForm(confirm) {
   bindForm.comment = a.comment || a.desc || ''
 }
 
+function isHighRisk(confirm) {
+  if (!confirm) return false
+  // 删除操作
+  if (confirm.op === 'delete') return true
+  // 高危端口暴露
+  const service = (confirm.after?.service || confirm.data?.service || '').toLowerCase()
+  const highRiskPorts = ['445', '139', '135', '3389', '22', '23', '2049', '6379', '27017', '3306', '1433']
+  if (highRiskPorts.some(p => service.includes(p))) return true
+  // 开放 any 到 untrust
+  if (confirm.after?.action === 'allow' && (confirm.after?.dst_zone === 'untrust' || confirm.data?.dst_zone === 'untrust')) {
+    const src = confirm.after?.src_addr || ''
+    if (src === 'any' || src === '0.0.0.0/0') return true
+  }
+  // 恢复操作
+  if (confirm.plan) return true
+  return false
+}
+
+function highRiskReason(confirm) {
+  if (!confirm) return ''
+  if (confirm.op === 'delete') return `将要删除 ${confirm.resource || '配置'}，删除后相关业务将受影响`
+  const service = (confirm.after?.service || confirm.data?.service || '').toLowerCase()
+  const highRiskPorts = ['445', '139', '135', '3389', '22', '23', '2049', '6379', '27017', '3306', '1433']
+  const matched = highRiskPorts.filter(p => service.includes(p))
+  if (matched.length) return `操作涉及高危端口 ${matched.join(', ')}，可能被利用进行远程攻击`
+  if (confirm.after?.action === 'allow' && (confirm.after?.dst_zone === 'untrust' || confirm.data?.dst_zone === 'untrust')) {
+    return '该策略允许任意地址访问公网，可能造成数据泄露或资源滥用'
+  }
+  if (confirm.plan) return '恢复操作将覆盖当前配置，请确认备份文件正确'
+  return '该操作涉及业务配置变更，请确认风险'
+}
+
+function isResourceEdit(confirm, type) {
+  if (!confirm) return false
+  const resourceMap = { nat: 'nat', acl: 'acl', object: 'object', service: 'service' }
+  const expected = resourceMap[type]
+  if (!expected) return false
+  const op = confirm.op || ''
+  if (op !== 'create' && op !== 'update') return false
+  const resource = (confirm.resource || confirm.tool_name || '').toLowerCase()
+  return resource.includes(expected)
+}
+
+function syncEditForm(confirm) {
+  const a = confirm?.after || confirm?.data || {}
+  editForm.name = a.name || ''
+  editForm.src_zone = a.src_zone || ''
+  editForm.dst_zone = a.dst_zone || ''
+  editForm.src_addr = a.src_addr || ''
+  editForm.dst_addr = a.dst_addr || ''
+  editForm.service = a.service || ''
+  editForm.translated_addr = a.translated_addr || ''
+  editForm.enabled = a.enabled !== false
+  editForm.action = a.action || 'allow'
+  editForm.protocol = a.protocol || 'TCP'
+  editForm.ports = a.ports || ''
+  editForm.members = a.members || ''
+  editForm.comment = a.comment || a.desc || ''
+}
+
+function doSecondConfirm() {
+  showSecondConfirm.value = false
+  if (secondConfirmCallback) {
+    secondConfirmCallback()
+    secondConfirmCallback = null
+  }
+}
+
+function buildEditedData(confirm) {
+  if (isBindingCreate(confirm)) {
+    return { data: { user: bindForm.user, ip: bindForm.ip, mac: bindForm.mac,
+                     noauth: bindForm.noauth, limitlogon: bindForm.limitlogon,
+                     comment: bindForm.comment } }
+  }
+  if (isResourceEdit(confirm, 'nat') || isResourceEdit(confirm, 'acl')) {
+    return { data: { name: editForm.name, src_zone: editForm.src_zone, dst_zone: editForm.dst_zone,
+                     src_addr: editForm.src_addr, dst_addr: editForm.dst_addr,
+                     service: editForm.service, translated_addr: editForm.translated_addr,
+                     enabled: editForm.enabled, action: editForm.action,
+                     comment: editForm.comment } }
+  }
+  if (isResourceEdit(confirm, 'object')) {
+    return { data: { name: editForm.name, members: editForm.members, comment: editForm.comment } }
+  }
+  if (isResourceEdit(confirm, 'service')) {
+    return { data: { name: editForm.name, protocol: editForm.protocol, ports: editForm.ports,
+                     comment: editForm.comment } }
+  }
+  return null
+}
+
 function confirmAction(msg, approved) {
+  const dev = currentDevice()
+  if (approved && isHighRisk(msg.confirm)) {
+    // 高危操作：先弹出二次确认
+    secondConfirmReason.value = highRiskReason(msg.confirm)
+    secondConfirmCallback = () => doConfirmAction(msg, true)
+    showSecondConfirm.value = true
+    return
+  }
+  doConfirmAction(msg, approved)
+}
+
+async function doConfirmAction(msg, approved) {
   const dev = currentDevice()
   confirming.value = true
   const contMsg = reactiveMsg()
   messages.value.push(contMsg)
-  let edited = null
-  if (approved && isBindingCreate(msg.confirm)) {
-    edited = { data: { user: bindForm.user, ip: bindForm.ip, mac: bindForm.mac,
-                       noauth: bindForm.noauth, limitlogon: bindForm.limitlogon,
-                       comment: bindForm.comment } }
-  }
+  const edited = approved ? buildEditedData(msg.confirm) : null
   chatStream('/api/chat/confirm', {
     action_id: msg.confirm.action_id, device_id: dev.id, approved, edited
   }, ev => handleEvent(ev, contMsg))
@@ -292,7 +705,11 @@ function allPlanItems(plan) {
 <style scoped>
 .chat-page { display: flex; flex-direction: column; height: calc(100vh - 24px); gap: 10px; }
 .chat-header { padding: 12px 16px; }
-.chat-header .hint { color: #909399; font-size: 12px; margin-left: 10px; }
+.chat-header-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.chat-header .hint { color: #909399; font-size: 12px; margin-top: 8px; display: block; }
+.device-selector { display: flex; align-items: center; gap: 4px; }
+.no-device-card { padding: 40px 20px; text-align: center; }
+.no-device-card p { color: #909399; font-size: 13px; margin: 12px 0 16px; }
 .chat-body { flex: 1; overflow-y: auto; padding: 16px; }
 .chat-input { padding: 10px 14px; }
 .quick { margin-bottom: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
@@ -301,4 +718,6 @@ function allPlanItems(plan) {
 .typing { color: #909399; font-size: 13px; }
 .dots { animation: blink 1s infinite; }
 @keyframes blink { 50% { opacity: 0.2; } }
+.add-device-card { padding: 16px; margin-bottom: 10px; border: 1px solid #ebeef5; }
+.add-device-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 </style>

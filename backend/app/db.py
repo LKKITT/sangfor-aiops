@@ -3,6 +3,7 @@
 线程安全：thread-local 连接，WAL 模式；所有写入为轻量短事务。
 """
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -84,6 +85,48 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_items (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'fact',       -- fact / preference / action_history / device_context
+    content TEXT NOT NULL,
+    source_conv_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS conv_summaries (
+    id TEXT PRIMARY KEY,
+    conv_id TEXT NOT NULL UNIQUE,
+    summary TEXT NOT NULL DEFAULT '',
+    device_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kb_entries (
+    id TEXT PRIMARY KEY,
+    conv_id TEXT NOT NULL DEFAULT '',
+    topic TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '其他',
+    summary TEXT NOT NULL DEFAULT '',
+    content_md TEXT NOT NULL DEFAULT '',
+    key_points_json TEXT NOT NULL DEFAULT '[]',
+    references_json TEXT NOT NULL DEFAULT '[]',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    product TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kb_reflections (
+    id TEXT PRIMARY KEY,
+    content_md TEXT NOT NULL,
+    stats_json TEXT NOT NULL DEFAULT '{}',
+    period TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kb_dismissed (
+    conv_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -207,6 +250,16 @@ def update_pending_action(action_id: str, **fields: Any) -> None:
         conn.execute(f"UPDATE pending_actions SET {sets} WHERE id=:id", fields)
 
 
+def get_pending_action_by_conv(conv_id: str) -> Optional[dict]:
+    """查找对话中待确认的变更动作（按创建时间取最新一条）。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM pending_actions WHERE conv_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1",
+            (conv_id,),
+        ).fetchone()
+    return _row_to_dict(row) if row else None
+
+
 # ---------------- audit ----------------
 
 def audit(action: str, detail: dict | None = None, conv_id: str = "", device_id: str = "",
@@ -318,3 +371,272 @@ def backup_file_path(backup_id: str, suffix: str = ".conf") -> Path:
     p = settings.backup_dir / f"{backup_id}{suffix}"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
+
+# ---------------- memory （短期会话摘要 + 长期记忆项） ----------------
+
+def save_conv_summary(conv_id: str, summary: str, device_id: str = "") -> dict:
+    rec = {"id": new_id("mem_"), "conv_id": conv_id, "summary": summary,
+           "device_id": device_id, "created_at": now(), "updated_at": now()}
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO conv_summaries (id,conv_id,summary,device_id,created_at,updated_at)"
+            " VALUES (:id,:conv_id,:summary,:device_id,:created_at,:updated_at)", rec)
+    return rec
+
+
+def get_conv_summary(conv_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM conv_summaries WHERE conv_id=?", (conv_id,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def list_conv_summaries(device_id: str, limit: int = 10) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT cs.* FROM conv_summaries cs JOIN conversations c ON cs.conv_id=c.id"
+            " WHERE cs.device_id=? ORDER BY c.updated_at DESC LIMIT ?",
+            (device_id, limit)).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def save_memory_item(device_id: str, category: str, content: str,
+                     source_conv_id: str = "") -> dict:
+    rec = {"id": new_id("mem_"), "device_id": device_id, "category": category,
+           "content": content, "source_conv_id": source_conv_id,
+           "created_at": now(), "updated_at": now()}
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO memory_items (id,device_id,category,content,source_conv_id,created_at,updated_at)"
+            " VALUES (:id,:device_id,:category,:content,:source_conv_id,:created_at,:updated_at)", rec)
+    return rec
+
+
+def get_memory_items(device_id: str, limit: int = 20) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM memory_items WHERE device_id=? ORDER BY updated_at DESC LIMIT ?",
+            (device_id, limit)).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def delete_old_memory(device_id: str, keep: int = 50) -> None:
+    """保留最近 N 条记忆，删除更早的。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM memory_items WHERE device_id=? ORDER BY updated_at DESC LIMIT 1 OFFSET ?",
+            (device_id, keep)).fetchall()
+        if rows:
+            oldest_keep = rows[-1]["id"]
+            conn.execute("DELETE FROM memory_items WHERE device_id=? AND updated_at < "
+                         "(SELECT updated_at FROM memory_items WHERE id=?)",
+                         (device_id, oldest_keep))
+
+
+# ---------------- personal knowledge base （LLM WIKI 词条 + 反思报告） ----------------
+
+def _tag_key(tag: str) -> str:
+    """标签分组键：忽略大小写、空格与常见分隔符。"""
+    return re.sub(r"[\s\-_/··]+", "", str(tag).strip().lower())
+
+
+def _latin_stems(tag_key: str) -> set[str]:
+    """提取键中的拉丁词干（如 api安全 → {api}），用于识别共享核心词的同义标签。"""
+    return set(re.findall(r"[a-z]{2,}", tag_key))
+
+
+def _stems_overlap(a: set[str], b: set[str]) -> bool:
+    """词干子串级重叠：api ⊂ webapi 视为同族（处理 WEB API 这类无分隔的复合词）。"""
+    return any(x in y or y in x for x in a for y in b)
+
+
+def _normalize_tags(tags) -> list[str]:
+    """保存时标签归一化：去品牌前缀（Sangfor/深信服）、合并同义写法（组内去重）、限数量。"""
+    out, seen = [], set()
+    for t in tags or []:
+        t = re.sub(r"^(?:sangfor|深信服)[\s\-]*", "", str(t).strip(), flags=re.I)
+        t = re.sub(r"\s+", " ", t).strip()
+        k = _tag_key(t)
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(t[:20])
+    return out[:6]
+
+
+def _group_tags(entries: list[dict]) -> list[dict]:
+    """标签分组：三种同义情形合并为一组，组内以频次最高的写法作展示名——
+    ① 仅大小写/空格不同（af / AF）；② 归一化后互为包含（深信服AF / AF、API / WEB API）；
+    ③ 共享同一拉丁核心词（API安全 / API开放接口 / API接入 / WEB API）。"""
+    counts: dict[str, int] = {}
+    for e in entries:
+        for t in e.get("tags") or []:
+            t = str(t).strip()
+            if t:
+                counts[t] = counts.get(t, 0) + 1
+    groups: list[dict] = []
+    for tag, cnt in sorted(counts.items(), key=lambda x: -x[1]):
+        k = _tag_key(tag)
+        stems = _latin_stems(k)
+        for g in groups:
+            gk = g["key"]
+            if not k or not gk:
+                continue
+            if k in gk or gk in k or (stems and _stems_overlap(stems, g["stems"])):
+                g["value"] += cnt
+                g["members"].add(tag)
+                g["stems"] |= stems
+                break
+        else:
+            groups.append({"key": k, "rep": tag, "value": cnt,
+                           "members": {tag}, "stems": set(stems)})
+    return groups
+
+
+def group_tags(entries: list[dict], top_n: int = 30) -> list[dict]:
+    """标签分组计数（去重复口径）：[{name: 展示名, value: 组内总频次}]，按频次降序。"""
+    groups = _group_tags(entries)
+    return [{"name": g["rep"], "value": g["value"]}
+            for g in sorted(groups, key=lambda x: -x["value"])[:top_n]]
+
+
+def tag_display_map(entries: list[dict]) -> dict[str, str]:
+    """raw 标签 → 其分组展示名（知识图谱连边用，使同义标签能互相连线）。"""
+    d: dict[str, str] = {}
+    for g in _group_tags(entries):
+        for m in g["members"]:
+            d[m] = g["rep"]
+    return d
+
+
+def _kb_entry_from_row(row) -> dict:
+    d = _row_to_dict(row)
+    for field, col in (("key_points", "key_points_json"), ("references", "references_json"),
+                       ("tags", "tags_json")):
+        try:
+            d[field] = json.loads(d.get(col) or "[]")
+        except (ValueError, TypeError):
+            d[field] = []
+    return d
+
+
+def save_kb_entry(rec: dict) -> dict:
+    data = {"id": rec.get("id") or new_id("kb_"), "conv_id": rec.get("conv_id", ""),
+            "topic": rec["topic"], "category": rec.get("category") or "其他",
+            "summary": rec.get("summary", ""), "content_md": rec.get("content_md", ""),
+            "key_points_json": json.dumps(rec.get("key_points") or [], ensure_ascii=False),
+            "references_json": json.dumps(rec.get("references") or [], ensure_ascii=False),
+            "tags_json": json.dumps(_normalize_tags(rec.get("tags") or []), ensure_ascii=False),
+            "product": rec.get("product", ""), "created_at": now(), "updated_at": now()}
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO kb_entries (id,conv_id,topic,category,summary,content_md,"
+            "key_points_json,references_json,tags_json,product,created_at,updated_at)"
+            " VALUES (:id,:conv_id,:topic,:category,:summary,:content_md,"
+            ":key_points_json,:references_json,:tags_json,:product,:created_at,:updated_at)", data)
+    return get_kb_entry(data["id"])
+
+
+def get_kb_entry(entry_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM kb_entries WHERE id=?", (entry_id,)).fetchone()
+    return _kb_entry_from_row(row) if row else None
+
+
+def list_kb_entries(category: str = "", keyword: str = "", limit: int = 200) -> list[dict]:
+    sql, args = "SELECT * FROM kb_entries WHERE 1=1", []
+    if category:
+        sql += " AND category=?"
+        args.append(category)
+    if keyword:
+        sql += " AND (topic LIKE ? OR summary LIKE ? OR content_md LIKE ? OR tags_json LIKE ?)"
+        args.extend([f"%{keyword}%"] * 4)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    args.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [_kb_entry_from_row(r) for r in rows]
+
+
+def delete_kb_entry(entry_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM kb_entries WHERE id=?", (entry_id,))
+
+
+def kb_entry_topic_exists(topic: str) -> bool:
+    with _connect() as conn:
+        row = conn.execute("SELECT 1 FROM kb_entries WHERE topic=? LIMIT 1", (topic,)).fetchone()
+    return row is not None
+
+
+def conv_kb_sedimented(conv_id: str) -> bool:
+    with _connect() as conn:
+        row = conn.execute("SELECT 1 FROM kb_entries WHERE conv_id=? LIMIT 1", (conv_id,)).fetchone()
+    return row is not None
+
+
+def list_pending_kb_convs() -> list[str]:
+    """勾选过知识库（审计中有 KB 工具调用）且尚未沉淀、未被忽略的对话 ID。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT conv_id FROM audit_logs"
+            " WHERE action='agent.tool.search_official_knowledge' AND conv_id != ''"
+            " AND conv_id NOT IN (SELECT DISTINCT conv_id FROM kb_entries)"
+            " AND conv_id NOT IN (SELECT conv_id FROM kb_dismissed)"
+            " ORDER BY ts DESC").fetchall()
+    return [r["conv_id"] for r in rows]
+
+
+def dismiss_kb_conv(conv_id: str) -> None:
+    """把对话移出待沉淀队列（自动/手动沉淀均跳过）。"""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO kb_dismissed (conv_id,created_at) VALUES (?,?)",
+            (conv_id, now()))
+
+
+def kb_conv_dismissed(conv_id: str) -> bool:
+    with _connect() as conn:
+        row = conn.execute("SELECT 1 FROM kb_dismissed WHERE conv_id=? LIMIT 1",
+                           (conv_id,)).fetchone()
+    return row is not None
+
+
+def save_kb_reflection(content_md: str, stats: dict, period: str = "") -> dict:
+    rec = {"id": new_id("kbr_"), "content_md": content_md,
+           "stats_json": json.dumps(stats, ensure_ascii=False),
+           "period": period, "created_at": now()}
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO kb_reflections (id,content_md,stats_json,period,created_at)"
+            " VALUES (:id,:content_md,:stats_json,:period,:created_at)", rec)
+    return rec
+
+
+def list_kb_reflections(limit: int = 20) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM kb_reflections ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = _row_to_dict(r)
+        try:
+            d["stats"] = json.loads(d.get("stats_json") or "{}")
+        except (ValueError, TypeError):
+            d["stats"] = {}
+        out.append(d)
+    return out
+
+
+def kb_stats() -> dict:
+    """个人知识库统计：总数/分类分布/标签分组计数/沉淀时间线（供可视化）。"""
+    with _connect() as conn:
+        total = conn.execute("SELECT COUNT(*) AS c FROM kb_entries").fetchone()["c"]
+        categories = [{"name": r["category"], "value": r["c"]} for r in conn.execute(
+            "SELECT category, COUNT(*) AS c FROM kb_entries GROUP BY category ORDER BY c DESC")]
+        timeline = [{"day": r["day"], "value": r["c"]} for r in conn.execute(
+            "SELECT substr(created_at,1,10) AS day, COUNT(*) AS c FROM kb_entries"
+            " GROUP BY day ORDER BY day")]
+    tags = group_tags(list_kb_entries(limit=1000))
+    return {"total": total, "categories": categories, "tags": tags,
+            "timeline": timeline, "reflections": len(list_kb_reflections(limit=1000))}

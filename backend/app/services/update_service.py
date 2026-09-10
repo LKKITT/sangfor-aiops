@@ -5,7 +5,7 @@
    - 发布说明（免认证）：AF productDocument category_id=360973、AC category_id=324129，
      内容为页面内嵌 JSON 数据，按版本段落解析【新增】/【优化】/【修复】/【安全】条目；
    - 软件下载列表（需认证）：productSoftware/list?product_id=13(AF)/22(AC)，
-     支持界面『平台设置』配置登录 Cookie 后抓取；
+     仅支持 .env（SANGFOR_SUPPORT_COOKIE）配置登录 Cookie 后抓取；
 2. psirt —— www.sangfor.com.cn/sec_center 安全公告（公开，详情页可直接抓取）
 3. builtin —— 内置版本知识库快照（保证离线演示完整可用）
 
@@ -20,15 +20,14 @@ import httpx
 
 from app import db
 from app.config import settings
-from app.services import app_settings
 from app.services.knowledge import versions as kb
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SangforSupportAgent/1.0"
 
 
 def _support_cookie() -> str:
-    """优先取界面配置的 Cookie，其次 .env。"""
-    return app_settings.get_support_cookie()
+    """平台 Cookie 仅支持 .env 配置（SANGFOR_SUPPORT_COOKIE），界面已不再提供输入。"""
+    return settings.support_cookie
 
 # support.sangfor.com.cn 关键栏目（调研确认的 URL 模式；发布说明免认证，软件列表需登录）
 OFFICIAL_URLS = {
@@ -239,7 +238,7 @@ async def fetch_software_list(product: str) -> dict:
                     "fetched_at": db.now()}
         if "请您先认证身份" in html or "login" in html[:3000].lower():
             return {"source": "official_platform", "status": "auth_required", "payload": [],
-                    "reason": "软件列表需登录：请在右上角『平台设置』粘贴已登录 Cookie 后重试"}
+                    "reason": "软件列表需登录：请在 backend/.env 配置 SANGFOR_SUPPORT_COOKIE 后重试"}
         return {"source": "official_platform", "status": "parse_empty", "payload": [],
                 "reason": "列表为前端动态渲染，静态抓取未获得条目；可尝试更新 Cookie 或使用内置版本知识库"}
     except Exception as e:   # noqa: BLE001 —— 网络失败降级

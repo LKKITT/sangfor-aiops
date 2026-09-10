@@ -12,11 +12,12 @@ from typing import Any, Optional
 class InterfaceInfo:
     name: str
     zone: str                 # 区域：trust / untrust / dmz / ""
-    ip: str
-    netmask: str
+    ip: str                   # 主IP地址
+    netmask: str              # 主IP掩码
     status: str               # up / down
     speed: str                # 1000M / 100M ...
     mac: str
+    extra_ips: str = ""       # 附加IP地址（逗号分隔），如 "220.249.113.12/-,220.249.113.13/-"
     rx_kbps: float = 0.0
     tx_kbps: float = 0.0
     comment: str = ""
@@ -77,6 +78,7 @@ class UserBinding:
     binding_type: str = "static"              # static / dynamic
     enabled: bool = True
     comment: str = ""
+    source: str = ""                          # user_bindinfo / ipmac_bindinfo
 
     def to_dict(self) -> dict:
         return asdict(self)

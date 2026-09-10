@@ -1,13 +1,16 @@
-"""备份管理 API：创建/列表/快照/文件下载/快照导出/diff/恢复（预览+执行）。"""
+"""备份管理 API：创建/列表/快照/文件下载/快照导出/diff/恢复（预览+执行）/报告。"""
 import json
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from app import db
 from app.config import settings
-from app.services import config_service
+from app.services import config_service, report_generator
+from app.adapters.factory import get_client
+from app.services.analyzer import run_checks
+from app.services import upgrade_advisor
 
 router = APIRouter(prefix="/api", tags=["backups"])
 
@@ -72,6 +75,60 @@ def download_file(device_id: str, backup_id: str) -> FileResponse:
     if not backup["file_path"]:
         raise HTTPException(404, "该备份没有配置文件归档")
     return FileResponse(backup["file_path"], filename=backup["file_path"].split("\\")[-1].split("/")[-1])
+
+
+@router.get("/devices/{device_id}/backups/{backup_id}/report")
+async def generate_report(device_id: str, backup_id: str) -> Response:
+    """生成包含配置可视化、配置体检、软件更新建议的 HTML 报告。"""
+    device = db.get_device(device_id)
+    if not device:
+        raise HTTPException(404, "设备不存在")
+    backup = db.get_backup(backup_id)
+    if not backup or backup["device_id"] != device_id:
+        raise HTTPException(404, "备份不存在")
+
+    # 1. 从备份快照获取配置可视化数据
+    snapshot = json.loads(backup["snapshot_json"])
+
+    # 2. 获取设备实时状态、配置体检、软件更新建议
+    status = {}
+    checkup = {}
+    update_advice = {}
+    try:
+        client = await get_client(device_id)
+        status = (await client.get_status()).to_dict()
+
+        # 配置体检（优先使用缓存）
+        cached = db.get_update_cache(device_id, "checkup_report")
+        checkup = cached["payload"] if cached else {}
+        if not checkup:
+            current_snapshot = await client.snapshot_config()
+            checkup = run_checks(current_snapshot, status, device.get("type", ""))
+
+        # 软件更新建议
+        update_advice = await upgrade_advisor.build_upgrade_advice(
+            status.get("sw_version", ""), status, device["name"])
+    except Exception:
+        pass
+
+    # 4. 生成 HTML
+    html = report_generator.generate_report(
+        device_name=device.get("name", ""),
+        backup_label=backup.get("label", ""),
+        backup_time=backup.get("created_at", ""),
+        snapshot=snapshot,
+        status=status,
+        checkup=checkup,
+        update_advice=update_advice,
+    )
+
+    # 5. 返回 HTML 文件下载
+    from urllib.parse import quote
+    safe_name = device.get("name", "device").replace(" ", "_").replace("/", "_")
+    filename = f"{safe_name}_report_{backup_id[:8]}.html"
+    return Response(content=html, media_type="text/html", headers={
+        "Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(filename)}"
+    })
 
 
 @router.delete("/devices/{device_id}/backups/{backup_id}")

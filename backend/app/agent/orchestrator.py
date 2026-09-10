@@ -1,4 +1,4 @@
-"""Agent 编排器：LLM 工具循环 + 两阶段变更确认 + SSE 事件流。
+"""Agent 编排器：LLM 工具循环 + 两阶段变更确认 + SSE 事件流 + 记忆管理。
 
 状态机（与 LangGraph 同构的轻量自研实现，工具协议 OpenAI function-calling 兼容）：
 
@@ -10,8 +10,10 @@
   确认卡片 → resume_confirm(approved) → 执行（审计+自动安全备份） → 工具结果回填
                   → [LLM 继续推理] → 最终回答（全程流式）
 
-会话每一步都持久化到 SQLite，暂停/恢复不丢失上下文；未配置 LLM Key 时启用
-离线兜底助手（规则意图匹配直接调用工具），保证演示零依赖可跑。
+记忆管理：
+  - 对话开始时注入该设备的长期记忆（用户偏好、操作记录等）
+  - 对话结束后自动生成摘要保存到短期记忆
+  - 重要事实自动提取并保存到长期记忆
 """
 import json
 import re
@@ -22,17 +24,23 @@ from openai import AsyncOpenAI
 from app import db
 from app.adapters.factory import get_client
 from app.agent import guardrails
-from app.agent.prompts import SYSTEM_PROMPT, device_context_message
-from app.agent.tools import TOOLS, TOOLS_BY_NAME, TOOL_SCHEMAS
+from app.agent import skills
+from app.agent.prompts import (
+    SYSTEM_PROMPT,
+    device_context_message,
+    memory_injection_message,
+    conv_summary_prompt,
+)
+from app.agent.tools import TOOLS_BY_NAME, get_tools
 from app.config import settings
+from app.services import personal_kb_service
 from app.services.app_settings import get_llm_config
 
 MAX_TOOL_ROUNDS = 8
 TOOL_RESULT_LIMIT = 8000
 HISTORY_LIMIT = 24
-
-# 写操作工具的内部参数模板（_resource/_op 由工具定义注入，调用时合并）
-WRITE_TOOL_TEMPLATE = {t.name: getattr(t, "internal", {}) for t in TOOLS if getattr(t, "internal", None)}
+# 记忆提取间隔：至少积累 N 条消息才提取记忆
+MEMORY_EXTRACT_INTERVAL = 6
 
 
 class AgentOrchestrator:
@@ -53,7 +61,8 @@ class AgentOrchestrator:
 
     # ================= 对话入口 =================
 
-    async def stream_chat(self, conv_id: str, user_message: str, device_id: str) -> AsyncGenerator[dict, None]:
+    async def stream_chat(self, conv_id: str, user_message: str, device_id: str,
+                          use_knowledge: bool = False) -> AsyncGenerator[dict, None]:
         guardrails.check_user_request(user_message)   # 黑名单先于 LLM 拦截
         device = db.get_device(device_id) or {}
         db.add_message(conv_id, "user", {"text": user_message})
@@ -64,7 +73,8 @@ class AgentOrchestrator:
             async for ev in self._offline_reply(conv_id, user_message, device_id, device):
                 yield ev
             return
-        async for ev in self._run_llm_loop(conv_id, device_id, device):
+        async for ev in self._run_llm_loop(conv_id, device_id, device,
+                                           user_message=user_message, use_knowledge=use_knowledge):
             yield ev
 
     # ================= 确认流恢复 =================
@@ -135,14 +145,115 @@ class AgentOrchestrator:
         async for ev in self._run_llm_loop(conv_id, device_id, device):
             yield ev
 
+    # ================= 记忆管理 =================
+
+    def _build_memory_context(self, device_id: str) -> str | None:
+        """加载该设备的长期记忆，构建上下文注入消息。"""
+        items = db.get_memory_items(device_id, limit=15)
+        return memory_injection_message(items)
+
+    async def _extract_memory(self, conv_id: str, device_id: str) -> None:
+        """对话结束后提取记忆：生成摘要 + 提取重要事实。"""
+        messages = db.get_messages(conv_id)
+        if len(messages) < MEMORY_EXTRACT_INTERVAL:
+            return
+        # 获取对话文本
+        user_texts = []
+        assistant_texts = []
+        for m in messages:
+            c = m.get("content", {})
+            if m["role"] == "user":
+                user_texts.append(c.get("text", ""))
+            elif m["role"] == "assistant":
+                t = c.get("text", "")
+                if t and not c.get("tool_calls"):
+                    assistant_texts.append(t)
+        conversation_text = "用户：" + "\n用户：".join(user_texts[-10:])
+        if assistant_texts:
+            conversation_text += "\n\n助手：" + "\n助手：".join(assistant_texts[-10:])
+
+        llm = self._llm()
+        if llm is None:
+            return
+
+        try:
+            # 1. 生成会话摘要
+            summary_resp = await llm.chat.completions.create(
+                model=get_llm_config()["model"],
+                messages=[
+                    {"role": "system", "content": conv_summary_prompt()},
+                    {"role": "user", "content": conversation_text[:3000]},
+                ],
+                temperature=0.3, max_tokens=300,
+            )
+            summary = summary_resp.choices[0].message.content or ""
+            if summary:
+                db.save_conv_summary(conv_id, summary.strip(), device_id)
+
+            # 2. 提取重要事实（用户偏好、关键决策等）
+            fact_prompt = """从对话中提取重要的事实信息，适合保存到长期记忆中以便后续对话参考。
+提取以下类型的信息（如果存在）：
+1. 用户偏好或习惯（如：用户喜欢先检查再操作、用户关注安全策略等）
+2. 设备的重要配置决策或发现
+3. 用户明确表达的观点或要求
+
+如果没有重要信息，回复"无"。
+每条信息一行，格式：[类型] 内容"""
+            fact_resp = await llm.chat.completions.create(
+                model=get_llm_config()["model"],
+                messages=[
+                    {"role": "system", "content": fact_prompt},
+                    {"role": "user", "content": conversation_text[:3000]},
+                ],
+                temperature=0.3, max_tokens=500,
+            )
+            fact_text = (fact_resp.choices[0].message.content or "").strip()
+            if fact_text and fact_text != "无":
+                for line in fact_text.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # 解析类型
+                    category = "fact"
+                    if "偏好" in line or "习惯" in line:
+                        category = "preference"
+                    elif "操作" in line or "配置" in line or "变更" in line:
+                        category = "action_history"
+                    elif "设备" in line:
+                        category = "device_context"
+                    # 去重：内容相似的不重复保存
+                    existing = db.get_memory_items(device_id, limit=30)
+                    if any(line[:30] in item["content"] for item in existing):
+                        continue
+                    db.save_memory_item(device_id, category, line[:300], conv_id)
+            # 清理旧记忆
+            db.delete_old_memory(device_id, keep=50)
+        except Exception:   # noqa: BLE001 —— 记忆提取失败不影响主流程
+            import logging
+            logging.getLogger("sangfor-agent").warning("记忆提取失败", exc_info=True)
+
     # ================= LLM 工具循环 =================
 
     def _build_messages(self, conv_id: str, device: dict) -> list[dict]:
         history = db.get_messages(conv_id)[-HISTORY_LIMIT:]
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # 注入设备上下文
         ctx = device_context_message(device, None)
         if ctx:
             messages.append({"role": "system", "content": ctx})
+        # 注入长期记忆
+        memory_ctx = self._build_memory_context(device.get("id", ""))
+        if memory_ctx:
+            messages.append({"role": "system", "content": memory_ctx})
+        # 注入历史对话摘要（短期记忆）
+        conv_summary = db.get_conv_summary(conv_id)
+        if conv_summary and conv_summary.get("summary"):
+            messages.append({"role": "system",
+                             "content": f"## 当前会话摘要\n{conv_summary['summary']}"})
+        # 注入待确认卡片上下文（用户续接对话时，LLM 能感知待处理的变更内容）
+        pending_actions = self._get_pending_actions_context(conv_id)
+        if pending_actions:
+            messages.append({"role": "system", "content": pending_actions})
         for m in history:
             content = m["content"]
             if m["role"] == "user":
@@ -161,14 +272,77 @@ class AgentOrchestrator:
                                  "content": content.get("content", "")})
         return messages
 
-    async def _run_llm_loop(self, conv_id: str, device_id: str, device: dict) -> AsyncGenerator[dict, None]:
+    def _get_pending_actions_context(self, conv_id: str) -> str | None:
+        """构建待确认动作的上下文，供 LLM 理解用户对当前卡片的修改意图。"""
+        pending = db.get_pending_action_by_conv(conv_id)
+        if not pending:
+            return None
+        args = json.loads(pending.get("args_json", "{}"))
+        tool_args = args.get("args", {})
+        tool_name = pending.get("tool_name", "")
+        summary = pending.get("summary", "")
+        parts = [
+            "## 当前有待确认的变更（以下为用户尚未确认的待操作变更卡片内容）",
+            f"待确认操作：{summary}",
+            f"工具：{tool_name}",
+            f"操作参数：{json.dumps(tool_args, ensure_ascii=False, indent=2)}",
+            "用户接下来可能针对此卡片做出修改指示。如果用户要求修改参数，请分析工具参数并调整，",
+            "然后调用相应的 update 工具生成新的变更计划。",
+        ]
+        return "\n".join(parts)
+
+    # ================= 技能路由 =================
+
+    async def _llm_select_skill(self, user_message: str, dtype: str):
+        """LLM 兜底技能选择：一次非流式小调用；失败返回 None（回退全量模式）。"""
+        try:
+            resp = await self._llm().chat.completions.create(
+                model=get_llm_config()["model"],
+                messages=[
+                    {"role": "system", "content": skills.skill_catalog_message(dtype)},
+                    {"role": "user", "content": user_message[:500]},
+                ],
+                temperature=0.0, max_tokens=16,
+            )
+            return skills.parse_skill_choice(resp.choices[0].message.content or "", dtype)
+        except Exception:   # noqa: BLE001 —— 技能选择失败不影响主流程
+            return None
+
+    def _tool_scope(self, skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
+        """工具注入范围：只读全量 + 技能解锁的写工具；勾选知识库时附加官方知识库工具。"""
+        scope = skills.resolve_skill_tools(skill, dtype)
+        tools_by_name = {t.name: t for t in scope}
+        tool_schemas = [t.schema() for t in scope]
+        if use_knowledge and skills.KB_TOOL_NAME not in tools_by_name:
+            kb_tool = TOOLS_BY_NAME.get(skills.KB_TOOL_NAME)
+            if kb_tool is not None:
+                tool_schemas.append(kb_tool.schema())
+                tools_by_name[kb_tool.name] = kb_tool
+        return tool_schemas, tools_by_name
+
+    async def _run_llm_loop(self, conv_id: str, device_id: str, device: dict,
+                            user_message: str = "", use_knowledge: bool = False) -> AsyncGenerator[dict, None]:
         messages = self._build_messages(conv_id, device)
+        dtype = device.get("type", "")
+        # 技能路由：关键词优先（离线可用）→ LLM 按目录兜底 → 未命中回退全量工具模式
+        skill = skills.select_skill(user_message, dtype)
+        if skill is None and user_message and self._llm() is not None:
+            skill = await self._llm_select_skill(user_message, dtype)
+        if skill:
+            messages.append({"role": "system", "content": skills.skill_guide_message(skill)})
+            yield {"type": "skill_selected", "skill": skill.id, "name": skill.name}
+        # 知识库检索技能：勾选「查询知识库」后启用（不参与关键词路由）
+        if use_knowledge:
+            kb = skills.kb_search_skill()
+            messages.append({"role": "system", "content": kb.guide})
+            yield {"type": "skill_selected", "skill": kb.id, "name": kb.name}
+        tool_schemas, tools_by_name = self._tool_scope(skill, dtype, use_knowledge)
         for _ in range(MAX_TOOL_ROUNDS):
             text_parts: list[str] = []
             tool_calls: dict[int, dict] = {}
             try:
                 stream = await self._llm().chat.completions.create(
-                    model=get_llm_config()["model"], messages=messages, tools=TOOL_SCHEMAS,
+                    model=get_llm_config()["model"], messages=messages, tools=tool_schemas,
                     temperature=settings.llm_temperature, stream=True)
                 async for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
@@ -194,6 +368,11 @@ class AgentOrchestrator:
             final_text = "".join(text_parts).strip()
             if not tool_calls:
                 db.add_message(conv_id, "assistant", {"text": final_text, "tool_calls": []})
+                # 对话结束，提取记忆
+                await self._extract_memory(conv_id, device_id)
+                # 勾选知识库的对话：后台静默沉淀个人知识库词条
+                if use_knowledge:
+                    personal_kb_service.schedule_sediment(conv_id)
                 yield {"type": "done"}
                 return
 
@@ -209,18 +388,23 @@ class AgentOrchestrator:
 
             for call in calls:
                 name, raw_args = call["name"], call["arguments"]
-                tool = TOOLS_BY_NAME.get(name)
+                tool = tools_by_name.get(name)
                 if tool is None:
+                    # 不回退全量表：技能模式下未加载的工具如实告知 LLM，保证写权限收窄生效
+                    hint = f"工具 {name} 不存在或不在当前技能可用范围内，请改用其他方式或如实告知用户"
                     db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
-                                                     "content": f"未知工具 {name}"})
+                                                     "content": hint})
                     messages.append({"role": "tool", "tool_call_id": call["id"],
-                                     "content": f"未知工具 {name}"})
+                                     "content": hint})
                     continue
                 try:
                     args = json.loads(raw_args or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                args = {**WRITE_TOOL_TEMPLATE.get(name, {}), **args}
+                # 合并内部参数模板（优先从过滤后的工具查找，再回退到全量）
+                filtered_tools = get_tools(dtype)
+                internal_template = {t.name: getattr(t, "internal", {}) for t in filtered_tools if getattr(t, "internal", None)}
+                args = {**internal_template.get(name, {}), **args}
 
                 yield {"type": "tool_call", "name": name,
                        "args": {k: v for k, v in args.items() if not str(k).startswith("_")}}
@@ -301,7 +485,7 @@ class AgentOrchestrator:
                 s = (await client.get_status()).to_dict()
                 return (f"**设备状态**（{device.get('name')}）\n- 软件版本：{s['sw_version']}（{s['model']}）\n"
                         f"- CPU：{s['cpu_usage']}%　内存：{s['memory_usage']}%　磁盘：{s['disk_usage']}%\n"
-                        f"- mbuf：{s['mbuf_usage']}%　会话：{s['session_count']}/{s['session_capacity']}\n"
+                        f"- 会话：{s['session_count']}/{s['session_capacity']}\n"
                         f"- 运行时间：{s['uptime']}")
             if re.search(r"接口|网口|端口流量", m):
                 rows = [i.to_dict() for i in await client.get_interfaces()]

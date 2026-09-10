@@ -32,11 +32,15 @@ class Settings:
     auto_backup_hour: int = int(os.getenv("AUTO_BACKUP_HOUR", "2"))
     update_refresh_hour: int = int(os.getenv("UPDATE_REFRESH_HOUR", "3"))
 
-    # 深信服技术支持平台会话（可选，用于抓取需认证正文）
+    # 深信服技术支持平台会话（可选，仅 .env 配置，用于抓取需认证正文；界面不再提供输入）
     support_cookie: str = os.getenv("SANGFOR_SUPPORT_COOKIE", "")
 
+    # 深信服社区 BBS 账号（可选，诸葛知识库 SSO 登录；界面『平台设置』可配置，优先级更高）
+    zhuge_bbs_username: str = os.getenv("ZHUGE_BBS_USERNAME", "")
+    zhuge_bbs_password: str = os.getenv("ZHUGE_BBS_PASSWORD", "")
+
     # 设备 HTTP
-    device_http_timeout: float = float(os.getenv("DEVICE_HTTP_TIMEOUT", "10"))
+    device_http_timeout: float = float(os.getenv("DEVICE_HTTP_TIMEOUT", "30"))
     simulator_auth: dict = {
         "username": os.getenv("SIMULATOR_USERNAME", "admin"),
         "password": os.getenv("SIMULATOR_PASSWORD", "Sangfor@123"),

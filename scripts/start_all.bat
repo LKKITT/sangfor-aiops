@@ -7,16 +7,22 @@ echo ============================================
 cd /d "%~dp0.."
 
 if not exist .venv (
-  echo [1/3] 创建 Python 虚拟环境...
+  echo [1/4] 创建 Python 虚拟环境...
   python -m venv .venv
   call .venv\Scripts\python -m pip install -q -r backend\requirements.txt
 )
+echo [2/4] 检查并补装 Python 依赖（含知识库技能依赖，已有环境也会检查）...
+if exist .venv\Scripts\python.exe (
+  call .venv\Scripts\python.exe scripts\check_deps.py
+) else (
+  call python scripts\check_deps.py
+)
 if not exist backend\.env (
-  echo [2/3] 生成 backend\.env（请按需填入 LLM_API_KEY）
+  echo [3/4] 生成 backend\.env（请按需填入 LLM_API_KEY）
   copy backend\.env.example backend\.env >nul
 )
 
-echo [3/3] 启动后端(8600)与前端(5173)...
+echo [4/4] 启动后端(8600)与前端(5173)...
 start "sangfor-agent-backend" cmd /c "cd backend && ..\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8600"
 start "sangfor-agent-frontend" cmd /c "cd frontend && (if not exist node_modules (call npm install --no-fund --no-audit)) && call npm run dev"
 

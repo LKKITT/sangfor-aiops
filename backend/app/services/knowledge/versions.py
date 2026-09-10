@@ -79,7 +79,19 @@ _reg(Release("8.0.107", AF, "new", "2025(当前最新)", is_latest=True, notes=[
 
 _reg(Release("8.0.45", AF, "old", "2022(约)", notes=[
     {"type": "优化", "title": "旧架构最终版本", "detail": "旧架构路线末端，不能再向 8.0.48+ 新架构直升，需联系售后做架构迁移"},
-], known_issues=[]))
+], known_issues=[], upgrade_notes=[
+    "旧架构→新架构需联系深信服售后执行架构迁移，不可直接升级",
+    "迁移前务必完成完整配置备份",
+]))
+
+_reg(Release("8.0.48", AF, "new", "2023(约)", notes=[
+    {"type": "新增", "title": "新架构首发版本", "detail": "全新架构设计，支持更高性能与更多功能"},
+    {"type": "新增", "title": "云威胁检测", "detail": "云端威胁情报联动检测能力"},
+    {"type": "优化", "title": "策略管理优化", "detail": "策略配置与管理体验全面优化"},
+    {"type": "安全", "title": "多项安全修复", "detail": "修复旧架构已知安全漏洞"},
+], upgrade_notes=[
+    "旧架构设备需先由售后执行架构迁移后方可升级至此版本",
+]))
 
 _reg(Release("13.0.102", AC, "new", "2024(约)", notes=[
     {"type": "新增", "title": "文件外发通路管控", "detail": "支持基于文件属性控制文件外发"},
@@ -160,8 +172,10 @@ def upgrade_path(product: str, current: str, target: str | None = None) -> dict:
     path = [v for v in chain if cur_k < version_key(v) <= tgt_k]
     result = {"product": product, "current": current, "target": target, "hops": path,
               "cross_arch_migration": False, "notes": []}
-    if product == AF and cur_k < version_key(AF_ARCH_SPLIT) <= tgt_k:
-        # 旧架构：先升到旧链末端 8.0.45，再由售后迁移到新架构
+    # 跨架构检测：当前为旧架构（≤8.0.45）且目标为新架构（≥8.0.48，新架构首个版本）
+    is_old_arch = product == AF and cur_k < version_key(AF_ARCH_SPLIT)
+    is_new_arch_target = product == AF and tgt_k >= version_key(AF_CHAIN_NEW[0])
+    if is_old_arch and is_new_arch_target:
         old_hops = [v for v in AF_CHAIN_OLD if cur_k < version_key(v)]
         result["hops"] = old_hops
         result["cross_arch_migration"] = True

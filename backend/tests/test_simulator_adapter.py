@@ -18,10 +18,13 @@ async def test_login_and_status(client):
 
 @pytest.mark.asyncio
 async def test_bad_token_returns_auth_error():
+    """坏 token：数据端点必须抛业务错误；状态查询按真机兼容层设计降级为缺省值（不崩溃）。"""
     c = AfRestClientNoLogin("d1", "x", "http://s", "admin", "pw",
                             transport=httpx.ASGITransport(app=create_simulator_app(STATE)))
     with pytest.raises(DeviceError):
-        await c.get_status()
+        await c.get_interfaces()
+    status = await c.get_status()
+    assert status.sw_version   # 降级路径返回缺省版本（"unknown"）而非异常
 
 
 class AfRestClientNoLogin(AfRestClient):

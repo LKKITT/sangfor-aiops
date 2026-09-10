@@ -26,11 +26,12 @@ export async function apiDelete(path) {
 /**
  * SSE 流式对话。onEvent(event) 回调每个事件对象。
  */
-export async function chatStream(path, body, onEvent) {
+export async function chatStream(path, body, onEvent, signal) {
   const resp = await fetch(BASE + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal
   })
   if (!resp.ok || !resp.body) throw new Error(`连接失败 HTTP ${resp.status}`)
   const reader = resp.body.getReader()
@@ -76,6 +77,7 @@ export const Devices = {
   patch: (id, d) => fetch(`/api/devices/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json()),
   remove: (id) => apiDelete(`/api/devices/${id}`),
   test: (id) => apiPost(`/api/devices/${id}/test`),
+  testConnection: (d) => apiPost('/api/devices/test-connection', d),
   status: (id) => apiGet(`/api/devices/${id}/status`),
   interfaces: (id) => apiGet(`/api/devices/${id}/interfaces`),
   nat: (id) => apiGet(`/api/devices/${id}/nat`),
@@ -92,6 +94,7 @@ export const Backups = {
   create: (dev, label) => apiPost(`/api/devices/${dev}/backups`, { label }),
   remove: (dev, id) => apiDelete(`/api/devices/${dev}/backups/${id}`),
   downloadUrl: (dev, id) => `/api/devices/${dev}/backups/${id}/file`,
+  reportUrl: (dev, id) => `/api/devices/${dev}/backups/${id}/report`,
   exportUrl: (dev, id) => `/api/devices/${dev}/backups/${id}/snapshot/export`,
   diff: (a, b) => apiGet(`/api/backups/diff?a=${a}&b=${b}`),
   restorePreview: (dev, id) => apiPost(`/api/devices/${dev}/backups/${id}/restore/preview`),
@@ -104,3 +107,16 @@ export const Updates = {
   softwareList: (product, force = false) => apiGet(`/api/software-list?product=${product}&force=${force}`)
 }
 export const Audit = { list: () => apiGet('/api/chat/audit') }
+
+export const KB = {
+  stats: () => apiGet('/api/kb/stats'),
+  entries: (category = '', keyword = '') =>
+    apiGet(`/api/kb/entries?category=${encodeURIComponent(category)}&keyword=${encodeURIComponent(keyword)}`),
+  entry: (id) => apiGet(`/api/kb/entries/${id}`),
+  removeEntry: (id) => apiDelete(`/api/kb/entries/${id}`),
+  pending: () => apiGet('/api/kb/pending'),
+  dismissPending: (id) => apiDelete(`/api/kb/pending/${id}`),
+  process: (limit = 10, convs = []) => apiPost('/api/kb/process', { limit, convs }),
+  reflection: (start = '', end = '') => apiPost('/api/kb/reflection', { start, end }),
+  reflections: () => apiGet('/api/kb/reflections')
+}

@@ -2,14 +2,28 @@
 from app import db
 from app.config import settings
 
-COOKIE_DB_KEY = "sangfor_support_cookie"
+ZHUGE_USER_KEY = "zhuge_bbs_username"
+ZHUGE_PASS_KEY = "zhuge_bbs_password"
 LLM_URL_KEY = "llm_base_url"
 LLM_KEY_KEY = "llm_api_key"
 LLM_MODEL_KEY = "llm_model"
 
 
-def get_support_cookie() -> str:
-    return db.get_setting(COOKIE_DB_KEY, "") or settings.support_cookie
+def get_zhuge_credentials() -> tuple[str, str, str]:
+    """诸葛知识库社区（BBS）SSO 登录凭据。
+
+    来源优先级：界面配置(DB) → .env。返回 (username, password, source)，
+    source 取值 database / env / none（none 时由 zhuge_kb_service 回退技能内置账号）。
+    """
+    user = db.get_setting(ZHUGE_USER_KEY, "")
+    pwd = db.get_setting(ZHUGE_PASS_KEY, "")
+    if user and pwd:
+        return user, pwd, "database"
+    user = settings.zhuge_bbs_username
+    pwd = settings.zhuge_bbs_password
+    if user and pwd:
+        return user, pwd, "env"
+    return "", "", "none"
 
 
 def get_llm_config() -> dict:
