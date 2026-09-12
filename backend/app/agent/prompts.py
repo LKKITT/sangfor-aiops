@@ -56,6 +56,10 @@ def device_context_message(device: dict, status: dict | None) -> str:
         lines.append("设备类型提示：该设备为 AC（上网行为管理），支持用户绑定、ACL 策略、自定义应用等；不支持 NAT 配置。")
     elif dtype == "af":
         lines.append("设备类型提示：该设备为 AF（下一代防火墙），支持 NAT、ACL、路由、用户绑定、网络对象、黑白名单等全功能。")
+    elif dtype == "scp":
+        lines.append("设备类型提示：该设备为 SCP（云计算平台，纳管 HCI 节点），只读接入："
+                     "可查询集群（计算/存储资源）、版本、物理机及其网口功能 IP、虚拟机及其网卡端口组、存储；"
+                     "不支持任何配置变更（NAT/ACL/绑定等防火墙概念不适用）。")
     return "\n".join(lines)
 
 

@@ -104,10 +104,14 @@ async def test_connection(payload: DeviceIn) -> dict:
             # get_status 失败不影响连接测试结果，但记录原因
             pass
         await client.aclose()
-        # AC 设备：必须以获取到软件版本为成功标准
-        if payload.type == "ac":
-            if not sw_version or sw_version == "unknown" or sw_version == "AC（开放接口）":
-                return {"ok": False, "error": "无法获取 AC 设备版本信息，请检查开放接口共享密钥和来源 IP 白名单配置"}
+        # AC/SCP 设备：必须以获取到软件版本为成功标准
+        if payload.type in ("ac", "scp"):
+            label = "SCP 平台" if payload.type == "scp" else "AC 设备"
+            if not sw_version or sw_version == "unknown":
+                return {"ok": False,
+                        "error": (f"无法获取 {label} 版本信息，请检查"
+                                  + ("平台地址与 AccessKey/SecretKey" if payload.type == "scp"
+                                     else "开放接口共享密钥和来源 IP 白名单配置"))}
             msg = f"连接成功，版本 {sw_version}"
             return {"ok": True, "sw_version": sw_version, "model": model, "message": msg}
         msg = f"连接成功"
@@ -280,6 +284,66 @@ async def get_ac_app_rank(device_id: str, top: int = 10) -> list[dict]:
 @router.get("/{device_id}/ac/user-rank")
 async def get_ac_user_rank(device_id: str, top: int = 10) -> list[dict]:
     return await _with_client(device_id, lambda c: c.get_user_rank(top))
+
+
+# ---------------- SCP 云计算平台（只读查询） ----------------
+
+def _scp_client(device_id: str):
+    device = _require(device_id)
+    if device.get("type") != "scp":
+        raise HTTPException(400, "该设备不是 SCP 云计算平台")
+    return device
+
+
+@router.get("/{device_id}/scp/platform")
+async def scp_platform(device_id: str) -> dict:
+    _scp_client(device_id)
+    return await _with_client(device_id, lambda c: c.get_scp_platform())
+
+
+@router.get("/{device_id}/scp/clusters")
+async def scp_clusters(device_id: str) -> list[dict]:
+    _scp_client(device_id)
+    return await _with_client(device_id, lambda c: c.get_scp_clusters())
+
+
+@router.get("/{device_id}/scp/hosts")
+async def scp_hosts(device_id: str, cluster_id: str = "", keyword: str = "") -> list[dict]:
+    _scp_client(device_id)
+    return await _with_client(device_id,
+                              lambda c: c.get_scp_hosts(cluster_id=cluster_id, keyword=keyword))
+
+
+@router.get("/{device_id}/scp/hosts/{host_id}/interfaces")
+async def scp_host_interfaces(device_id: str, host_id: str) -> list[dict]:
+    _scp_client(device_id)
+    return await _with_client(device_id, lambda c: c.get_scp_host_interfaces(host_id))
+
+
+@router.get("/{device_id}/scp/vms")
+async def scp_vms(device_id: str, host_id: str = "", status: str = "",
+                  keyword: str = "", limit: int = 200) -> list[dict]:
+    _scp_client(device_id)
+    return await _with_client(device_id, lambda c: c.get_scp_vms(
+        host_id=host_id, status=status, keyword=keyword, limit=min(max(limit, 1), 1000)))
+
+
+@router.get("/{device_id}/scp/vms/{vm_id}")
+async def scp_vm_detail(device_id: str, vm_id: str) -> dict:
+    _scp_client(device_id)
+    return await _with_client(device_id, lambda c: c.get_scp_vm_detail(vm_id))
+
+
+@router.get("/{device_id}/scp/storages")
+async def scp_storages(device_id: str) -> list[dict]:
+    _scp_client(device_id)
+    return await _with_client(device_id, lambda c: c.get_scp_storages())
+
+
+@router.get("/{device_id}/scp/bvswitches")
+async def scp_bvswitches(device_id: str) -> list[dict]:
+    _scp_client(device_id)
+    return await _with_client(device_id, lambda c: c.get_scp_bvswitches())
 
 
 # ---------------- 配置体检 ----------------

@@ -94,7 +94,12 @@ def _credentials() -> tuple[str, str]:
 
 
 def product_from_device_type(device_type: str) -> str:
-    return "AC" if str(device_type).lower() == "ac" else "AF"
+    dt = str(device_type).lower()
+    if dt == "ac":
+        return "AC"
+    if dt == "scp":
+        return "SCP"
+    return "AF"
 
 
 def _extract_links(*html_sources) -> list[dict]:

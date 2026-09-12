@@ -362,6 +362,7 @@ class AgentOrchestrator:
             messages.append({"role": "system", "content": kb.guide})
             yield {"type": "skill_selected", "skill": kb.id, "name": kb.name}
         tool_schemas, tools_by_name = self._tool_scope(skill, dtype, use_knowledge)
+        executed_results: dict = {}   # (工具名, 参数) -> 结果：同一提问内重复调用直接合并
         for _ in range(MAX_TOOL_ROUNDS):
             text_parts: list[str] = []
             tool_calls: dict[int, dict] = {}
@@ -433,6 +434,15 @@ class AgentOrchestrator:
                 yield {"type": "tool_call", "name": name,
                        "args": {k: v for k, v in args.items() if not str(k).startswith("_")}}
                 if tool.write:
+                    call_key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+                    if call_key in executed_results:
+                        hint = ("该写操作已生成过相同参数的变更计划（见确认卡片），"
+                                "请等待用户确认，不要重复发起")
+                        db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
+                                                         "content": hint})
+                        messages.append({"role": "tool", "tool_call_id": call["id"], "content": hint})
+                        yield {"type": "tool_result", "name": name, "preview": "已合并重复的写操作"}
+                        continue
                     # ---- 写操作：护栏 → 生成变更计划 → 挂起等待确认 ----
                     try:
                         guardrails.check_tool_call(name, args, device)
@@ -463,11 +473,21 @@ class AgentOrchestrator:
                     yield {"type": "confirm_required", "action": plan}
                     return   # 暂停对话，等待用户在确认卡片操作
 
-                # ---- 只读工具：直接执行 ----
+                # ---- 只读工具：直接执行（同参数重复调用直接复用结果，防重复并行与数据截断放大） ----
+                call_key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+                if call_key in executed_results:
+                    content, preview = executed_results[call_key]
+                    db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
+                                                     "content": content})
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
+                    yield {"type": "tool_result", "name": name,
+                           "preview": f"（重复调用已合并，请直接使用已有结果）{preview}"}
+                    continue
                 try:
                     client = await get_client(device_id)
                     result = await tool.handler(client, args, device)
                     content = json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]
+                    executed_results[call_key] = (content, _compact_result(name, result))
                     db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
                                                      "content": content})
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})

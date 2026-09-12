@@ -32,6 +32,7 @@ backend/data/*.db-wal
 
 # 临时调试脚本
 _test_*.py
+_probe_*.py
 debug_*.py
 test_debug*.py
 test_verify.py

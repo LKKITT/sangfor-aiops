@@ -19,6 +19,7 @@ import httpx
 from app.adapters.ac_rest import AcApiClient
 from app.adapters.af_rest import AfRestClient
 from app.adapters.base import DeviceClient, DeviceError
+from app.adapters.scp_rest import ScpApiClient
 from app.adapters.simulator.app import create_simulator_app
 from app.adapters.simulator.state import STATE
 from app.config import settings
@@ -55,6 +56,8 @@ def _signature(device: dict) -> str:
 def create_client(device: dict) -> DeviceClient:
     timeout = settings.device_http_timeout
     if device.get("mode") == "simulator":
+        if device.get("type") == "scp":
+            raise ValueError("SCP 暂不支持内置模拟器，请以真实设备方式接入")
         # 进程内 ASGI 传输：走完整 HTTP + token 认证链路，但不占端口
         transport = httpx.ASGITransport(app=simulator_app())
         return AfRestClient(
@@ -68,6 +71,14 @@ def create_client(device: dict) -> DeviceClient:
             device_id=device["id"], device_name=device["name"],
             base_url=device.get("base_url") or "http://10.68.5.1:9999",
             shared_key=device.get("password", ""), timeout=timeout)
+    if device.get("type") == "scp":
+        # SCP 云计算平台：EC2 AK/SK 签名只读接入
+        # username=AccessKey、password=SecretKey、base_url=https://{平台地址}
+        return ScpApiClient(
+            device_id=device["id"], device_name=device["name"],
+            base_url=device.get("base_url") or "",
+            access_key=device.get("username", ""), secret_key=device.get("password", ""),
+            timeout=timeout)
     return AfRestClient(
         device_id=device["id"], device_name=device["name"],
         base_url=device["base_url"], username=device.get("username", ""),

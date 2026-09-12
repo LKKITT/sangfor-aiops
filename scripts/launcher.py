@@ -25,7 +25,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = PROJECT_DIR / "scripts" / "launcher-config.json"
 VITE_CONFIG = FRONTEND_DIR / "vite.config.js"
 
-DEFAULT_CFG = {"backend_host": "127.0.0.1", "backend_port": 8600, "frontend_port": 5173}
+DEFAULT_CFG = {"backend_host": "127.0.0.1", "backend_port": 8600, "frontend_host": "127.0.0.1", "frontend_port": 5173}
 cfg = dict(DEFAULT_CFG)
 
 # 进程跟踪
@@ -74,6 +74,11 @@ def sync_vite_config():
         if m:
             content = content.replace(m.group(0), f"port: {cfg['frontend_port']}")
             changes.append(f"前端端口 → {cfg['frontend_port']}")
+
+        m = re.search(r"host:\s*'[^']+'", content)
+        if m:
+            content = content.replace(m.group(0), f"host: '{cfg['frontend_host']}'")
+            changes.append(f"前端监听 → {cfg['frontend_host']}")
 
         VITE_CONFIG.write_text(content, "utf-8")
         if changes:
@@ -236,6 +241,7 @@ def apply_config():
     host = entry_backend_host.get().strip()
     port = entry_backend_port.get().strip()
     fport = entry_frontend_port.get().strip()
+    fhost = entry_frontend_host.get().strip()
 
     if not re.match(r'^[\d.]+$', host):
         lbl_config_status.config(text="错误：后端监听IP格式无效", foreground="red")
@@ -255,8 +261,15 @@ def apply_config():
         return False
     entry_frontend_port.config(bg="white")
 
+    if not re.match(r'^[\d.]+$', fhost):
+        lbl_config_status.config(text="错误：前端监听IP格式无效", foreground="red")
+        entry_frontend_host.config(bg="#FFD0D0")
+        return False
+    entry_frontend_host.config(bg="white")
+
     cfg["backend_host"] = host
     cfg["backend_port"] = int(port)
+    cfg["frontend_host"] = fhost
     cfg["frontend_port"] = int(fport)
 
     save_config()
@@ -273,6 +286,8 @@ def restore_default_config():
     entry_backend_host.insert(0, cfg["backend_host"])
     entry_backend_port.delete(0, tk.END)
     entry_backend_port.insert(0, str(cfg["backend_port"]))
+    entry_frontend_host.delete(0, tk.END)
+    entry_frontend_host.insert(0, str(cfg.get("frontend_host", "127.0.0.1")))
     entry_frontend_port.delete(0, tk.END)
     entry_frontend_port.insert(0, str(cfg["frontend_port"]))
     lbl_config_status.config(text="已恢复默认配置", foreground="green")
@@ -411,7 +426,12 @@ def build_gui():
 
     rc1 = ttk.Frame(f_config)
     rc1.pack(fill="x", pady=3)
-    tk.Label(rc1, text="前端端口:", width=10, anchor="w").pack(side="left")
+    tk.Label(rc1, text="前端监听 IP:", width=10, anchor="w").pack(side="left")
+    entry_frontend_host = tk.Entry(rc1, width=18, relief="sunken", bd=1)
+    entry_frontend_host.insert(0, str(cfg.get("frontend_host", "127.0.0.1")))
+    entry_frontend_host.pack(side="left", padx=(0, 15))
+
+    tk.Label(rc1, text="前端端口:", anchor="w").pack(side="left")
     entry_frontend_port = tk.Entry(rc1, width=10, relief="sunken", bd=1)
     entry_frontend_port.insert(0, str(cfg["frontend_port"]))
     entry_frontend_port.pack(side="left", padx=(0, 15))

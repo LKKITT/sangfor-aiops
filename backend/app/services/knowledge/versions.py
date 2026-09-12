@@ -4,12 +4,19 @@
 官网安全中心 PSIRT 公告、深信服社区（bbs.sangfor.com.cn）公开资料，经调研整理固化。
 用于离线演示与官方平台需认证时的降级数据源；条目均标注来源说明。
 """
+import re
 from dataclasses import dataclass, field
 
 AF = "af"
 AC = "ac"
+SCP = "scp"
+HCI = "hci"
 
-PRODUCT_NAMES = {AF: "下一代防火墙 AF", AC: "上网行为管理 AC"}
+PRODUCT_NAMES = {AF: "下一代防火墙 AF", AC: "上网行为管理 AC",
+                 SCP: "SCP 云计算平台", HCI: "HCI 超融合"}
+
+# SCP/HCI 无内置升级链：升级价值以官方『新版本发布信息』页抓取版本为骨架（update_service 锚定）
+PRODUCTS_WITH_CHAIN = (AF, AC)
 
 # 升级路线（官方功能页核实结论）：
 # AF 8.0.48 为旧架构末端；新架构自 8.0.69 起（与官方『新版本发布信息』页覆盖版本一致）。
@@ -132,9 +139,9 @@ PSIRT_ADVISORIES = [
 # ---------------- 版本解析与升级路径 ----------------
 
 def normalize_version(sw_version: str) -> str:
-    """'AF 8.0.85' / 'AC&SG 13.0.121' / '8.0.85' → '8.0.85'"""
-    v = (sw_version or "").upper().replace("AF", " ").replace("AC", " ").replace("&SG", " ")
-    digits = [tok for tok in v.replace("-", ".").split() if tok[:1].isdigit()]
+    """'AF 8.0.85' / 'AC&SG 13.0.121' / 'SCP6.7.33_B-...' / '8.0.85' → '8.0.85'"""
+    v = (sw_version or "").upper().replace("AF", " ").replace("AC", " ").replace("&SG", " ")         .replace("SCP", " ").replace("HCI", " ")
+    digits = [tok for tok in v.replace("-", ".").replace("_", ".").split() if tok[:1].isdigit()]
     for tok in digits:
         parts = tok.split(".")
         if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
@@ -143,14 +150,27 @@ def normalize_version(sw_version: str) -> str:
 
 
 def version_key(v: str) -> tuple[int, ...]:
+    m = re.search(r"\d+(?:\.\d+)*", str(v))
+    v = m.group(0) if m else "0"
     return tuple(int(x) for x in v.split("."))
 
 
 def product_of(sw_version: str) -> str:
-    return AC if "AC" in (sw_version or "").upper() else AF
+    v = (sw_version or "").upper()
+    if "SCP" in v:
+        return SCP
+    if "AC" in v:
+        return AC
+    if "HCI" in v:
+        return HCI
+    if "AF" in v:
+        return AF
+    return ""   # 未知产品线（不再兜底 AF，交由调用方走 fallback）
 
 
 def _chain_for(product: str, version: str) -> list[str]:
+    if product not in PRODUCTS_WITH_CHAIN:
+        return []   # SCP/HCI 无内置升级链
     if product != AF:
         return CHAIN[AC]
     return AF_CHAIN_OLD if version_key(version) < version_key(AF_ARCH_SPLIT) else AF_CHAIN_NEW
@@ -164,9 +184,26 @@ def upgrade_path(product: str, current: str, target: str | None = None) -> dict:
     - AC 12.x / 早期 13.x：可直接升级至稳定版 13.0.121（官方支持直升，需前置检测）。
     """
     target = target or LATEST.get(product, "")
+    if not current or not target:
+        return {"product": product, "current": current, "target": target, "hops": [],
+                "cross_arch_migration": False, "direct_upgrade": False,
+                "notes": ["暂无官方版本数据或无法解析当前版本，升级建议不可用；"
+                          "请先确认设备版本并刷新官方更新信息"]}
     cur_k, tgt_k = version_key(current), version_key(target)
     result = {"product": product, "current": current, "target": target, "hops": [],
               "cross_arch_migration": False, "direct_upgrade": False, "notes": []}
+
+    # SCP/HCI：无内置升级链，升级价值以官方功能页版本为准（update_service 锚定后 hops 覆盖）
+    if product in (SCP, HCI):
+        if cur_k < tgt_k:
+            result["hops"] = [target]
+            result["direct_upgrade"] = True
+            result["notes"].append(
+                f"{current} 可直接升级至 {target}；升级前需完成前置检测"
+                "（配置/虚拟机备份、集群健康状态、磁盘空间与授权核对）")
+        else:
+            result["notes"].append("当前已是最新版本，无需升级")
+        return result
 
     # AC：12.x 及早于稳定版的 13.x 可直接升级至稳定版 13.0.121（无需逐级过渡）
     if product == AC and cur_k < version_key(AC_LATEST_STABLE):

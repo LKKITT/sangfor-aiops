@@ -159,6 +159,143 @@ def _render_bindings(bindings: list[dict]) -> str:
     return _table(headers, rows, "用户绑定")
 
 
+# ---------------- SCP 云计算平台报告 ----------------
+
+def _scp_ratio(block) -> str:
+    """资源块使用率文案（兼容 ratio 缺失时 total/used 折算；也接受直接给百分比数字）。"""
+    if isinstance(block, (int, float)):
+        return f"{float(block):.1f}%"
+    block = block or {}
+    total = float(block.get("total_mhz") or block.get("total_mb") or block.get("total") or 0)
+    used = float(block.get("used_mhz") or block.get("used_mb") or block.get("used") or 0)
+    ratio = block.get("ratio")
+    if (ratio is None or ratio == "") and total > 0 and used > 0:
+        ratio = used / total * 100
+    try:
+        return f"{float(ratio):.1f}%" if ratio not in (None, "") else "—"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _scp_res(block: dict) -> str:
+    block = block or {}
+    total = float(block.get("total_mhz") or block.get("total_mb") or block.get("total") or 0)
+    used = float(block.get("used_mhz") or block.get("used_mb") or block.get("used") or 0)
+    if total <= 0:
+        return "—"
+    if total >= 1000000:   # mb 大数值转 TB/G 展示
+        val = total / 1024 / 1024
+        unit = "TB" if val >= 1024 else "GB"
+        show = f"{val / 1024:.1f}TB" if val >= 1024 else f"{val:.0f}GB"
+        used_v = used / 1024 / 1024
+        used_show = f"{used_v / 1024:.1f}TB" if used_v >= 1024 else f"{used_v:.0f}GB"
+        return f"{_scp_ratio(block)}（{used_show}/{show}）"
+    return _scp_ratio(block)
+
+
+def render_scp_section(snapshot: dict, status: dict, backup_time: str = "") -> str:
+    """SCP 云计算平台：版本信息/集群资源/物理机/虚拟机/网口功能 IP/桥接端口组/存储。"""
+    sections = []
+    platform = snapshot.get("scp_platform") or {}
+    meta = snapshot.get("meta") or {}
+
+    sections.append("<h2>1. 版本信息</h2>")
+    sections.append(_table(
+        ["项目", "值"],
+        [["设备名称", meta.get("device_name", "")],
+         ["平台类型", "SCP 云计算平台（纳管 HCI）"],
+         ["SCP 版本", platform.get("version") or meta.get("sw_version", "")],
+         ["部署模式", {"managed_cloud": "托管云", "private_cloud": "私有云"}.get(
+             str(platform.get("manage_mode") or ""), platform.get("manage_mode") or "—")],
+         ["集群 IP", (platform.get("dcluster_info") or {}).get("cluster_ip", "—")],
+         ["维护模式", "维护中" if platform.get("maintain_mode") else "正常"],
+         ["数据时点", f"集群/物理机/虚拟机资源数据为备份时点（{backup_time}）快照，"
+                     "与 SCP 控制台实时值可能存在差异"],
+         ["实时 CPU / 内存 / 存储",
+          f"{_scp_ratio(status.get('cpu_usage') if isinstance(status, dict) else {})} / "
+          f"{_scp_ratio(status.get('memory_usage') if isinstance(status, dict) else {})} / "
+          f"{_scp_ratio((status.get('extra') or {}).get('storage_ratio') if isinstance(status, dict) else {})}"]],
+        caption="平台版本信息"))
+
+    sections.append("<h2>2. 集群资源情况</h2>")
+    sections.append(_table(
+        ["集群名称", "HCI 版本", "类型", "状态", "CPU（已用/总量）", "内存（已用/总量）", "存储（已用/总量）"],
+        [[c.get("name", ""), c.get("version", ""), c.get("type", ""),
+          c.get("status", ""), _scp_res(c.get("cpu")), _scp_res(c.get("memory")),
+          _scp_res(c.get("storage"))] for c in snapshot.get("scp_clusters") or []],
+        caption="集群列表"))
+
+    sections.append("<h2>3. 物理机情况</h2>")
+    sections.append(_table(
+        ["名称/IP", "所属集群", "状态", "CPU（已用/总量）", "内存（已用/总量）", "存储总量", "告警数", "CPU 型号"],
+        [[h.get("name", ""), h.get("cluster_name", ""), h.get("status", ""),
+          _scp_res(h.get("cpu")), _scp_res(h.get("memory")),
+          f"{float((h.get('storage') or {}).get('total_mb') or 0) / 1024 / 1024:.1f}TB"
+          if float((h.get('storage') or {}).get('total_mb') or 0) > 0 else "—",
+          h.get("alarm_count", 0),
+          (h.get("cpu") or {}).get("type", "—")] for h in snapshot.get("scp_hosts") or []],
+        caption="物理机列表"))
+
+    sections.append("<h2>4. 虚拟机情况</h2>")
+    vm_rows = []
+    for v in snapshot.get("scp_vms") or []:
+        ips = ", ".join(v.get("ips") or []) or ", ".join(
+            n.get("ip_address") or "" for n in v.get("networks") or [] if n.get("ip_address"))
+        cpu_st, mem_st = v.get("cpu_status") or {}, v.get("memory_status") or {}
+        vm_cpu = (_scp_ratio(cpu_st)
+                  + (f"（{float(cpu_st.get('used_mhz') or 0) / 1000:.1f}GHz/"
+                     f"{float(cpu_st.get('total_mhz') or 0) / 1000:.1f}GHz）"
+                     if float(cpu_st.get('total_mhz') or 0) > 0 else ""))
+        vm_mem = (_scp_ratio(mem_st)
+                  + (f"（{float(mem_st.get('used_mb') or 0) / 1024:.1f}/"
+                     f"{float(mem_st.get('total_mb') or 0) / 1024:.1f}G）"
+                     if float(mem_st.get('total_mb') or 0) > 0 else ""))
+        vm_rows.append([v.get("name", ""), v.get("status", ""), ips or "—",
+                        v.get("host_name", ""), v.get("os_display") or v.get("os_name") or v.get("os_type") or "—",
+                        f"{v.get('cores', '?')}核/{round((v.get('memory_mb') or 0) / 1024, 1)}G/"
+                        f"{round((v.get('storage_mb') or 0) / 1024, 0):.0f}G",
+                        vm_cpu, vm_mem])
+    sections.append(_table(
+        ["名称", "状态", "IP", "所在物理机", "操作系统", "规格", "CPU（已用/总量）", "内存（已用/总量）"],
+        vm_rows, caption="虚拟机列表"))
+
+    sections.append("<h2>5. 物理机网口与功能 IP</h2>")
+    if_rows = []
+    for h in snapshot.get("scp_host_interfaces") or []:
+        for it in h.get("interfaces") or []:
+            funcs = ", ".join(it.get("functions") or [])
+            comm = "; ".join(f"{c.get('function')}:{c.get('ip')}"
+                             for c in it.get("communication_interface") or [] if c.get("ip"))
+            if_rows.append([h.get("host_name", ""), it.get("name", ""), funcs or "—",
+                            it.get("ip") or "—", it.get("gateway") or "—",
+                            it.get("mac") or "—", comm or "—"])
+    sections.append(_table(
+        ["物理机", "网口", "功能", "IP", "网关", "MAC", "功能通信 IP"],
+        if_rows, caption="物理机网口列表"))
+
+    sections.append("<h2>6. 桥接网卡与端口组</h2>")
+    bvs_rows = []
+    for b in snapshot.get("scp_bvswitches") or []:
+        for vg in b.get("vlan_group") or []:
+            bvs_rows.append([b.get("name", ""), vg.get("name", ""), vg.get("type", ""),
+                             vg.get("vlan_id", ""), len(vg.get("links") or []),
+                             ", ".join(l.get("ipv4") or "" for l in vg.get("links") or [] if l.get("ipv4")) or "—"])
+    sections.append(_table(
+        ["交换机", "端口组/VLAN 组", "类型", "VLAN ID", "连接数", "关联 IP"],
+        bvs_rows, caption="桥接网卡端口组"))
+
+    sections.append("<h2>7. 存储资源</h2>")
+    sections.append(_table(
+        ["存储名称", "类型", "状态", "容量", "已用", "使用率"],
+        [[st.get("name", ""), st.get("type", ""), st.get("status", ""),
+          f"{float(st.get('total_mb') or 0) / 1024 / 1024:.1f}TB",
+          f"{float(st.get('used_mb') or 0) / 1024 / 1024:.1f}TB",
+          _scp_ratio(st)] for st in snapshot.get("scp_storages") or []],
+        caption="存储列表"))
+
+    return "".join(sections)
+
+
 def render_config_section(snapshot: dict, status: dict) -> str:
     """渲染配置可视化（使用备份快照数据 + 实时状态）。"""
     sections = []
@@ -378,7 +515,10 @@ def generate_report(device_name: str, backup_label: str, backup_time: str,
     """生成完整 HTML 报告。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    config_html = render_config_section(snapshot, status)
+    if (snapshot.get("meta") or {}).get("device_type") == "scp":
+        config_html = render_scp_section(snapshot, status, backup_time)
+    else:
+        config_html = render_config_section(snapshot, status)
     checkup_html = render_checkup_section(checkup)
     update_html = render_update_section(update_advice)
 

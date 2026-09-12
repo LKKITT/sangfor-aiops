@@ -51,9 +51,10 @@
 │  │ 恢复前自动安全备份     │ │ 内置版本知识库(兜底)  │ │ 风险分级 + 一键修复计划           │ │
 │  └──────────┬───────────┘ └──────────┬───────────┘ └──────────────────────────────────┘ │
 │  ┌──────────▼────────────────────────▼─────────────────────────────────────────────────┐ │
-│  │ 设备适配层 DeviceClient 抽象（AF/AC 双产品线）                                        │ │
+│  │ 设备适配层 DeviceClient 抽象（AF/AC/SCP 三类设备）                                    │ │
 │  │   ├─ AfRestClient：AF 官方 REST API（token Cookie / 1003·1012 自动重登 / 分页）       │ │
 │  │   ├─ AcApiClient：AC 开放接口（md5 共享密钥签名 / HTTP 9999 / GET+POST body 认证）    │ │
+│  │   ├─ ScpApiClient：SCP 云平台（EC2 AK/SK 签名 / 只读 / 查询+监控接口）                │ │
 │  │   └─ AF 模拟器：与官方 API 同构的 FastAPI 应用（进程内 ASGI 或独立进程）               │ │
 │  └──────────────────────────────────────────────────────────────────────────────────────┘ │
 │  ┌───────────────────┐ ┌───────────────────┐ ┌────────────────────────────────────────┐ │
@@ -182,9 +183,16 @@
 
 ### 4.3 自然语言配置管理（Agent 工具集）
 
-40+ 个工具覆盖查询（状态/接口/NAT/ACL/绑定/路由/对象/服务/黑白名单/备份/更新/审计/设备列表/官方知识库）、分析（体检）、变更（NAT/ACL/绑定/对象/服务/黑白名单的增删改、恢复执行、添加设备）、备份创建。工具按设备类型过滤（AF 专属工具标记 `device_type='af'`，AC 专属工具标记 `device_type='ac'`，通用工具不限类型），并按运维场景组织为 8 个技能（见第 6 章），按需注入。
+49 个工具覆盖查询（状态/接口/NAT/ACL/绑定/路由/对象/服务/黑白名单/备份/更新/审计/设备列表/官方知识库/知识库沉淀/SCP 集群·物理机·虚拟机·存储）、分析（体检）、变更（NAT/ACL/绑定/对象/服务/黑白名单的增删改、恢复执行、添加设备）、备份创建。工具按设备类型过滤（AF 专属工具标记 `device_type='af'`，AC 专属工具标记 `device_type='ac'`，通用工具不限类型），并按运维场景组织为 8 个技能（见第 6 章），按需注入。
 
-**SSE 事件流协议**：`meta → token*(流式文本) → tool_call/tool_result*(工具进度芯片) → confirm_required(确认卡片) → done`，前端实时渲染推理过程与工具调用轨迹。
+**SSE 事件流协议**：`meta → skill_selected*(技能命中提示) → token*(流式文本) → tool_call/tool_result*(工具进度芯片) → confirm_required(确认卡片) → done`，前端实时渲染推理过程与工具调用轨迹。
+
+**对话可靠性设计**：
+
+- **会话按设备归属**：`conversations.device_id` 记录会话设备，`GET /api/chat/last-conversation/{device_id}` 返回该设备最近会话的消息与待确认动作——切换主菜单/设备后对话历史完整恢复（文本+工具轨迹芯片+pending 卡片基础形态），并可续接对话；
+- **新会话**：对话页一键开启新会话（新 conv_id），避免上下文污染与 token 浪费；设备上下文与长期记忆每轮自动注入，新会话不丢失设备基本情况；欢迎语与快捷提问按设备类型差异化（AF/AC/SCP 三套）；
+- **重复工具调用合并**：同一提问内相同工具+相同参数的再次调用直接复用已执行结果（前端提示"重复调用已合并"），写工具同参数只生成一次变更计划——消除模型重复并行调用导致的数据不完整；
+- **首答提速**：技能路由兜底 LLM 调用带 2.5s 独立超时；记忆提取/知识库沉淀后台化（不阻塞流结束）；历史消息 SQL LIMIT 拉取。
 
 **变更确认流（两阶段 + 人工在环）**：
 
@@ -320,12 +328,13 @@ AF 设备版本信息获取采用多级降级方案，确保在尽可能多的�
 
 ### 4.11 接口状态检测
 
-AF 设备接口状态检测需处理多种链路状态字段，支持多种设备固件版本：
+AF 接口状态 = **配置层 + 实时层合并**（配置端点无运行链路字段，实测结论）：
 
-- 检查 `physicalif` 子对象的链路状态字段（`operStatus`、`linkStatus`、`link`、`phyStatus`、`status`）
-- `operStatus` 同时支持数字（0=UP/1=DOWN）和字符串（up/down）格式
-- `shutdown=false` 不再默认视为 UP，仅 `shutdown=true` 明确为 DOWN
-- 多 IP 地址配置：解析 `staticIp` 数组，主 IP 取第一个，其余存入 `extra_ips`
+- **实时状态**（状态中心 8.1.1.10）：`GET /interfacestatus/{接口名}` 返回 `connectStatus`（连接状态）与 `speed.recv/send`（收发速率 kbps）——按网口名逐个查询（并发限 5、单口失败静默），合并进 `/interfaces` 响应；
+- **配置层兜底**：实时查询不可用时，`shutdown=false` 显示"已启用"、`true` 显示"未运行"（不再误判为 down）；前端徽标三态（运行中/已启用/未运行）；
+- 多 IP 地址配置：解析 `staticIp` 数组，主 IP 取第一个，其余存入 `extra_ips`。
+
+**AC 资源指标修正**：吞吐量 `GET status/throughput` 返回 `{send, recv, unit}`（send=上行），已规范化为 up/down_throughput 并统一 ×8 换算 bps（部分固件忽略 unit=bits 仍返回 bytes）；带宽使用率接口返回的即为百分比数字（前端不再重复 ×100）。
 
 ### 4.12 配置可视化缓存机制
 
@@ -333,6 +342,16 @@ AF 设备接口状态检测需处理多种链路状态字段，支持多种设�
 
 - 移除定时自动刷新（原 8 秒间隔）
 - 数据在页面挂载时加载一次，设备切换时重新加载
+
+### 4.13 设备连接可用性保护
+
+针对"一台不可达设备拖死整站"的防护：
+
+- **per-device 锁**：登录锁按 device_id 隔离（`factory._device_locks`），坏设备只阻塞自身，其它设备请求不受影响；
+- **登录独立超时**：`DEVICE_LOGIN_TIMEOUT`（默认 8s，正常登录 0.2~2s），不可达设备快速失败；
+- **失败负缓存**：登录失败后 10s 冷却期内直接返回友好错误（不再反复冲击设备/排队放大）；
+- **端点兜底**：设备类 API 统一 `asyncio.wait_for` 超时（HTTP 504"设备响应超时"）；前端所有请求 45s 超时（LLM 长调用 300s），超时报中文提示；
+- 登录失败的新建 client 及时 `aclose()`，防连接泄漏。
 - 手动刷新按钮触发重新获取
 - 顶部工具栏显示缓存提示：「配置数据缓存于页面，点击刷新重新获取」
 
@@ -444,6 +463,47 @@ AI 对话页勾选「查询知识库」后，`search_official_knowledge` 工具�
 ```
 
 API：`/api/kb/entries`（列表/详情/删除）、`/api/kb/pending`（待沉淀明细，支持勾选沉淀/忽略移出）、`/api/kb/process`、`/api/kb/reflection`（支持 start/end 日期范围）、`/api/kb/reflections`（含删除）、`/api/kb/stats`（统计+图谱数据）。
+
+### 6.4 SCP 云计算平台接入（只读）
+
+第三种设备类型 `scp`（对照 vCenter 定位，纳管 HCI 节点≈ESXi）：
+
+- **认证**：EC2 AK/SK 签名（AWS4-HMAC-SHA256，region=cn-south-1、service=open-api），
+  每请求实时签名、查询串不参与签名；签名规范化按官方 JS 示例复刻
+  （SignedHeaders=path;x-amz-date，"path" 值即规范请求第 2 行 URI——非标准 AWS 写法，联调 401 时优先核对此处）。
+  凭据映射：devices 表 username=AccessKey、password=SecretKey、base_url=https://{平台地址}。
+- **适配器**（`adapters/scp_rest.py`）：API 版本前缀按资源选择文档推荐版本
+  （clusters=20210725 / servers=20220725 / hosts=20190725 / azs·storages=20200725 /
+  platform·overview·host-interfaces=20180725 / classic-bvswitches=20190725）；
+  统一 {code,message,data} 解包 + next_page_num 分页聚合；
+  六个 AF 语义查询方法返回空（capability_gaps 声明），apply_change 一律拒绝（只读边界）；
+  无配置文件端点（backup_config_file 走基类 NotImplementedError，config_service 降级为仅快照备份）。
+- **工具**（device_type='scp'）：get_scp_clusters / get_scp_hosts / get_scp_host_interfaces /
+  get_scp_vms / get_scp_vm_detail / get_scp_storages（全部只读）；
+  get_status 由 /platform + /overview 折算（CPU/内存/存储百分比、主机与虚拟机统计）；
+  get_interfaces 聚合全部物理机网口（zone=功能口类型）。
+- **配置备份**（结构化快照）：scp_platform / scp_clusters / scp_hosts /
+  scp_host_interfaces（物理机网口与功能 IP）/ scp_vms（虚拟机 IP 与网卡/端口组）/
+  scp_storages / scp_bvswitches（桥接网卡端口组 vlan_group+links+phy_if）；
+  保留 AF 语义空节，备份 diff/预览机制通用。
+- **体检**（analyzer SCP 分支，`check_status` 自动跳过 mbuf/会话数等防火墙语义）：
+  集群/物理机/存储资源使用率阈值（85 预警 / 90 严重，建议动态携带实际值与剩余余量，
+  引用业界容量标准"持续 ≤80%、预留 20%~30%、关键业务 N+1"）；集群与物理机离线（高危）；
+  物理机告警；**CPU 分配超分（>5:1）与内存分配超分（>1.5:1）**；虚拟机异常状态
+  （alert/overdue/lost/paused_io_error）、虚拟机告警、**单机 CPU/内存 ≥90% rightsizing 升配建议**、
+  关机超 7 天僵尸机（低危）。
+- **更新建议**：新增 scp/hci 两条产品线（官方『新版本发布信息』页锚定，
+  product_id=36 / 33；无内置升级链，upgrade_path 输出直达+前置检测提示）；
+  软件更新列表扩为 AF/AC/SCP/HCI 四个 tab。
+- **边界**：第一阶段不支持 SCP 模拟器（前端隐藏、工厂对 scp+simulator 抛错）；
+  全部增删改/生命周期操作（开机/迁移/快照回滚等 POST 类）排除在外；
+- **数据真实性**（实测校准）：
+  - `ratio` 字段部分版本返回 0-1 比例（0.25 = 25%），归一化层统一修正为百分比并写回原字段（体检/报告/可视化全下游生效）；集群接口 20210725→20180725、物理机 20190725→20180725 双版本降级；
+  - **虚拟机使用率真源 = 监控接口**（4.22）：servers 列表的 cpu_status/memory_status 恒为 0（平台不采集），`GET /metrics/{id}?object_type=server&metric_names=cpu.util,memory.util` 返回真实百分比（unit=%，直取不经 0-1 修正）——VM 列表批量补取（上限 30 台、并发 5、单台失败静默），详情/对话/体检/报告均用该值；未部署采集 agent 的 VM 如实显示空；
+  - **操作系统解码**：`os_type` 为 HCI 型号码（如 `l2664` = Linux kernel 2.6.64），解码为可读名称；`os_name` 有值时优先；
+  - 物理机存储使用率开放接口不提供（仅 total_mb），如实显示总量；
+- **备份报告**（SCP 专属章节）：版本信息（含数据时点标注）/集群资源/物理机/虚拟机（IP·网卡·规格·使用率）/网口功能 IP/桥接端口组/存储 + 配置体检（用备份快照现场评估，离线可生成）；
+- 深度监控趋势图表留作后续迭代。
 
 ## 7. 典型交互流程
 

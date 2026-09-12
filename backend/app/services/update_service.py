@@ -13,6 +13,7 @@
 新增功能 / 安全修复 / 已知问题修复 / 优化 四类归类（关键词规则，确定性）。
 """
 import html as htmllib
+import json
 import re
 from datetime import datetime
 
@@ -39,6 +40,15 @@ OFFICIAL_URLS = {
     "ac": {
         "release_notes": "https://support.sangfor.com.cn/productDocument/read?product_id=22&version_id=1196&category_id=359280",
         "software_list": "https://support.sangfor.com.cn/productSoftware/list?product_id=22",
+    },
+    # SCP 云计算平台 / HCI 超融合（用户指定入口；无版本下限口径）
+    "scp": {
+        "release_notes": "https://support.sangfor.com.cn/productDocument/read?product_id=36&version_id=1164&category_id=345618&type=1",
+        "software_list": "https://support.sangfor.com.cn/productSoftware/list?product_id=36",
+    },
+    "hci": {
+        "release_notes": "https://support.sangfor.com.cn/productDocument/read?product_id=33&version_id=970&category_id=268801",
+        "software_list": "https://support.sangfor.com.cn/productSoftware/list?product_id=33",
     },
 }
 # 关注版本下限：低于该版本的发布说明不再展示（需求口径：AF 8.0.7 之前 / AC 13.0.62 之前不关注）
@@ -80,7 +90,7 @@ def _classify_release_notes(notes: list[dict]) -> list[dict]:
 
 # ---------------- 官方平台抓取器 ----------------
 
-_VERSION_HEAD = re.compile(r"^((?:AC&SG)|AF|AC|SG)?\s*(\d+\.\d+\.\d+)R?\d*\s*(?:版本)?")
+_VERSION_HEAD = re.compile(r"^((?:AC&SG)|AF|AC|SG|SCP|HCI)?\s*(\d+\.\d+\.\d+)R?\d*\s*(?:版本)?")
 _NOTE_MARK = re.compile(r"^【(新增|优化|修复|安全)】")
 _PROSE_NOISE = {"版本概述", "新增/优化功能", "功能详细介绍", "版本说明", "升级说明",
                 "新增/优化功能介绍", "序号", "功能分类"}
@@ -94,17 +104,31 @@ def _strip_html_to_lines(html_text: str) -> list[str]:
     return [ln.strip() for ln in h.split("\n") if ln.strip()]
 
 
-def _embedded_content_lines(raw_html: str) -> list[str]:
-    """发布说明正文存于页面 <script> 内嵌 JSON（服务端渲染数据）：提取并反转义。
+def _scp_doc_content_lines(raw_html: str) -> list[str]:
+    """SCP/HCI 发布说明页（新形态）：正文在 var __DOC_CONTENT_HTML__ = "<json 字符串>" 中。"""
+    m = re.search(r'var\s+__DOC_CONTENT_HTML__\s*=\s*("(?:[^"\\]|\\.)*")', raw_html, flags=re.S)
+    if not m:
+        return []
+    try:
+        content = json.loads(m.group(1))
+    except ValueError:
+        return []
+    return _strip_html_to_lines(str(content))
 
-    保留包含【标记】或版本标题的 script 段（部分版本段为纯散文、无标记）；
-    探测时先做 HTML 反转义（标题形如 AC&amp;SG13.0.121）。
+
+def _embedded_content_lines(raw_html: str) -> list[str]:
+    """发布说明正文提取。两种页面形态：
+    1) <script> 内嵌 JSON（AF/AC 旧形态，含【标记】或版本标题的 script 段）；
+    2) var __DOC_CONTENT_HTML__ = "<json 字符串>"（SCP/HCI 新形态）。
     """
+    doc = _scp_doc_content_lines(raw_html)
+    if doc:
+        return doc
     content = ""
     for seg in re.findall(r"<script[^>]*>(.*?)</script>", raw_html, flags=re.S):
         probe = htmllib.unescape(seg)
         if "【新增】" in probe or "【优化】" in probe or "【修复】" in probe or "【安全】" in probe \
-                or re.search(r"(?:AC&SG|AF|AC|SG)\s*\d+\.\d+\.\d+", probe):
+                or re.search(r"(?:AC&SG|AF|AC|SG|SCP|HCI)\s*\d+\.\d+\.\d+", probe):
             content += seg
     if not content:
         return _strip_html_to_lines(raw_html)   # 页面结构变化时退回全文解析
@@ -375,7 +399,7 @@ async def refresh_update_cache(product: str = "af", force: bool = False) -> dict
                                  f"psirt@{datetime.now():%Y-%m-%d}")
 
     soft = {}
-    for prod in ("af", "ac"):
+    for prod in ("af", "ac", "scp", "hci"):
         soft_cache = db.get_update_cache(prod, "software_list")
         if not force and _cache_fresh(soft_cache):
             skipped.append(f"software_list:{prod}")
@@ -419,14 +443,24 @@ async def get_software_list(product: str, force: bool = False) -> dict:
             "fetched_at": db.now(), "from_cache": False}
 
 
-async def get_update_overview(sw_version: str) -> dict:
+async def get_update_overview(sw_version: str, product: str = "") -> dict:
     """给定设备当前版本，汇总：最新版本、跨越版本的发布说明（四类归类）、命中的安全公告、来源标注。
 
-    发布说明优先使用官方平台免认证抓取的按版本真实条目，缺失版本回退内置知识库。
+    product 可显式指定产品线（如 SCP 设备版本串无前缀时由设备类型传入），
+    否则从版本串推断；发布说明优先使用官方平台免认证抓取的按版本真实条目。
     """
-    product = kb.product_of(sw_version)
+    product = (product or "").strip() or kb.product_of(sw_version)
     current = kb.normalize_version(sw_version)
     latest = kb.LATEST.get(product, "")
+    if product not in kb.PRODUCT_NAMES or not current:
+        # 未知产品线/无法解析版本：返回诚实降级结果（不按 AF 兜底）
+        return {"product": product, "product_name": kb.PRODUCT_NAMES.get(product, product or "未知产品"),
+                "current_version": current, "latest_version": "", "up_to_date": True,
+                "releases": [], "advisories_hit": [], "eol": {"hit": False, "detail": ""},
+                "scraped_note_versions": 0, "official_versions": [],
+                "sources": [{"source": "unknown_product",
+                             "reason": "无法识别产品线，升级建议不适用"}],
+                "fetched_at": db.now()}
 
     sources_tried = []
     cached = db.get_update_cache(product, "release_notes")

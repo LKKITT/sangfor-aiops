@@ -94,7 +94,8 @@
           </el-button>
         </div>
         <el-tabs v-model="softTab">
-          <el-tab-pane v-for="p in [{ k: 'af', name: '下一代防火墙 AF' }, { k: 'ac', name: '上网行为管理 AC' }]"
+          <el-tab-pane v-for="p in [{ k: 'af', name: '防火墙 AF' }, { k: 'ac', name: '上网行为管理 AC' },
+                                   { k: 'scp', name: '云计算平台 SCP' }, { k: 'hci', name: '超融合 HCI' }]"
                        :key="p.k" :label="p.name" :name="p.k">
             <div v-if="softwareList[p.k]?.status === 'ok' && softwareList[p.k]?.items?.length">
               <el-table :data="softwareList[p.k].items" size="small" border stripe max-height="360">
@@ -153,11 +154,9 @@ const softLoading = ref(false)
 async function loadSoftwareList(force = false) {
   softLoading.value = true
   try {
-    const results = await Promise.all([
-      Updates.softwareList('af', force),
-      Updates.softwareList('ac', force)
-    ])
-    softwareList.value = { af: results[0], ac: results[1] }
+    const products = ['af', 'ac', 'scp', 'hci']
+    const results = await Promise.all(products.map(p => Updates.softwareList(p, force)))
+    softwareList.value = Object.fromEntries(products.map((p, i) => [p, results[i]]))
   } catch (e) { ElMessage.error(String(e.message || e)) } finally { softLoading.value = false }
 }
 

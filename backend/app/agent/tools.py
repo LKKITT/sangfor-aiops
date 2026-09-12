@@ -341,7 +341,8 @@ async def _p_add_device(client: DeviceClient, args: dict, device: dict) -> dict:
     else:
         test_result = "模拟器设备，跳过连接测试"
 
-    type_label = {"af": "下一代防火墙 AF", "ac": "上网行为管理 AC"}.get(dtype, dtype)
+    type_label = {"af": "下一代防火墙 AF", "ac": "上网行为管理 AC",
+                  "scp": "云计算平台 SCP"}.get(dtype, dtype)
     mode_label = "真实设备" if dmode == "real" else "内置模拟器"
     info_lines = [
         f"- **名称**：{name}",
@@ -454,6 +455,73 @@ def _p_ingest_url(client: DeviceClient, args: dict, device: dict) -> dict:
         "detail": (f"确认后将抓取该页面内容（{url}），经 LLM 提炼为知识词条沉淀到个人知识库，"
                    "词条引用会附带来源链接。同主题已有词条会被更新为最新内容。"),
     }
+
+
+# ============================ SCP 云计算平台（只读） ============================
+
+async def _h_scp_clusters(client: DeviceClient, args: dict, device: dict) -> list[dict]:
+    clusters = await client.get_scp_clusters()
+    return clusters
+
+
+async def _h_scp_hosts(client: DeviceClient, args: dict, device: dict) -> list[dict]:
+    return await client.get_scp_hosts(cluster_id=str(args.get("cluster_id") or ""),
+                                      keyword=str(args.get("keyword") or ""))
+
+
+async def _h_scp_host_ifs(client: DeviceClient, args: dict, device: dict) -> list[dict]:
+    return await client.get_scp_host_interfaces(str(args["host_id"]))
+
+
+async def _h_scp_vms(client: DeviceClient, args: dict, device: dict) -> dict:
+    """虚拟机查询：支持使用率过滤，返回瘦身列表 + 统计摘要（避免全量 JSON 溢出）。"""
+    min_cpu = float(args.get("min_cpu_usage") or 0)
+    min_mem = float(args.get("min_memory_usage") or 0)
+    vms = await client.get_scp_vms(host_id=str(args.get("host_id") or ""),
+                                   status=str(args.get("status") or ""),
+                                   keyword=str(args.get("keyword") or ""),
+                                   limit=int(args.get("limit") or 200))
+    total = len(vms)
+    if min_cpu > 0:
+        vms = [v for v in vms if (v.get("res") or {}).get("cpu", {}).get("ratio", 0) >= min_cpu]
+    if min_mem > 0:
+        vms = [v for v in vms if (v.get("res") or {}).get("memory", {}).get("ratio", 0) >= min_mem]
+    # 瘦身：只保留回答所需的字段（全量 JSON 会截断导致数据不完整）
+    slim = [{"name": v.get("name"), "status": v.get("status"),
+             "ip": ", ".join(v.get("ips") or []) or next(
+                 (n.get("ip_address") for n in v.get("networks") or [] if n.get("ip_address")), ""),
+             "host": v.get("host_name"), "os": v.get("os_display") or v.get("os_name"),
+             "cpu_ratio": (v.get("res") or {}).get("cpu", {}).get("ratio"),
+             "mem_ratio": (v.get("res") or {}).get("memory", {}).get("ratio"),
+             "spec": f"{v.get('cores')}核/{round((v.get('memory_mb') or 0) / 1024, 1)}G",
+             "id": v.get("id")} for v in vms]
+    top_mem = sorted(slim, key=lambda x: -(x.get("mem_ratio") or 0))[:5]
+    result = {"total_in_platform": total, "matched": len(slim),
+              "filter": {"min_cpu_usage": min_cpu or None, "min_memory_usage": min_mem or None},
+              "vms": slim}
+    mem_desc = f"，其中内存使用率≥{min_mem}% 的 {len(slim)} 台" if min_mem else ""
+    cpu_desc = f"CPU≥{min_cpu}% 的 {len(slim)} 台" if min_cpu else ""
+    top_desc = "；内存使用率 Top5：" + "、".join(
+        f"{t['name']}({t['mem_ratio']}%)" for t in top_mem) if top_mem else ""
+    result["_llm_summary"] = (
+        f"平台共 {total} 台虚拟机{mem_desc}{cpu_desc}。以上为匹配列表（已含名称/状态/IP/宿主/系统/使用率）。"
+        f"请基于该列表作答，不要再次调用本工具或查询物理机。{top_desc}")
+    return result
+
+
+async def _h_scp_vm_detail(client: DeviceClient, args: dict, device: dict) -> dict:
+    detail = await client.get_scp_vm_detail(str(args["server_id"]))
+    nets = detail.get("networks") or []
+    detail["_llm_summary"] = (
+        f"云主机「{detail.get('name')}」：{detail.get('status')}，"
+        f"{detail.get('cores')}核/{detail.get('memory_mb')}MB，"
+        f"IP：{', '.join(n.get('ip_address') or '' for n in nets if n.get('ip_address')) or '无'}，"
+        f"所在物理机：{detail.get('host_name') or '未知'}")
+    return detail
+
+
+async def _h_scp_storages(client: DeviceClient, args: dict, device: dict) -> list[dict]:
+    return await client.get_scp_storages()
 
 
 async def _h_switch_device(client: DeviceClient, args: dict, device: dict) -> dict:
@@ -588,11 +656,38 @@ TOOLS: list[Tool] = [
                                       "description": "要检索的问题，用一句完整的中文技术问题描述"}},
           "required": ["question"]},
          _h_search_kb),
+    # ---- SCP 云计算平台（只读查询，device_type='scp'） ----
+    Tool("get_scp_clusters", "获取 SCP 云计算平台的集群列表：名称/状态/版本/类型，及 CPU、内存、存储资源的总量与使用率", {"type": "object", "properties": {}}, _h_scp_clusters, device_type='scp'),
+    Tool("get_scp_hosts", "获取 SCP 平台的物理机（HCI 节点）列表：IP/状态/所属集群/CPU 内存存储使用率/GPU/告警数。仅在用户明确询问物理机/宿主机/节点时使用；查询虚拟机资源使用情况请用 get_scp_vms 的过滤参数，不要先查物理机",
+         {"type": "object",
+          "properties": {"cluster_id": {"type": "string", "description": "可选：按集群 ID 过滤"},
+                         "keyword": {"type": "string", "description": "可选：按名称或 IP 过滤"}}},
+         _h_scp_hosts, device_type='scp'),
+    Tool("get_scp_host_interfaces", "获取 SCP 平台指定物理机的网口列表：网口名/功能（管理/业务/存储/数据通信口）/功能 IP/网关/MAC/VLAN/速率",
+         {"type": "object",
+          "properties": {"host_id": {"type": "string", "description": "物理机 ID（从 get_scp_hosts 获取）"}},
+          "required": ["host_id"]},
+         _h_scp_host_ifs, device_type='scp'),
+    Tool("get_scp_vms", "获取 SCP 平台的虚拟机（云主机）列表与 CPU/内存使用率。支持按物理机/状态/名称过滤，以及按使用率阈值过滤（如『内存使用率超过80%的虚拟机』直接传 min_memory_usage=80，一次调用即可得到精准结果）。返回已含名称/状态/IP/宿主/系统/使用率，无需重复调用或另查物理机",
+         {"type": "object",
+          "properties": {"host_id": {"type": "string", "description": "可选：按物理机 ID 过滤"},
+                         "status": {"type": "string", "description": "可选：按状态过滤（如 running）"},
+                         "keyword": {"type": "string", "description": "可选：按名称或 IP 过滤"},
+                         "min_cpu_usage": {"type": "number", "description": "可选：CPU 使用率下限（%），如 80"},
+                         "min_memory_usage": {"type": "number", "description": "可选：内存使用率下限（%），如 80"},
+                         "limit": {"type": "integer", "description": "可选：返回上限，默认 200"}}},
+         _h_scp_vms, device_type='scp'),
+    Tool("get_scp_vm_detail", "获取 SCP 平台指定虚拟机的配置详情：CPU/内存/磁盘/网卡（MAC、IP、VPC、子网、端口组）/所属物理机/高级参数",
+         {"type": "object",
+          "properties": {"server_id": {"type": "string", "description": "虚拟机 ID（从 get_scp_vms 获取）"}},
+          "required": ["server_id"]},
+         _h_scp_vm_detail, device_type='scp'),
+    Tool("get_scp_storages", "获取 SCP 平台的存储列表：名称/类型/状态/总量与使用率/关联主机", {"type": "object", "properties": {}}, _h_scp_storages, device_type='scp'),
     _write_tool("add_device", "添加新设备到系统。用户提供设备名称、类型(AF/AC)、接入方式(模拟器/真实设备)、地址、账号密码等信息。生成确认卡片供用户确认后执行添加。",
                 {"type": "object",
                  "properties": {
                      "name": {"type": "string", "description": "设备名称，如：总部-AF-01"},
-                     "type": {"type": "string", "description": "设备类型：af（防火墙）/ ac（上网行为管理），默认 af"},
+                     "type": {"type": "string", "description": "设备类型：af（防火墙）/ ac（上网行为管理）/ scp（云计算平台，AccessKey+SecretKey 只读接入），默认 af"},
                      "mode": {"type": "string", "description": "接入方式：real（真实设备）/ simulator（内置模拟器），默认 real"},
                      "base_url": {"type": "string", "description": "设备地址，真实设备必填，如 https://192.168.1.1"},
                      "username": {"type": "string", "description": "API 账号（AF 真实设备需要）"},

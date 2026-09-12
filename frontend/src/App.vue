@@ -112,11 +112,12 @@
           <el-radio-group v-model="form.type">
             <el-radio value="af">下一代防火墙 AF</el-radio>
             <el-radio value="ac">上网行为管理 AC</el-radio>
+            <el-radio value="scp">云计算平台 SCP</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="接入方式">
           <el-radio-group v-model="form.mode">
-            <el-radio value="simulator">内置模拟器</el-radio>
+            <el-radio value="simulator" :disabled="form.type === 'scp'">内置模拟器</el-radio>
             <el-radio value="real">真实设备</el-radio>
           </el-radio-group>
         </el-form-item>
@@ -124,6 +125,18 @@
           <el-form-item label="设备地址"><el-input v-model="form.base_url" placeholder="https://192.168.1.1" /></el-form-item>
           <el-form-item label="API 账号"><el-input v-model="form.username" /></el-form-item>
           <el-form-item label="API 密码"><el-input v-model="form.password" type="password" show-password /></el-form-item>
+        </template>
+        <template v-if="form.mode === 'real' && form.type === 'scp'">
+          <el-form-item label="平台地址">
+            <el-input v-model="form.device_ip" placeholder="SCP 平台 IP，如 10.134.85.140（可带端口 10.1.1.1:4430）" />
+          </el-form-item>
+          <el-form-item label="AccessKey"><el-input v-model="form.username" placeholder="SCP 平台申请的 AccessKey" /></el-form-item>
+          <el-form-item label="SecretKey"><el-input v-model="form.password" type="password" show-password placeholder="SCP 平台申请的 SecretKey" /></el-form-item>
+          <el-form-item label=" ">
+            <span style="font-size: 12px; color: #909399">
+              SCP 走 OpenAPI（EC2 AK/SK 签名）只读接入：查询集群/物理机/虚拟机/存储，不支持任何变更
+            </span>
+          </el-form-item>
         </template>
         <template v-if="form.mode === 'real' && form.type === 'ac'">
           <el-form-item label="设备 IP">
@@ -160,14 +173,22 @@
           <el-radio-group v-model="editForm.type">
             <el-radio value="af">下一代防火墙 AF</el-radio>
             <el-radio value="ac">上网行为管理 AC</el-radio>
+            <el-radio value="scp">云计算平台 SCP</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="接入方式">
           <el-radio-group v-model="editForm.mode">
-            <el-radio value="simulator">内置模拟器</el-radio>
+            <el-radio value="simulator" :disabled="editForm.type === 'scp'">内置模拟器</el-radio>
             <el-radio value="real">真实设备</el-radio>
           </el-radio-group>
         </el-form-item>
+        <template v-if="editForm.mode === 'real' && editForm.type === 'scp'">
+          <el-form-item label="平台地址">
+            <el-input v-model="editForm.device_ip" placeholder="SCP 平台 IP（可带端口）" />
+          </el-form-item>
+          <el-form-item label="AccessKey"><el-input v-model="editForm.username" /></el-form-item>
+          <el-form-item label="SecretKey"><el-input v-model="editForm.password" type="password" show-password placeholder="留空不修改" /></el-form-item>
+        </template>
         <template v-if="editForm.mode === 'real' && editForm.type === 'af'">
           <el-form-item label="设备地址"><el-input v-model="editForm.base_url" placeholder="https://192.168.1.1" /></el-form-item>
           <el-form-item label="API 账号"><el-input v-model="editForm.username" /></el-form-item>
@@ -284,6 +305,9 @@ async function addDevice() {
   if (payload.type === 'ac' && payload.device_ip) {
     payload.base_url = `http://${payload.device_ip}:9999`
   }
+  if (payload.type === 'scp' && payload.device_ip) {
+    payload.base_url = `https://${payload.device_ip}`
+  }
   if (payload.mode === 'real' && !payload.base_url) return ElMessage.warning('请填写设备地址')
   try {
     await Devices.add(payload)
@@ -302,6 +326,9 @@ async function testConnection() {
   if (payload.type === 'ac' && payload.device_ip) {
     payload.base_url = `http://${payload.device_ip}:9999`
   }
+  if (payload.type === 'scp' && payload.device_ip) {
+    payload.base_url = `https://${payload.device_ip}`
+  }
   if (payload.mode === 'real' && !payload.base_url) return ElMessage.warning('请填写设备地址')
   testing.value = true
   testResult.value = null
@@ -317,8 +344,9 @@ async function testConnection() {
 function openEditDevice() {
   const d = currentDevice()
   if (!d) return
-  // 对 AC 设备，从 base_url 中提取 IP
-  const editIp = d.type === 'ac' && d.base_url ? d.base_url.replace(/^https?:\/\//, '').replace(/:9999$/, '') : ''
+  // 对 AC/SCP 设备，从 base_url 中提取 IP
+  const editIp = (d.type === 'ac' || d.type === 'scp') && d.base_url
+    ? d.base_url.replace(/^https?:\/\//, '').replace(/:9999$/, '') : ''
   editForm.value = {
     id: d.id, name: d.name, type: d.type, mode: d.mode,
     base_url: d.base_url, device_ip: editIp, username: d.username || '',
@@ -329,10 +357,13 @@ function openEditDevice() {
 }
 
 async function testEditConnection() {
-  // AC 设备：将 IP 转为 http://{ip}:9999
+  // AC/SCP 设备：将 IP 转为对应 base_url
   const payload = { ...editForm.value }
   if (payload.type === 'ac' && payload.device_ip) {
     payload.base_url = `http://${payload.device_ip}:9999`
+  }
+  if (payload.type === 'scp' && payload.device_ip) {
+    payload.base_url = `https://${payload.device_ip}`
   }
   if (payload.mode === 'real' && !payload.base_url) return ElMessage.warning('请填写设备地址')
   editTesting.value = true
@@ -350,9 +381,11 @@ async function saveEditDevice() {
   if (!editForm.value.name) return ElMessage.warning('设备名称不能为空')
   try {
     const payload = { name: editForm.value.name, type: editForm.value.type, mode: editForm.value.mode, readonly: editForm.value.readonly }
-    // AC 设备：将 IP 转为 http://{ip}:9999
+    // AC/SCP 设备：将 IP 转为对应 base_url
     if (payload.type === 'ac' && editForm.value.device_ip) {
       payload.base_url = `http://${editForm.value.device_ip}:9999`
+    } else if (payload.type === 'scp' && editForm.value.device_ip) {
+      payload.base_url = `https://${editForm.value.device_ip}`
     } else if (editForm.value.base_url) {
       payload.base_url = editForm.value.base_url
     }

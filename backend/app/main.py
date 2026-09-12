@@ -31,11 +31,12 @@ async def scheduled_backup_all() -> None:
 
 
 async def scheduled_update_refresh() -> None:
-    try:
-        result = await update_service.refresh_update_cache("af")
-        log.info("更新信息刷新完成: %s", result)
-    except Exception as e:   # noqa: BLE001
-        log.warning("更新信息刷新失败: %s", e)
+    for prod in ("af", "ac", "scp", "hci"):
+        try:
+            result = await update_service.refresh_update_cache(prod)
+            log.info("更新信息刷新完成 %s: %s", prod, result.get("official", {}).get("status"))
+        except Exception as e:   # noqa: BLE001
+            log.warning("更新信息刷新失败 %s: %s", prod, e)
 
 
 @asynccontextmanager

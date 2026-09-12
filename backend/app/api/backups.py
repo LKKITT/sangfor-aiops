@@ -98,16 +98,16 @@ async def generate_report(device_id: str, backup_id: str) -> Response:
         client = await get_client(device_id)
         status = (await client.get_status()).to_dict()
 
-        # 配置体检（优先使用缓存）
+        # 配置体检（优先使用缓存；否则用备份快照现场评估，保证报告对应备份时点）
         cached = db.get_update_cache(device_id, "checkup_report")
         checkup = cached["payload"] if cached else {}
         if not checkup:
-            current_snapshot = await client.snapshot_config()
-            checkup = run_checks(current_snapshot, status, device.get("type", ""))
+            checkup = run_checks(snapshot, status, device.get("type", ""))
 
-        # 软件更新建议
+        # 软件更新建议（SCP 设备版本串无前缀，需显式传产品线）
         update_advice = await upgrade_advisor.build_upgrade_advice(
-            status.get("sw_version", ""), status, device["name"])
+            status.get("sw_version", ""), status, device["name"],
+            product={"af": "af", "ac": "ac", "scp": "scp"}.get(device.get("type", ""), ""))
     except Exception:
         pass
 

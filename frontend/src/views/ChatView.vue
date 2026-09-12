@@ -1,37 +1,8 @@
 <template>
   <div class="chat-page">
     <div class="chat-header page-card">
-      <div class="chat-header-top">
-        <div style="display: flex; align-items: center; gap: 14px">
-          <b>AI 对话</b>
-          <el-checkbox v-model="useKnowledge" size="small" title="勾选后，对话可检索深信服官方知识库（诸葛小T），回答将附带官方引用来源">
-            <span style="font-size: 13px"><el-icon style="vertical-align: -2px"><Search /></el-icon> 查询知识库</span>
-          </el-checkbox>
-        </div>
-        <div class="device-selector" v-if="store.devices.length">
-          <el-button size="small" text @click="newConversation" title="开启新会话：清空当前上下文，避免话题混淆与 token 浪费；设备信息与长期记忆会自动带入新会话">
-            <el-icon><CirclePlus /></el-icon> 新会话
-          </el-button>
-          <el-icon style="margin-right: 4px; vertical-align: -2px"><Monitor /></el-icon>
-          <el-select v-model="store.currentDeviceId" size="small" style="width: 260px"
-                     @change="onDeviceChange" placeholder="选择目标设备">
-            <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
-                       :label="`${d.name}（${d.type === 'af' ? '防火墙' : '上网行为管理'}）`">
-              <span>{{ d.name }}</span>
-              <span style="float: right; color: #909399; font-size: 12px">
-                {{ d.type === 'af' ? 'AF' : 'AC' }} | {{ d.mode === 'simulator' ? '模拟器' : '真实设备' }}
-              </span>
-            </el-option>
-          </el-select>
-          <el-button size="small" text @click="refreshDevices" title="刷新设备列表">
-            <el-icon><Refresh /></el-icon>
-          </el-button>
-          <el-button size="small" text @click="showAddCard = true" title="添加设备">
-            <el-icon><Plus /></el-icon>
-          </el-button>
-        </div>
-      </div>
-      <div class="hint" v-if="store.devices.length">支持自然语言查询/修改配置、配置体检、备份恢复、软件升级建议。修改类操作会先生成确认卡片。</div>
+      <b>AI 对话</b>
+      <span class="hint" style="margin-left: 10px">支持自然语言查询/修改配置、配置体检、备份恢复、软件升级建议；修改类操作会先生成确认卡片。</span>
     </div>
 
     <!-- 添加设备卡片 -->
@@ -46,6 +17,7 @@
           <el-radio-group v-model="addForm.type">
             <el-radio value="af">下一代防火墙 AF</el-radio>
             <el-radio value="ac">上网行为管理 AC</el-radio>
+            <el-radio value="scp">云计算平台 SCP</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="接入方式">
@@ -83,7 +55,7 @@
         <template #image>
           <el-icon style="font-size: 64px; color: #c0c4cc"><Monitor /></el-icon>
         </template>
-        <p>请先添加一台深信服设备（AF 防火墙或 AC 上网行为管理），然后即可通过自然语言进行配置管理和查询。</p>
+        <p>请先添加一台深信服设备（AF 防火墙 / AC 上网行为管理 / SCP 云计算平台），然后即可通过自然语言进行配置管理和查询。</p>
         <el-button type="primary" @click="goToDevices">
           <el-icon><Plus /></el-icon> 添加设备
         </el-button>
@@ -283,11 +255,39 @@
     </div>
 
     <div v-if="store.devices.length" class="chat-input page-card">
+      <div class="input-toolbar">
+        <div class="toolbar-left">
+          <el-checkbox v-model="useKnowledge" size="small"
+                       title="勾选后，对话可检索深信服官方知识库（诸葛小T），回答将附带官方引用来源；对话还会沉淀到个人知识库">
+            <span style="font-size: 13px"><el-icon style="vertical-align: -2px"><Search /></el-icon> 查询知识库</span>
+          </el-checkbox>
+          <el-button size="small" @click="newConversation"
+                     title="开启新会话：清空当前上下文，避免话题混淆与 token 浪费；设备信息与长期记忆会自动带入新会话">
+            <el-icon><CirclePlus /></el-icon> 新会话
+          </el-button>
+        </div>
+        <div class="device-selector">
+          <el-icon style="color: #909399"><Monitor /></el-icon>
+          <el-select v-model="store.currentDeviceId" size="small" style="width: 250px"
+                     @change="onDeviceChange" placeholder="选择目标设备">
+            <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
+                       :label="`${d.name}（${d.type === 'af' ? '防火墙' : d.type === 'scp' ? '云计算平台' : '上网行为管理'}）`">
+              <span>{{ d.name }}</span>
+              <span style="float: right; color: #909399; font-size: 12px">
+                {{ { af: 'AF', ac: 'AC', scp: 'SCP' }[d.type] || d.type }} | {{ d.mode === 'simulator' ? '模拟器' : '真实设备' }}
+              </span>
+            </el-option>
+          </el-select>
+          <el-button size="small" text @click="refreshDevices" title="刷新设备列表">
+            <el-icon><Refresh /></el-icon>
+          </el-button>
+        </div>
+      </div>
       <div class="quick">
         <el-button v-for="q in quickPrompts" :key="q" size="small" round @click="send(q)" :disabled="streaming">{{ q }}</el-button>
       </div>
       <div style="display: flex; gap: 8px">
-        <el-input v-model="input" placeholder="例如：帮我看一下外网接口流量，再把 3389 对公网暴露的策略收紧" @keyup.enter="send()" :disabled="streaming" />
+        <el-input v-model="input" :placeholder="inputPlaceholder" @keyup.enter="send()" :disabled="streaming" />
         <el-button type="primary" @click="send()" :loading="streaming" style="width: 90px">发送</el-button>
         <el-button v-if="streaming" type="danger" @click="stopChat" style="margin-left: 6px">
           <el-icon><CircleCloseFilled /></el-icon> 终止
@@ -331,6 +331,12 @@ const quickPrompts = computed(() => {
       '查看上网策略', '查看用户绑定', '立即创建一次备份', '有新版本可以升级吗？'
     ]
   }
+  if (dev.type === 'scp') {
+    return [
+      '查看平台版本和集群状态', '看看集群的计算和存储资源使用情况',
+      '列出物理机及资源详情', '查看虚拟机列表', '立即创建一次备份', '有新版本可以升级吗？'
+    ]
+  }
   return [
     '查看设备运行状态', '体检一下设备配置有哪些风险', '看看 NAT 策略',
     '把 445 端口对公网暴露的策略停用', '立即创建一次备份', '有新版本可以升级吗？'
@@ -345,6 +351,9 @@ const TOOL_NAMES = {
   diff_backups: '对比备份差异', get_software_updates: '获取软件更新信息', get_upgrade_advice: '生成升级建议',
   get_audit_logs: '查询审计日志', restore_backup: '生成恢复计划', execute_restore: '执行恢复',
   search_official_knowledge: '查询官方知识库',
+  get_scp_clusters: '查询 SCP 集群', get_scp_hosts: '查询 SCP 物理机',
+  get_scp_host_interfaces: '查询物理机网口', get_scp_vms: '查询 SCP 虚拟机',
+  get_scp_vm_detail: '查询虚拟机详情', get_scp_storages: '查询 SCP 存储',
   record_to_kb: '沉淀对话到知识库', ingest_url_to_kb: '沉淀链接到知识库',
   list_available_devices: '查询设备列表', add_device: '添加设备',
   create_nat_rule: '新建 NAT', update_nat_rule: '修改 NAT', delete_nat_rule: '删除 NAT',
@@ -460,15 +469,45 @@ function newConversation() {
   ElMessage.success('已开启新会话，设备信息与历史记忆会自动带入')
 }
 
+const HELLO_BY_TYPE = {
+  af: {
+    label: '下一代防火墙 AF',
+    tips: ['"查看 NAT 策略"', '"体检一下配置有哪些风险"', '"把 445 端口对公网暴露的策略停用"',
+           '"马上要变更了，先备份一下"', '"有新版本可以升级吗？"'],
+    note: '修改类操作我会先生成变更计划卡片，确认后才会下发设备。'
+  },
+  ac: {
+    label: '上网行为管理 AC',
+    tips: ['"看看在线用户"', '"查看用户绑定"', '"体检一下配置有哪些风险"',
+           '"马上要变更了，先备份一下"', '"有新版本可以升级吗？"'],
+    note: 'AC 通过开放接口接入，支持状态/绑定/策略查询与绑定变更（走确认卡片）。'
+  },
+  scp: {
+    label: '云计算平台 SCP（只读）',
+    tips: ['"查看平台版本和集群状态"', '"看看集群的计算和存储资源使用情况"', '"列出物理机及资源详情"',
+           '"查询内存使用率超过 80% 的虚拟机"', '"立即创建一次备份"', '"有新版本可以升级吗？"'],
+    note: 'SCP 为只读接入：可查询集群/物理机/虚拟机/存储与网口端口组信息，不支持配置变更。'
+  }
+}
+
 function pushHello(devId) {
   const dev = devId ? store.devices.find(d => d.id === devId) : currentDevice()
   if (!dev) return
+  const h = HELLO_BY_TYPE[dev.type] || HELLO_BY_TYPE.af
   messages.value = [{
     role: 'assistant',
-    text: `您好！我是深信服售后技术支持 Agent，当前目标设备：**${dev.name}**。\n\n可以试试：\n- "查看 NAT 策略"\n- "体检一下配置有哪些风险"\n- "把 445 端口对公网暴露的策略停用"\n- "马上要变更了，先备份一下"\n- "有新版本可以升级吗？"\n\n修改类操作我会先生成变更计划卡片，确认后才会下发设备。`,
+    text: `您好！我是深信服售后技术支持 Agent，当前目标设备：**${dev.name}**（${h.label}）。\n\n可以试试：\n- ${h.tips.join('\n- ')}\n\n${h.note}`,
     trace: [], confirm: null
   }]
 }
+
+const inputPlaceholder = computed(() => {
+  const dev = currentDevice()
+  if (!dev) return '请先选择设备'
+  if (dev.type === 'scp') return '例如：看看集群的计算和存储资源使用情况，再列出内存使用率高的虚拟机'
+  if (dev.type === 'ac') return '例如：看看在线用户，再把 192.168.1.100 做个 IP-MAC 绑定'
+  return '例如：帮我看一下外网接口流量，再把 3389 对公网暴露的策略收紧'
+})
 
 async function testConnection() {
   if (addForm.value.mode === 'simulator') {
@@ -780,6 +819,9 @@ function allPlanItems(plan) {
 .no-device-card p { color: #909399; font-size: 13px; margin: 12px 0 16px; }
 .chat-body { flex: 1; overflow-y: auto; padding: 16px; }
 .chat-input { padding: 10px 14px; }
+.input-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; padding: 6px 10px; background: #f5f7fa; border-radius: 8px; }
+.device-selector { display: flex; align-items: center; gap: 4px; }
+.toolbar-left { display: flex; align-items: center; gap: 12px; }
 .quick { margin-bottom: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .trace { margin-bottom: 6px; }
 .bind-note { font-size: 12px; color: #909399; margin-left: 8px; }

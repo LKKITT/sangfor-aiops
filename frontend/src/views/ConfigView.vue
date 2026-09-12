@@ -14,7 +14,7 @@
             <div class="status-grid">
               <div class="stat"><div class="stat-label">软件版本</div><div class="stat-value">{{ status.sw_version }}</div></div>
               <div class="stat"><div class="stat-label">型号</div><div class="stat-value">{{ status.model }}</div></div>
-              <div class="stat"><div class="stat-label">运行时间</div><div class="stat-value sm">{{ status.uptime }}</div></div>
+              <div class="stat" v-if="!isSCP"><div class="stat-label">运行时间</div><div class="stat-value sm">{{ status.uptime }}</div></div>
               <div class="stat" v-if="isAF"><div class="stat-label">HA 状态</div><div class="stat-value">{{ status.ha_status }}</div></div>
             </div>
           </div>
@@ -26,7 +26,7 @@
                 <div class="stat-label">{{ m.label }}</div>
                 <el-progress :percentage="status[m.key]" :color="meterColor(status[m.key])" :stroke-width="14" />
               </div>
-              <div class="stat">
+              <div class="stat" v-if="!isSCP">
                 <div class="stat-label">会话数</div>
                 <div class="stat-value">{{ status.session_count?.toLocaleString() || 0 }} / {{ status.session_capacity?.toLocaleString() || 'N/A' }}</div>
               </div>
@@ -295,6 +295,135 @@
         </el-tab-pane>
       </template>
 
+      <!-- ========== SCP 特有 tabs（只读查询） ========== -->
+      <template v-if="isSCP">
+        <el-tab-pane label="平台概况" name="scp-platform">
+          <div v-if="scpPlatform && Object.keys(scpPlatform).length" class="status-wrap">
+            <div class="status-section">
+              <div class="status-section-title">平台信息</div>
+              <div class="status-grid">
+                <div class="stat"><div class="stat-label">SCP 版本</div><div class="stat-value sm">{{ scpPlatform.version || status?.sw_version }}</div></div>
+                <div class="stat"><div class="stat-label">部署模式</div><div class="stat-value">{{ status?.extra?.manage_mode === 'managed_cloud' ? '托管云' : status?.extra?.manage_mode === 'private_cloud' ? '私有云' : (scpPlatform.manage_mode || '未知') }}</div></div>
+                <div class="stat"><div class="stat-label">集群 IP</div><div class="stat-value sm">{{ scpPlatform.dcluster_info?.cluster_ip || '-' }}</div></div>
+                <div class="stat"><div class="stat-label">维护模式</div><div class="stat-value">{{ scpPlatform.maintain_mode ? '维护中' : '正常' }}</div></div>
+              </div>
+            </div>
+            <div class="status-section">
+              <div class="status-section-title">资源使用（物理资源）</div>
+              <div class="status-grid">
+                <div class="stat"><div class="stat-label">CPU</div><el-progress :percentage="status?.cpu_usage || 0" :color="meterColor(status?.cpu_usage)" :stroke-width="14" /></div>
+                <div class="stat"><div class="stat-label">内存</div><el-progress :percentage="status?.memory_usage || 0" :color="meterColor(status?.memory_usage)" :stroke-width="14" /></div>
+                <div class="stat"><div class="stat-label">存储</div><el-progress :percentage="status?.extra?.storage_ratio || 0" :color="meterColor(status?.extra?.storage_ratio)" :stroke-width="14" /></div>
+              </div>
+            </div>
+            <div class="status-section">
+              <div class="status-section-title">主机与虚拟机</div>
+              <div class="status-grid">
+                <div class="stat"><div class="stat-label">物理机</div><div class="stat-value">{{ status?.extra?.hosts_online || 0 }} 在线 / {{ status?.extra?.hosts_total || 0 }}（告警 {{ status?.extra?.hosts_alarm || 0 }}）</div></div>
+                <div class="stat"><div class="stat-label">虚拟机</div><div class="stat-value">{{ status?.extra?.servers_running || 0 }} 运行 / {{ status?.extra?.servers_total || 0 }}（告警 {{ status?.extra?.servers_alarm || 0 }}）</div></div>
+              </div>
+            </div>
+          </div>
+          <el-alert v-else-if="loadErrors.scp_platform" type="error" :closable="false" :title="`平台信息读取失败：${loadErrors.scp_platform}`" />
+          <el-empty v-else description="加载中" />
+        </el-tab-pane>
+
+        <el-tab-pane :label="`集群（${scpClusters.length}）`" name="scp-clusters">
+          <el-table :data="scpClusters" size="small" border stripe>
+            <el-table-column prop="name" label="集群名称" min-width="140" />
+            <el-table-column prop="version" label="HCI 版本" width="100" />
+            <el-table-column prop="type" label="类型" width="80">
+              <template #default="{ row }"><el-tag size="small">{{ row.type === 'hci' ? 'HCI' : row.type || '-' }}</el-tag></template>
+            </el-table-column>
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.status === 'normal' ? 'success' : 'danger'">{{ row.status === 'normal' ? '正常' : row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="CPU 使用率" width="140">
+              <template #default="{ row }"><el-progress :percentage="Math.round(row.res?.cpu?.ratio || 0)" :color="meterColor(row.res?.cpu?.ratio)" :stroke-width="10" /></template>
+            </el-table-column>
+            <el-table-column label="内存使用率" width="140">
+              <template #default="{ row }"><el-progress :percentage="Math.round(row.res?.memory?.ratio || 0)" :color="meterColor(row.res?.memory?.ratio)" :stroke-width="10" /></template>
+            </el-table-column>
+            <el-table-column label="存储使用率" width="140">
+              <template #default="{ row }"><el-progress :percentage="Math.round(row.res?.storage?.ratio || 0)" :color="meterColor(row.res?.storage?.ratio)" :stroke-width="10" /></template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane :label="`物理机（${scpHosts.length}）`" name="scp-hosts">
+          <el-table :data="scpHosts" size="small" border stripe max-height="480">
+            <el-table-column prop="name" label="名称/IP" min-width="120" />
+            <el-table-column prop="cluster_name" label="集群" min-width="110" />
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.status === 'running' ? 'success' : 'danger'">{{ row.status === 'running' ? '在线' : row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="CPU" min-width="130">
+              <template #default="{ row }"><el-progress :percentage="Math.round(row.res?.cpu?.ratio || 0)" :color="meterColor(row.res?.cpu?.ratio)" :stroke-width="10" /></template>
+            </el-table-column>
+            <el-table-column label="内存" min-width="130">
+              <template #default="{ row }"><el-progress :percentage="Math.round(row.res?.memory?.ratio || 0)" :color="meterColor(row.res?.memory?.ratio)" :stroke-width="10" /></template>
+            </el-table-column>
+            <el-table-column label="存储总量" width="100">
+              <template #default="{ row }">{{ fmtBytes((row.res?.storage?.total || row.storage?.total_mb || 0) * 1024 * 1024) }}</template>
+            </el-table-column>
+            <el-table-column label="告警" width="70" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.alarm_count" size="small" type="danger">{{ row.alarm_count }}</el-tag>
+                <span v-else>0</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="cpu.type" label="CPU 型号" min-width="150" show-overflow-tooltip />
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane :label="`虚拟机（${scpVms.length}）`" name="scp-vms">
+          <el-table :data="scpVms" size="small" border stripe max-height="480" @row-click="openVmDetail" style="cursor: pointer">
+            <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip />
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.status === 'running' ? 'success' : 'info'">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="IP" min-width="130">
+              <template #default="{ row }"><span class="mono">{{ (row.ips || []).join(', ') || (row.networks || []).map(n => n.ip_address).filter(Boolean).join(', ') || '-' }}</span></template>
+            </el-table-column>
+            <el-table-column prop="host_name" label="所在物理机" min-width="110" show-overflow-tooltip />
+            <el-table-column label="CPU" width="110">
+              <template #default="{ row }"><el-progress :percentage="Math.round(row.res?.cpu?.ratio || 0)" :color="meterColor(row.res?.cpu?.ratio)" :stroke-width="10" /></template>
+            </el-table-column>
+            <el-table-column label="内存" width="110">
+              <template #default="{ row }"><el-progress :percentage="Math.round(row.res?.memory?.ratio || 0)" :color="meterColor(row.res?.memory?.ratio)" :stroke-width="10" /></template>
+            </el-table-column>
+            <el-table-column label="操作系统" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.os_display || row.os_name || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="配置" width="100">
+              <template #default="{ row }">{{ row.cores }}核 / {{ Math.round((row.memory_mb || 0) / 1024 * 10) / 10 }}G</template>
+            </el-table-column>
+          </el-table>
+          <div class="hint" style="margin-top: 6px">点击行查看虚拟机详情（网卡/端口组/磁盘）</div>
+        </el-tab-pane>
+
+        <el-tab-pane :label="`存储（${scpStorages.length}）`" name="scp-storages">
+          <el-table :data="scpStorages" size="small" border stripe>
+            <el-table-column prop="name" label="存储名称" min-width="140" />
+            <el-table-column prop="type" label="类型" width="100" />
+            <el-table-column prop="status" label="状态" width="90" />
+            <el-table-column label="容量" width="100">
+              <template #default="{ row }">{{ fmtBytes((row.total_mb || 0) * 1024 * 1024) }}</template>
+            </el-table-column>
+            <el-table-column label="使用率" min-width="140">
+              <template #default="{ row }"><el-progress :percentage="Math.round(row.ratio || 0)" :color="meterColor(row.ratio)" :stroke-width="10" /></template>
+            </el-table-column>
+            <el-table-column prop="cluster_name" label="所属集群" min-width="110" show-overflow-tooltip />
+          </el-table>
+        </el-tab-pane>
+      </template>
+
       <!-- ========== 用户绑定（仅 AC） ========== -->
       <template v-if="isAC">
         <el-tab-pane :label="`用户绑定（${bindings.length}）`" name="bindings">
@@ -319,6 +448,41 @@
       </el-tab-pane>
       </template>
     </el-tabs>
+
+    <!-- SCP 虚拟机详情抽屉 -->
+    <el-drawer v-model="showVmDetail" :title="vmDetail?.name || '虚拟机详情'" size="520px">
+      <template v-if="vmDetail">
+        <el-descriptions :column="2" size="small" border>
+          <el-descriptions-item label="状态">{{ vmDetail.status }}</el-descriptions-item>
+          <el-descriptions-item label="电源">{{ vmDetail.power_state }}</el-descriptions-item>
+          <el-descriptions-item label="vCPU">{{ vmDetail.cores }} 核</el-descriptions-item>
+          <el-descriptions-item label="内存">{{ vmDetail.memory_mb }} MB</el-descriptions-item>
+          <el-descriptions-item label="磁盘">{{ Math.round((vmDetail.storage_mb || 0) / 1024 * 10) / 10 }} GB</el-descriptions-item>
+          <el-descriptions-item label="操作系统">{{ vmDetail.os_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="所在物理机" :span="2">{{ vmDetail.host_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="所属租户" :span="2">{{ vmDetail.project_name || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <div class="status-section-title" style="margin-top: 14px">网卡 / IP / 端口组</div>
+        <el-table :data="vmDetail.networks || []" size="small" border>
+          <el-table-column label="网卡" width="80"><template #default="{ row }">{{ row.vif_id || row.name || '-' }}</template></el-table-column>
+          <el-table-column label="MAC" min-width="130"><template #default="{ row }"><span class="mono">{{ row.mac_address || '-' }}</span></template></el-table-column>
+          <el-table-column label="IP" min-width="120"><template #default="{ row }"><span class="mono">{{ row.ip_address || (row.ip_info && row.ip_info.ip_address) || '-' }}</span></template></el-table-column>
+          <el-table-column label="网络/端口组" min-width="140">
+            <template #default="{ row }">
+              {{ row.subnet_name || row.vpc_name || row.name || '-' }}
+              <span v-if="row.network_type">（{{ row.network_type }}）</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="status-section-title" style="margin-top: 14px">磁盘</div>
+        <el-table :data="vmDetail.disks || []" size="small" border>
+          <el-table-column label="磁盘" width="90"><template #default="{ row }">{{ row.id || '-' }}</template></el-table-column>
+          <el-table-column label="容量"><template #default="{ row }">{{ Math.round((row.size_mb || 0) / 1024 * 10) / 10 }} GB</template></el-table-column>
+          <el-table-column label="存储" min-width="140"><template #default="{ row }">{{ row.storage_name || '-' }}</template></el-table-column>
+        </el-table>
+      </template>
+      <el-empty v-else description="加载中" />
+    </el-drawer>
   </div>
 </template>
 
@@ -341,6 +505,15 @@ const bindKeyword = ref('')
 const bindSearching = ref(false)
 const refreshing = ref(false)
 
+// SCP 特有数据（只读查询：平台/集群/物理机/虚拟机/存储）
+const scpPlatform = ref({})
+const scpClusters = ref([])
+const scpHosts = ref([])
+const scpVms = ref([])
+const scpStorages = ref([])
+const showVmDetail = ref(false)
+const vmDetail = ref(null)
+
 // AC 特有数据（只取 STATUS 范畴：在线用户/吞吐量/流量排行）
 const acOnlineUsers = ref([])
 const acThroughput = ref({})
@@ -354,6 +527,10 @@ const isAF = computed(() => {
 const isAC = computed(() => {
   const dev = currentDevice()
   return dev && dev.type === 'ac'
+})
+const isSCP = computed(() => {
+  const dev = currentDevice()
+  return dev && dev.type === 'scp'
 })
 
 const meters = computed(() => {
@@ -397,6 +574,15 @@ async function load() {
       fetchOne(dev, 'objects', 'objects', r => { objects.value = r }),
       fetchOne(dev, 'services', 'services', r => { services.value = r }),
       fetchOne(dev, 'routes', 'routes', r => { routes.value = r }),
+    )
+  } else if (dev.type === 'scp') {
+    // SCP：平台/集群/物理机/虚拟机/存储（只读查询）
+    fetches.push(
+      fetchOne(dev, 'scp_platform', 'scp/platform', r => { scpPlatform.value = r || {} }),
+      fetchOne(dev, 'scp_clusters', 'scp/clusters', r => { scpClusters.value = r || [] }),
+      fetchOne(dev, 'scp_hosts', 'scp/hosts', r => { scpHosts.value = r || [] }),
+      fetchOne(dev, 'scp_vms', 'scp/vms?limit=200', r => { scpVms.value = r || [] }),
+      fetchOne(dev, 'scp_storages', 'scp/storages', r => { scpStorages.value = r || [] }),
     )
   } else {
     // AC：只取 STATUS 范畴数据（在线用户/吞吐量/用户流量排行/应用流量排行）
@@ -468,6 +654,20 @@ function fmtThroughput(val) {
   if (v < 1000 * 1000) return (v / 1000).toFixed(1) + ' Kbps'
   if (v < 1000 * 1000 * 1000) return (v / 1000 / 1000).toFixed(1) + ' Mbps'
   return (v / 1000 / 1000 / 1000).toFixed(2) + ' Gbps'
+}
+
+async function openVmDetail(row) {
+  const dev = currentDevice()
+  if (!dev || !row || !row.id) return
+  vmDetail.value = null
+  showVmDetail.value = true
+  try {
+    const r = await fetch(`/api/devices/${dev.id}/scp/vms/${row.id}`).then(resp => {
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      return resp.json()
+    })
+    vmDetail.value = r
+  } catch (e) { vmDetail.value = row }   // 失败时退回列表行数据
 }
 
 watch(() => store.currentDeviceId, load)
