@@ -6,6 +6,8 @@
 
 ## 2026-09-13
 
+### `0e9bfdd` fix: launcher 前端服务增加 frontend_host 绑定配置
+
 ### `aed5677` security: 移除硬编码的社区登录凭据，改为环境变量读取
 - zhuge_ai_client 的 BBS 账号密码改为 `ZHUGE_BBS_USERNAME` / `ZHUGE_BBS_PASSWORD` 环境变量
 - 运行时仍可经界面平台设置或 .env 配置（zhuge_kb_service 优先级更高）
