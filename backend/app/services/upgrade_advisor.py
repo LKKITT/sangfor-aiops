@@ -69,14 +69,31 @@ async def build_upgrade_advice(sw_version: str, status: dict | None = None,
         ],
     }
 
-    # ---- 行动清单（联动本 Agent 能力） ----
+    # ---- 行动清单（联动本 Agent 能力；AF 跨架构时拆分为旧架构升级 / 客服迁移 / 新架构升级） ----
     checklist = [
         {"step": 1, "action": "立即执行一次完整配置备份（结构化快照 + 配置文件）", "agent_action": "backup_now"},
         {"step": 2, "action": "确认软件升级授权有效、执行升级前巡检", "agent_action": None},
         {"step": 3, "action": "选择业务低峰窗口，双机环境先备后主", "agent_action": None},
-        {"step": 4, "action": "按路径逐级升级：" + (" → ".join(path["hops"]) if path["hops"] else "无需升级"), "agent_action": None},
-        {"step": 5, "action": "升级完成后执行升级后检查，并再次备份形成新基线", "agent_action": "backup_now"},
     ]
+    if path.get("cross_arch_migration"):
+        split_k = kb.version_key(kb.AF_ARCH_SPLIT)
+        old_part = [h for h in path["hops"] if kb.version_key(h) < split_k]
+        new_part = [h for h in path["hops"] if kb.version_key(h) >= split_k]
+        if old_part:
+            checklist.append({"step": len(checklist) + 1,
+                              "action": f"旧架构内逐级升级：{' → '.join(old_part)}", "agent_action": None})
+        checklist.append({"step": len(checklist) + 1,
+                          "action": "跨架构升级需联系深信服客服评估，并按官方方案重装系统盘迁移至新架构（不可直接升级覆盖）",
+                          "agent_action": None})
+        if new_part:
+            checklist.append({"step": len(checklist) + 1,
+                              "action": f"迁移完成后再逐级升级新架构：{' → '.join(new_part)}", "agent_action": None})
+    else:
+        checklist.append({"step": len(checklist) + 1,
+                          "action": "按路径逐级升级：" + (" → ".join(path["hops"]) if path["hops"] else "无需升级"),
+                          "agent_action": None})
+    checklist.append({"step": len(checklist) + 1,
+                      "action": "升级完成后执行升级后检查，并再次备份形成新基线", "agent_action": "backup_now"})
 
     return {
         "device_name": device_name,

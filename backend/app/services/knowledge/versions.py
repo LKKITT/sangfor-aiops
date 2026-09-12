@@ -11,11 +11,12 @@ AC = "ac"
 
 PRODUCT_NAMES = {AF: "下一代防火墙 AF", AC: "上网行为管理 AC"}
 
-# 升级路线（调研结论）：AF 8.0.50 为新旧架构分界，跨架构不可直升
-AF_ARCH_SPLIT = "8.0.50"
-AF_CHAIN_OLD = ["8.0.23", "8.0.26", "8.0.32", "8.0.35", "8.0.45"]
-AF_CHAIN_NEW = ["8.0.48", "8.0.51", "8.0.59", "8.0.69", "8.0.75", "8.0.85",
-                "8.0.95", "8.0.106", "8.0.107"]
+# 升级路线（官方功能页核实结论）：
+# AF 8.0.48 为旧架构末端；新架构自 8.0.69 起（与官方『新版本发布信息』页覆盖版本一致）。
+# 跨架构（8.0.48 → 8.0.69+）不是常规升级：需联系深信服客服评估，并按官方方案重装系统盘。
+AF_ARCH_SPLIT = "8.0.69"
+AF_CHAIN_OLD = ["8.0.23", "8.0.26", "8.0.32", "8.0.35", "8.0.45", "8.0.48"]
+AF_CHAIN_NEW = ["8.0.69", "8.0.75", "8.0.85", "8.0.106", "8.0.107"]
 AF_LATEST = "8.0.107"
 AC_CHAIN = ["12.0.5", "12.0.25", "12.0.45", "12.0.80", "13.0.47", "13.0.102",
             "13.0.121", "13.0.140"]
@@ -53,18 +54,11 @@ _reg(Release("8.0.85", AF, "new", "2023-12(约)", notes=[
     {"type": "已知问题", "title": "特定网卡组合接口概率性无法 up", "detail": "创实 C3000 KUKA/NIVA + X553 网卡组合下概率性出现"},
 ]))
 
-_reg(Release("8.0.95", AF, "new", "2024(约)", notes=[
+_reg(Release("8.0.106", AF, "new", "2025(约)", notes=[
     {"type": "新增", "title": "DDNS 策略", "detail": "支持动态域名解析配置"},
     {"type": "新增", "title": "VPN 隧道带宽管理", "detail": "支持对 VPN 隧道进行带宽管控"},
     {"type": "新增", "title": "未授权外联检测与防伪造", "detail": "增强内网外联行为检测能力"},
-    {"type": "优化", "title": "整体质量优化", "detail": "8.0.85 系列稳定性问题的持续优化版本"},
-], known_issues=[
-    {"type": "已知问题", "title": "SNAT 端口池延迟 120 秒回收", "detail": "SNAT 大网段场景触发端口池延迟回收，可能引起端口耗尽"},
-    {"type": "已知问题", "title": "弱密码拦截 JSON 账号提取问题", "detail": "8.0.95 SP01 补丁或升 8.0.106 解决"},
-]))
-
-_reg(Release("8.0.106", AF, "new", "2025(约)", notes=[
-    {"type": "修复", "title": "修复 8.0.95 系列已知问题", "detail": "修复端口池延迟回收、弱密码拦截等 8.0.95 系列问题"},
+    {"type": "修复", "title": "修复 8.0.95 系列已知问题", "detail": "修复端口池延迟回收、弱密码拦截等历史问题"},
 ], upgrade_notes=[
     "官方提供《AF8.0.106版本升级方案》专项文档",
 ]))
@@ -78,19 +72,17 @@ _reg(Release("8.0.107", AF, "new", "2025(当前最新)", is_latest=True, notes=[
 ]))
 
 _reg(Release("8.0.45", AF, "old", "2022(约)", notes=[
-    {"type": "优化", "title": "旧架构最终版本", "detail": "旧架构路线末端，不能再向 8.0.48+ 新架构直升，需联系售后做架构迁移"},
+    {"type": "优化", "title": "旧架构版本", "detail": "可直升至旧架构末端 8.0.48；跨架构到新架构需客服评估 + 重装系统盘"},
 ], known_issues=[], upgrade_notes=[
-    "旧架构→新架构需联系深信服售后执行架构迁移，不可直接升级",
-    "迁移前务必完成完整配置备份",
+    "旧架构先升级至末端 8.0.48；跨架构到新架构（8.0.69+）需联系深信服客服评估",
+    "跨架构迁移涉及重装系统盘，迁移前务必完成完整配置备份",
 ]))
 
-_reg(Release("8.0.48", AF, "new", "2023(约)", notes=[
-    {"type": "新增", "title": "新架构首发版本", "detail": "全新架构设计，支持更高性能与更多功能"},
-    {"type": "新增", "title": "云威胁检测", "detail": "云端威胁情报联动检测能力"},
-    {"type": "优化", "title": "策略管理优化", "detail": "策略配置与管理体验全面优化"},
+_reg(Release("8.0.48", AF, "old", "2023(约)", notes=[
+    {"type": "优化", "title": "旧架构末端版本", "detail": "旧架构路线最后一个版本，旧架构内可直接升级至此"},
     {"type": "安全", "title": "多项安全修复", "detail": "修复旧架构已知安全漏洞"},
 ], upgrade_notes=[
-    "旧架构设备需先由售后执行架构迁移后方可升级至此版本",
+    "8.0.48 之后跨架构升级到新架构（8.0.69+）：需联系深信服客服评估，按官方方案重装系统盘，不可直接升级覆盖",
 ]))
 
 _reg(Release("13.0.102", AC, "new", "2024(约)", notes=[
@@ -191,7 +183,7 @@ def upgrade_path(product: str, current: str, target: str | None = None) -> dict:
     path = [v for v in chain if cur_k < version_key(v) <= tgt_k]
     result["hops"] = path
 
-    # AF 跨架构：旧架构（≤8.0.45）旧链走完后，接新架构链继续升级
+    # AF 跨架构：旧架构（<8.0.69）先走旧链到末端 8.0.48，跨架构需客服评估 + 重装系统盘
     if product == AF and cur_k < version_key(AF_ARCH_SPLIT):
         old_tail = [v for v in AF_CHAIN_OLD if cur_k < version_key(v) <= tgt_k]
         new_part = [v for v in AF_CHAIN_NEW if cur_k < version_key(v) <= tgt_k]
@@ -199,12 +191,12 @@ def upgrade_path(product: str, current: str, target: str | None = None) -> dict:
         result["cross_arch_migration"] = True
         if old_tail:
             result["notes"].append(
-                f"旧架构先逐级升至 {old_tail[-1]}；{old_tail[-1]} → {new_part[0] if new_part else target} "
-                "为跨架构节点，请按官方迁移指引执行并联系深信服售后确认")
+                f"旧架构内先逐级升级至末端 {old_tail[-1]}；此后跨架构升级到新架构（{new_part[0] if new_part else target} 起）"
+                "不可直接升级覆盖：需联系深信服客服评估，并按官方方案重装系统盘")
         elif new_part:
             result["notes"].append(
-                f"当前已处于旧架构末端，可直接升级至新架构 {new_part[0]}，"
-                "该跳为跨架构节点，请按官方迁移指引执行并联系深信服售后确认")
+                f"当前已处于旧架构末端 {current}；跨架构升级到新架构（{new_part[0]} 起）"
+                "不可直接升级覆盖：需联系深信服客服评估，并按官方方案重装系统盘")
     elif product == AF and cur_k >= version_key(AF_ARCH_SPLIT) and not path:
         result["notes"].append("当前已在新架构链上，按链内相邻版本逐级升级")
 

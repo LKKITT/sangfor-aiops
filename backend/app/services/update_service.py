@@ -521,7 +521,7 @@ async def get_update_overview(sw_version: str) -> dict:
         "product_name": kb.PRODUCT_NAMES.get(product, product),
         "current_version": current,
         "latest_version": latest,
-        "up_to_date": current == latest,
+        "up_to_date": kb.version_key(current) >= kb.version_key(latest),
         "releases": releases,
         "advisories_hit": advisories_hit,
         "eol": {"hit": eol, "detail": eol_detail},

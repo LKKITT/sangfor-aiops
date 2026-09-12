@@ -345,6 +345,7 @@ const TOOL_NAMES = {
   diff_backups: '对比备份差异', get_software_updates: '获取软件更新信息', get_upgrade_advice: '生成升级建议',
   get_audit_logs: '查询审计日志', restore_backup: '生成恢复计划', execute_restore: '执行恢复',
   search_official_knowledge: '查询官方知识库',
+  record_to_kb: '沉淀对话到知识库', ingest_url_to_kb: '沉淀链接到知识库',
   list_available_devices: '查询设备列表', add_device: '添加设备',
   create_nat_rule: '新建 NAT', update_nat_rule: '修改 NAT', delete_nat_rule: '删除 NAT',
   create_acl_rule: '新建策略', update_acl_rule: '修改策略', delete_acl_rule: '删除策略',

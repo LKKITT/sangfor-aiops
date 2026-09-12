@@ -14,6 +14,7 @@ from app.agent.tools import get_tools_by_name
 
 KB_TOOL_NAME = "search_official_knowledge"
 KB_RECORD_TOOL_NAME = "record_to_kb"
+KB_INGEST_TOOL_NAME = "ingest_url_to_kb"
 
 
 @dataclass
@@ -150,7 +151,7 @@ def resolve_skill_tools(skill: Skill | None, device_type: str = "") -> list:
     available = get_tools_by_name(device_type)
     if skill is None:
         return list(available.values())
-    unlocked = set(skill.tools) | {KB_RECORD_TOOL_NAME}
+    unlocked = set(skill.tools) | {KB_RECORD_TOOL_NAME, KB_INGEST_TOOL_NAME}
     return [t for name, t in available.items() if not t.write or name in unlocked]
 
 

@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 from app import db
 from app.adapters.base import ChangeOp, DeviceClient
 from app.services import config_service
+from app.services import personal_kb_service
 from app.services import update_service, upgrade_advisor
 from app.services import zhuge_kb_service
 from app.services.analyzer import run_checks, check_rule_conflicts
@@ -423,6 +424,38 @@ def _p_record_kb(client: DeviceClient, args: dict, device: dict) -> dict:
     }
 
 
+async def _h_ingest_url(client: DeviceClient, args: dict, device: dict) -> dict:
+    """抓取用户指定链接，提炼内容沉淀到个人知识库。"""
+    url = str(args.get("url", "")).strip()
+    note = str(args.get("note") or "").strip()
+    result = await personal_kb_service.ingest_url(url, note)
+    if result.get("status") == "ok":
+        result["_llm_summary"] = (
+            f"已从链接「{result['title']}」提炼知识：新增 {result['saved']} 条词条（更新 {result['updated']} 条），"
+            f"来源链接已附在词条引用中。请告知用户可在『个人知识库』页面查看。")
+    elif result.get("status") == "skipped":
+        result["_llm_summary"] = f"链接沉淀未完成：{result.get('reason')}。请如实告知用户。"
+    else:
+        result["_llm_summary"] = f"链接沉淀未成功（{result.get('reason', '未知原因')}）。请如实告知用户，可建议换用内容更具体的详情页链接。"
+    return result
+
+
+def _p_ingest_url(client: DeviceClient, args: dict, device: dict) -> dict:
+    url = str(args.get("url", "")).strip()
+    note = str(args.get("note") or "").strip()
+    return {
+        "title": "沉淀网页链接内容到个人知识库",
+        "resource": "kb_ingest", "resource_cn": "知识库沉淀", "op": "create", "target_id": "",
+        "before": None,
+        "after": {"url": url, **({"note": note[:200]} if note else {})},
+        "fields": ["url"] + (["note"] if note else []),
+        "conflicts": [],
+        "warning": "",
+        "detail": (f"确认后将抓取该页面内容（{url}），经 LLM 提炼为知识词条沉淀到个人知识库，"
+                   "词条引用会附带来源链接。同主题已有词条会被更新为最新内容。"),
+    }
+
+
 async def _h_switch_device(client: DeviceClient, args: dict, device: dict) -> dict:
     """列出所有可用设备，供用户选择切换。"""
     devices = db.list_devices()
@@ -541,6 +574,13 @@ TOOLS: list[Tool] = [
                  "properties": {"note": {"type": "string",
                                          "description": "可选：用户希望重点记录的内容或备注"}},
                  }, _h_record_kb, prepare=_p_record_kb),
+    _write_tool("ingest_url_to_kb",
+                "抓取用户提供的网页链接，把页面内容提炼沉淀到个人知识库（用户给出 URL 并要求『把这个链接录入/沉淀到知识库』时使用）。生成确认卡片供用户确认后执行。",
+                {"type": "object",
+                 "properties": {"url": {"type": "string", "description": "要沉淀的网页链接（http/https）"},
+                                "note": {"type": "string", "description": "可选：用户希望重点关注的方向"}},
+                 "required": ["url"],
+                 }, _h_ingest_url, prepare=_p_ingest_url),
     Tool("search_official_knowledge",
          "检索深信服官方知识库（诸葛小T）：适用于产品配置方法、故障排查思路、版本兼容性、官方最佳实践等通用技术问题，回答附带官方引用来源。设备实时数据（状态/策略/资源）请使用设备查询工具，不要用本工具。",
          {"type": "object",

@@ -182,6 +182,43 @@ def test_get_messages_since_id_incremental():
     assert db.max_message_id(conv["id"]) > since
 
 
+def test_persist_entries_create_update_and_extra_refs():
+    """_persist_entries：新增/同主题更新；extra_refs（来源链接）合并进引用。"""
+    entries = [{"topic": "链接沉淀主题", "category": "最佳实践", "summary": "s", "content_md": "c",
+                "key_points": ["k"], "tags": ["t"], "references": []}]
+    saved, updated = pks._persist_entries(entries, conv_id="",
+                                          extra_refs=[{"title": "来源：X", "url": "https://a.b/c"}])
+    assert (saved, updated) == (1, 0)
+    got = db.get_kb_entry_by_topic("链接沉淀主题")
+    assert got["references"][0]["url"] == "https://a.b/c"
+    # 同主题再沉淀：更新而非新增
+    saved2, updated2 = pks._persist_entries(
+        [{**entries[0], "summary": "新摘要"}], conv_id="",
+        extra_refs=[{"title": "来源：X", "url": "https://a.b/c"}])
+    assert (saved2, updated2) == (0, 1)
+    assert db.get_kb_entry_by_topic("链接沉淀主题")["summary"] == "新摘要"
+
+
+def test_ingest_url_validation_and_unreachable():
+    import asyncio
+    # 非法 URL：直接校验失败，不发请求
+    r = asyncio.run(pks.ingest_url("ftp://bad"))
+    assert r["status"] == "error" and "http(s)" in r["reason"]
+    # 不可达地址：抓取失败优雅降级
+    r2 = asyncio.run(pks.ingest_url("http://127.0.0.1:9/page"))
+    assert r2["status"] == "error" and "抓取失败" in r2["reason"]
+
+
+def test_ingest_tool_registered_and_available():
+    from app.agent import skills
+    from app.agent.tools import TOOLS_BY_NAME
+    tool = TOOLS_BY_NAME["ingest_url_to_kb"]
+    assert tool.write and tool.prepare is not None
+    # 任意技能下均可用（用户对话要求沉淀时的入口）
+    names = {t.name for t in skills.resolve_skill_tools(skills.select_skill("看设备状态", "af"), "af")}
+    assert "ingest_url_to_kb" in names and "record_to_kb" in names
+
+
 def test_stats_and_reflections():
     db.save_kb_entry(_entry("统计词条A", tags=["t1", "t2"]))
     db.save_kb_entry(_entry("统计词条B", tags=["t1"]))

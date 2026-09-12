@@ -7,13 +7,17 @@
 - 全程静默降级：未配置 LLM 或提炼失败不影响对话主流程，词条保持待沉淀状态可手动重试。
 """
 import asyncio
+import html as htmllib
 import json
 import logging
+import re
 
+import httpx
 from openai import AsyncOpenAI
 
 from app import db
 from app.services.app_settings import get_llm_config
+from app.services.update_service import UA, _embedded_content_lines, _strip_html_to_lines
 
 log = logging.getLogger("sangfor-agent")
 
@@ -205,21 +209,38 @@ async def generate_entries_for_conv(conv_id: str, force: bool = False,
     if finish == "length":
         log.warning("知识库提炼输出被截断(conv=%s)，使用截断修复解析", conv_id)
     entries = _parse_entries(raw)
+    saved, updated = _persist_entries(entries, conv_id)
+    log.info("知识库沉淀完成 conv=%s 生成=%s 新增=%s 更新=%s", conv_id, len(entries), saved, updated)
+    return {"status": "ok", "conv_id": conv_id,
+            "generated": len(entries), "saved": saved, "updated": updated}
+
+
+def _persist_entries(entries: list[dict], conv_id: str = "",
+                     extra_refs: list[dict] | None = None) -> tuple[int, int]:
+    """词条入库（按主题去重/更新）。返回 (新增数, 更新数)。
+
+    引用来源合并顺序：LLM 提炼的引用 → 对话中知识库工具返回的官方链接 → extra_refs（如链接沉淀的来源页）。
+    """
     saved, updated = 0, 0
     for e in entries:
         topic = (e.get("topic") or "").strip()
+        if not topic:
+            continue
+        refs = _merge_refs(_norm_entry_refs(e.get("references")),
+                           _conv_official_refs(conv_id) if conv_id else [])
+        refs = _merge_refs(refs, list(extra_refs or []))
         entry_fields = {
             "summary": (e.get("summary") or "")[:200],
             "content_md": e.get("content_md") or "",
             "key_points": [str(x) for x in (e.get("key_points") or [])][:8],
             "tags": [str(x)[:20] for x in (e.get("tags") or [])][:8],
-            "references": _merge_refs(_norm_entry_refs(e.get("references")),
-                                      _conv_official_refs(conv_id)),
+            "references": refs,
         }
-        existing = db.get_kb_entry_by_topic(topic) if topic else None
+        existing = db.get_kb_entry_by_topic(topic)
         if existing:
             # 同主题：刷新内容保持知识最新（不产生重复词条，也不静默丢弃新内容）
-            db.update_kb_entry_content(existing["id"], conv_id, entry_fields["summary"],
+            db.update_kb_entry_content(existing["id"], conv_id or existing["conv_id"],
+                                       entry_fields["summary"],
                                        entry_fields["content_md"], entry_fields["key_points"],
                                        entry_fields["references"], entry_fields["tags"])
             updated += 1
@@ -230,8 +251,52 @@ async def generate_entries_for_conv(conv_id: str, force: bool = False,
             **entry_fields,
         })
         saved += 1
-    log.info("知识库沉淀完成 conv=%s 生成=%s 新增=%s 更新=%s", conv_id, len(entries), saved, updated)
-    return {"status": "ok", "conv_id": conv_id,
+    return saved, updated
+
+
+async def ingest_url(url: str, note: str = "") -> dict:
+    """抓取网页内容，经 LLM WIKI 提炼为知识词条沉淀到个人知识库（词条引用附来源链接）。"""
+    url = (url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return {"status": "error", "reason": "请提供有效的 http(s) 链接"}
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as cli:
+            resp = await cli.get(url, headers={"User-Agent": UA})
+    except Exception as e:   # noqa: BLE001 —— 抓取失败降级
+        return {"status": "error", "reason": f"链接抓取失败：{e}"}
+    if resp.status_code != 200:
+        return {"status": "error", "reason": f"链接返回 HTTP {resp.status_code}"}
+    raw = resp.text
+    tm = re.search(r"<title>([^<]+)</title>", raw)
+    title = htmllib.unescape(tm.group(1)).strip()[:120] if tm else url
+    # 内容提取：优先页面内嵌数据（support 平台页面形态），不足时回退全文剥标签；
+    # 行级清洗去掉导航/菜单短行（SPA 列表页静态 HTML 只有菜单文字）
+    text = "\n".join(_embedded_content_lines(raw))
+    if len(text) < 200:
+        text = "\n".join(_strip_html_to_lines(raw))
+    text = "\n".join(l for l in text.splitlines() if len(l.strip()) >= 8)[:8000]
+    if len(text) < 150:
+        return {"status": "error",
+                "reason": "该页面为动态渲染（列表/登录类页面由前端异步加载），未能提取到有效正文；"
+                          "请打开具体内容页/详情页后复制其链接再沉淀"}
+    llm = _llm()
+    if llm is None:
+        return {"status": "skipped", "reason": "未配置 LLM，无法提炼页面内容"}
+    resp2 = await llm.chat.completions.create(
+        model=get_llm_config()["model"],
+        messages=[{"role": "system", "content": WIKI_SYSTEM_PROMPT},
+                  {"role": "user",
+                   "content": f"来源标题：{title}\n来源链接：{url}\n\n以下是需要提炼的网页内容：\n{text}"}],
+        temperature=0.2, max_tokens=8000)
+    entries = _parse_entries(resp2.choices[0].message.content or "")
+    if not entries:
+        return {"status": "error",
+                "reason": "页面内容未提炼出有价值的知识词条（可能是导航/列表类页面），"
+                          "请改用内容更具体的详情页链接"}
+    src_ref = [{"title": f"来源：{title}", "url": url}]
+    saved, updated = _persist_entries(entries, conv_id="", extra_refs=src_ref)
+    log.info("链接沉淀完成 url=%s 新增=%s 更新=%s", url, saved, updated)
+    return {"status": "ok", "title": title, "url": url,
             "generated": len(entries), "saved": saved, "updated": updated}
 
 
