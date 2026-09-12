@@ -129,8 +129,7 @@ async def _h_checkup(client: DeviceClient, args: dict, device: dict) -> dict:
     report = run_checks(snapshot, status, device.get("type", ""))
     report["summary_text"] = (
         f"体检得分 {report['score']}/100（{report['grade']}）：高危 {report['counts']['high']} 项、"
-        f"中危 {report['counts']['medium']} 项、低危 {report['counts']['low']} 项，"
-        f"其中 {report['auto_fixable']} 项支持一键修复")
+        f"中危 {report['counts']['medium']} 项、低危 {report['counts']['low']} 项")
     return report
 
 
@@ -398,6 +397,32 @@ async def _h_search_kb(client: DeviceClient, args: dict, device: dict) -> dict:
     return result
 
 
+async def _h_record_kb(client: DeviceClient, args: dict, device: dict) -> dict:
+    """把当前对话标记为待沉淀（编排器在执行后触发后台提炼）。"""
+    note = str(args.get("note") or "").strip()
+    result = {"ok": True, "message": "已登记：对话结束后将自动提炼为个人知识库词条"}
+    if note:
+        result["note"] = note[:200]
+    result["_llm_summary"] = ("已登记把本次对话沉淀到个人知识库，对话结束后会自动提炼知识词条。"
+                              "请告知用户可在『个人知识库』页面查看结果。")
+    return result
+
+
+def _p_record_kb(client: DeviceClient, args: dict, device: dict) -> dict:
+    note = str(args.get("note") or "").strip()
+    return {
+        "title": "记录当前对话到个人知识库",
+        "resource": "kb_record", "resource_cn": "知识库沉淀", "op": "create", "target_id": "",
+        "before": None,
+        "after": {"note": note[:200]} if note else {},
+        "fields": ["note"] if note else [],
+        "conflicts": [],
+        "warning": "",
+        "detail": ("确认后，本次对话内容将由 LLM 提炼为个人知识库词条"
+                   + (f"（重点：{note[:100]}）" if note else "") + "，可在『个人知识库』页面查看。"),
+    }
+
+
 async def _h_switch_device(client: DeviceClient, args: dict, device: dict) -> dict:
     """列出所有可用设备，供用户选择切换。"""
     devices = db.list_devices()
@@ -510,6 +535,12 @@ TOOLS: list[Tool] = [
     }, _h_audit),
     Tool("list_available_devices", "列出所有可用的设备列表，供用户选择切换目标设备。当用户提到其他设备名或想操作另一个设备时使用。",
          {"type": "object", "properties": {}}, _h_switch_device),
+    _write_tool("record_to_kb",
+                "把当前对话记录沉淀到个人知识库（用户明确要求『记录/保存/沉淀到知识库』时使用）。可选 note 说明希望重点记录的内容。生成确认卡片供用户确认后登记。",
+                {"type": "object",
+                 "properties": {"note": {"type": "string",
+                                         "description": "可选：用户希望重点记录的内容或备注"}},
+                 }, _h_record_kb, prepare=_p_record_kb),
     Tool("search_official_knowledge",
          "检索深信服官方知识库（诸葛小T）：适用于产品配置方法、故障排查思路、版本兼容性、官方最佳实践等通用技术问题，回答附带官方引用来源。设备实时数据（状态/策略/资源）请使用设备查询工具，不要用本工具。",
          {"type": "object",

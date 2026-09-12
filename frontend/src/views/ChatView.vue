@@ -9,6 +9,9 @@
           </el-checkbox>
         </div>
         <div class="device-selector" v-if="store.devices.length">
+          <el-button size="small" text @click="newConversation" title="开启新会话：清空当前上下文，避免话题混淆与 token 浪费；设备信息与长期记忆会自动带入新会话">
+            <el-icon><CirclePlus /></el-icon> 新会话
+          </el-button>
           <el-icon style="margin-right: 4px; vertical-align: -2px"><Monitor /></el-icon>
           <el-select v-model="store.currentDeviceId" size="small" style="width: 260px"
                      @change="onDeviceChange" placeholder="选择目标设备">
@@ -299,8 +302,10 @@ import { ref, reactive, computed, nextTick, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { store, currentDevice, loadDevices } from '../store.js'
-import { chatStream, Devices } from '../api.js'
+import { apiGet, chatStream, Devices } from '../api.js'
 
+// 会话缓存（模块级）：切视图/切设备不丢；页面刷新后由后端 last-conversation 接口兜底恢复
+const convCache = {}
 const md = new MarkdownIt({ breaks: true })
 const render = (text) => md.render(text || '')
 const input = ref('')
@@ -309,8 +314,7 @@ const confirming = ref(false)
 // 知识库检索开关：勾选后对话可调用官方知识库工具
 const useKnowledge = ref(false)
 
-// 对话持久化：按设备ID存储消息列表
-const messagesMap = {}
+// 对话状态（组件级，缓存与持久化见模块级 convCache + 后端接口）
 const messages = ref([])
 // 当前对话ID（续接对话时使用）
 let currentConvId = null
@@ -357,18 +361,71 @@ const addForm = ref({ name: '', type: 'af', mode: 'real', base_url: '', device_i
 const addTesting = ref(false)
 const addTestResult = ref(null)
 
-function saveMessages() {
-  const devId = store.currentDeviceId
-  if (devId) messagesMap[devId] = JSON.parse(JSON.stringify(messages.value))
+function cachePut(devId) {
+  if (!devId) return
+  convCache[devId] = { list: JSON.parse(JSON.stringify(messages.value)), convId: currentConvId }
 }
 
-function loadMessages(devId) {
-  if (devId && messagesMap[devId]) {
-    messages.value = messagesMap[devId]
-  } else {
-    messages.value = []
-    pushHello(devId)
+async function loadMessages(devId) {
+  if (!devId) return
+  const cached = convCache[devId]
+  if (cached) {
+    messages.value = cached.list
+    currentConvId = cached.convId
+    return
   }
+  messages.value = []
+  currentConvId = null
+  pushHello(devId)
+  await restoreFromBackend(devId)
+}
+
+// 把后端消息历史映射回前端消息模型（工具调用合成轨迹芯片，tool 消息并入 trace）
+function mapHistoryMessages(rawMsgs) {
+  const doneCalls = new Set()
+  for (const m of rawMsgs) {
+    if (m.role === 'tool') doneCalls.add(m.content?.tool_call_id)
+  }
+  const out = []
+  for (const m of rawMsgs) {
+    const c = m.content || {}
+    if (m.role === 'user') {
+      out.push({ role: 'user', text: c.text || '' })
+    } else if (m.role === 'assistant' && (c.text || c.tool_calls?.length)) {
+      const trace = (c.tool_calls || []).map(tc => {
+        const cn = TOOL_NAMES[tc.name] || tc.name
+        return doneCalls.has(tc.id) ? `${cn} ✓` : `${cn} …`
+      })
+      out.push({ role: 'assistant', text: c.text || '', trace, confirm: null })
+    }
+  }
+  return out
+}
+
+// 从后端恢复该设备最近一次会话（文本+工具轨迹+待确认卡片基础形态）
+async function restoreFromBackend(devId) {
+  try {
+    const data = await apiGet(`/api/chat/last-conversation/${devId}`)
+    if (!data.conv_id || !data.messages?.length) return
+    if (messages.value.length > 1) return   // 用户已在恢复期间交互，放弃覆盖
+    currentConvId = data.conv_id
+    const restored = mapHistoryMessages(data.messages)
+    if (data.pending_action) {
+      restored.push({
+        role: 'assistant', text: '', trace: [],
+        confirm: {
+          action_id: data.pending_action.action_id,
+          title: data.pending_action.summary,
+          status: 'pending',
+          warning: '该变更卡片由历史会话恢复：确认/拒绝可直接执行，参数与风险详情以原对话为准'
+        }
+      })
+    }
+    if (restored.length) {
+      messages.value = restored
+      scrollBottom()
+    }
+  } catch { /* 恢复失败保持欢迎语，不影响新对话 */ }
 }
 
 onMounted(async () => {
@@ -377,8 +434,7 @@ onMounted(async () => {
 })
 watch(() => store.currentDeviceId, (newId, oldId) => {
   if (newId && newId !== oldId) {
-    saveMessages(oldId)
-    currentConvId = null
+    cachePut(oldId)
     loadMessages(newId)
   }
 })
@@ -390,6 +446,17 @@ function onDeviceChange() {
 function refreshDevices() {
   loadDevices()
   ElMessage.success('设备列表已刷新')
+}
+
+// 新会话：清空上下文（设备信息与长期记忆仍会自动注入，不会丢失设备基本情况）
+function newConversation() {
+  if (streaming.value) return ElMessage.warning('请先终止当前对话')
+  const dev = currentDevice()
+  if (!dev) return
+  currentConvId = null
+  pushHello(dev.id)
+  cachePut(dev.id)
+  ElMessage.success('已开启新会话，设备信息与历史记忆会自动带入')
 }
 
 function pushHello(devId) {

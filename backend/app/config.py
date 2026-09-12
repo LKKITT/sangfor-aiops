@@ -41,6 +41,8 @@ class Settings:
 
     # 设备 HTTP
     device_http_timeout: float = float(os.getenv("DEVICE_HTTP_TIMEOUT", "30"))
+    # 设备登录超时：不可达设备在登录阶段快速失败（正常登录 0.2-2s），避免拖满 30s
+    device_login_timeout: float = float(os.getenv("DEVICE_LOGIN_TIMEOUT", "8"))
     simulator_auth: dict = {
         "username": os.getenv("SIMULATOR_USERNAME", "admin"),
         "password": os.getenv("SIMULATOR_PASSWORD", "Sangfor@123"),

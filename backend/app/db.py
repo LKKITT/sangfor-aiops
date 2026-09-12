@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '新对话',
+    device_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -145,6 +146,10 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(SCHEMA)
+        # 存量库迁移：conversations 补 device_id 列（用于按设备恢复最近会话）
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
+        if "device_id" not in cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN device_id TEXT NOT NULL DEFAULT ''")
 
 
 def now() -> str:
@@ -279,10 +284,13 @@ def list_audit(limit: int = 200) -> list[dict]:
 
 # ---------------- conversations / messages ----------------
 
-def create_conversation(title: str = "新对话") -> dict:
-    conv = {"id": new_id("conv_"), "title": title[:40], "created_at": now(), "updated_at": now()}
+def create_conversation(title: str = "新对话", device_id: str = "") -> dict:
+    conv = {"id": new_id("conv_"), "title": title[:40], "device_id": device_id,
+            "created_at": now(), "updated_at": now()}
     with _connect() as conn:
-        conn.execute("INSERT INTO conversations (id,title,created_at,updated_at) VALUES (:id,:title,:created_at,:updated_at)", conv)
+        conn.execute(
+            "INSERT INTO conversations (id,title,device_id,created_at,updated_at)"
+            " VALUES (:id,:title,:device_id,:created_at,:updated_at)", conv)
     return conv
 
 
@@ -292,11 +300,15 @@ def get_conversation(conv_id: str) -> Optional[dict]:
     return _row_to_dict(row) if row else None
 
 
-def touch_conversation(conv_id: str, title: Optional[str] = None) -> None:
+def touch_conversation(conv_id: str, title: Optional[str] = None,
+                       device_id: Optional[str] = None) -> None:
     with _connect() as conn:
         if title:
             conn.execute("UPDATE conversations SET updated_at=?, title=? WHERE id=? AND title='新对话'",
                          (now(), title[:40], conv_id))
+        if device_id:
+            conn.execute("UPDATE conversations SET updated_at=?, device_id=? WHERE id=?",
+                         (now(), device_id, conv_id))
         else:
             conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), conv_id))
 
@@ -307,6 +319,51 @@ def list_conversations(limit: int = 50) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+def list_conversations_paged(page: int = 1, page_size: int = 20, keyword: str = "",
+                             device_id: str = "", start: str = "", end: str = "") -> dict:
+    """分页会话列表（含消息数/最后一条用户消息/摘要/设备名），支持筛选。
+
+    单条 SQL 聚合完成，替代旧的“逐会话全量拉消息”实现。
+    """
+    page, page_size = max(1, page), min(max(1, page_size), 100)
+    where, args = "1=1", []
+    if keyword:
+        where += " AND (c.title LIKE ? OR c.id IN (SELECT conv_id FROM messages WHERE content_json LIKE ?))"
+        args += [f"%{keyword}%", f"%{keyword}%"]
+    if device_id:
+        where += " AND c.device_id = ?"
+        args.append(device_id)
+    if start:
+        where += " AND c.updated_at >= ?"
+        args.append(start)
+    if end:
+        where += " AND c.updated_at <= ?"
+        args.append(f"{end} 23:59:59")
+    with _connect() as conn:
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM conversations c WHERE {where}",
+                             args).fetchone()["c"]
+        rows = conn.execute(
+            f"""SELECT c.id, c.title, c.device_id, c.created_at, c.updated_at,
+                  (SELECT COUNT(*) FROM messages m WHERE m.conv_id = c.id) AS msg_count,
+                  (SELECT content_json FROM messages m
+                    WHERE m.conv_id = c.id AND m.role = 'user' ORDER BY id DESC LIMIT 1) AS last_user_json,
+                  (SELECT s.summary FROM conv_summaries s WHERE s.conv_id = c.id) AS summary,
+                  d.name AS device_name
+                FROM conversations c LEFT JOIN devices d ON d.id = c.device_id
+                WHERE {where} ORDER BY c.updated_at DESC LIMIT ? OFFSET ?""",
+            args + [page_size, (page - 1) * page_size]).fetchall()
+    items = []
+    for r in rows:
+        d = _row_to_dict(r)
+        try:
+            last_user = json.loads(d.pop("last_user_json") or "null")
+        except (ValueError, TypeError):
+            last_user = None
+        d["last_message"] = (last_user or {}).get("text", "")[:100]
+        items.append(d)
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
 def add_message(conv_id: str, role: str, content: dict) -> None:
     with _connect() as conn:
         conn.execute("INSERT INTO messages (conv_id,role,content_json,created_at) VALUES (?,?,?,?)",
@@ -314,15 +371,48 @@ def add_message(conv_id: str, role: str, content: dict) -> None:
     touch_conversation(conv_id)
 
 
-def get_messages(conv_id: str) -> list[dict]:
+def max_message_id(conv_id: str) -> int:
+    """会话当前最大消息 id（新消息从该 id 之后开始），用于增量提取。"""
     with _connect() as conn:
-        rows = conn.execute("SELECT * FROM messages WHERE conv_id=? ORDER BY id", (conv_id,)).fetchall()
+        row = conn.execute("SELECT MAX(id) AS m FROM messages WHERE conv_id=?", (conv_id,)).fetchone()
+    return (row["m"] or 0) if row else 0
+
+
+def get_messages(conv_id: str, limit: Optional[int] = None,
+                 since_id: Optional[int] = None) -> list[dict]:
+    """会话消息（按 id 升序）。limit=只取最近 N 条；since_id=只取该 id 之后的新消息。"""
+    with _connect() as conn:
+        if since_id:
+            if limit:
+                rows = conn.execute(
+                    "SELECT * FROM (SELECT * FROM messages WHERE conv_id=? AND id>? ORDER BY id DESC LIMIT ?)"
+                    " ORDER BY id", (conv_id, since_id, limit)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE conv_id=? AND id>? ORDER BY id",
+                    (conv_id, since_id)).fetchall()
+        elif limit:
+            rows = conn.execute(
+                "SELECT * FROM (SELECT * FROM messages WHERE conv_id=? ORDER BY id DESC LIMIT ?)"
+                " ORDER BY id", (conv_id, limit)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM messages WHERE conv_id=? ORDER BY id",
+                                (conv_id,)).fetchall()
     out = []
     for r in rows:
         d = _row_to_dict(r)
         d["content"] = json.loads(d.pop("content_json"))
         out.append(d)
     return out
+
+
+def latest_conversation_by_device(device_id: str) -> Optional[dict]:
+    """该设备最近一次会话（按 updated_at），用于对话历史恢复。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM conversations WHERE device_id=? ORDER BY updated_at DESC LIMIT 1",
+            (device_id,)).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 # ---------------- update cache ----------------
@@ -569,6 +659,26 @@ def kb_entry_topic_exists(topic: str) -> bool:
     return row is not None
 
 
+def get_kb_entry_by_topic(topic: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM kb_entries WHERE topic=? ORDER BY updated_at DESC LIMIT 1",
+                           (topic,)).fetchone()
+    return _kb_entry_from_row(row) if row else None
+
+
+def update_kb_entry_content(entry_id: str, conv_id: str, summary: str, content_md: str,
+                            key_points: list, references: list, tags: list) -> None:
+    """同主题词条刷新：内容/要点/引用/标签以最新沉淀为准，保留原 id 与首次创建时间。"""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE kb_entries SET conv_id=?, summary=?, content_md=?, key_points_json=?,"
+            " references_json=?, tags_json=?, updated_at=? WHERE id=?",
+            (conv_id, summary[:200], content_md,
+             json.dumps(key_points[:8], ensure_ascii=False),
+             json.dumps(references[:8], ensure_ascii=False),
+             json.dumps(tags[:6], ensure_ascii=False), now(), entry_id))
+
+
 def conv_kb_sedimented(conv_id: str) -> bool:
     with _connect() as conn:
         row = conn.execute("SELECT 1 FROM kb_entries WHERE conv_id=? LIMIT 1", (conv_id,)).fetchone()
@@ -576,11 +686,12 @@ def conv_kb_sedimented(conv_id: str) -> bool:
 
 
 def list_pending_kb_convs() -> list[str]:
-    """勾选过知识库（审计中有 KB 工具调用）且尚未沉淀、未被忽略的对话 ID。"""
+    """待沉淀对话：勾选过知识库或明确要求沉淀（KB 检索/沉淀登记审计）且尚未沉淀、未被忽略。"""
     with _connect() as conn:
         rows = conn.execute(
             "SELECT DISTINCT conv_id FROM audit_logs"
-            " WHERE action='agent.tool.search_official_knowledge' AND conv_id != ''"
+            " WHERE action IN ('agent.tool.search_official_knowledge', 'agent.tool.record_to_kb')"
+            " AND conv_id != ''"
             " AND conv_id NOT IN (SELECT DISTINCT conv_id FROM kb_entries)"
             " AND conv_id NOT IN (SELECT conv_id FROM kb_dismissed)"
             " ORDER BY ts DESC").fetchall()
@@ -626,6 +737,11 @@ def list_kb_reflections(limit: int = 20) -> list[dict]:
             d["stats"] = {}
         out.append(d)
     return out
+
+
+def delete_kb_reflection(reflection_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM kb_reflections WHERE id=?", (reflection_id,))
 
 
 def kb_stats() -> dict:

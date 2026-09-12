@@ -95,6 +95,13 @@ def reflections(limit: int = 20) -> list[dict]:
     return db.list_kb_reflections(limit=min(limit, 100))
 
 
+@router.delete("/reflections/{reflection_id}")
+def remove_reflection(reflection_id: str) -> dict:
+    db.delete_kb_reflection(reflection_id)
+    db.audit("kb.reflection.delete", {"reflection_id": reflection_id}, actor="user")
+    return {"ok": True}
+
+
 @router.get("/stats")
 def stats() -> dict:
     """统计 + 知识图谱（可视化数据源）。"""

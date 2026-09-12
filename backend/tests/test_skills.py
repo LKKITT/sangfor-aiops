@@ -88,6 +88,17 @@ def test_parse_skill_choice_by_index_and_name():
     assert skills.parse_skill_choice("skill-99", "af") is None  # 越界
 
 
+def test_record_to_kb_always_available():
+    """知识库沉淀登记工具（写）在任意技能下都可用——用户明确要求沉淀时的入口。"""
+    from app.agent.tools import TOOLS_BY_NAME
+    assert "record_to_kb" in TOOLS_BY_NAME
+    assert TOOLS_BY_NAME["record_to_kb"].write
+    for msg, dtype in (("体检一下配置风险", "af"), ("把策略停用", "ac"), ("看设备状态", "")):
+        skill = skills.select_skill(msg, dtype)
+        names = {t.name for t in skills.resolve_skill_tools(skill, dtype)}
+        assert "record_to_kb" in names, f"技能 {skill and skill.id} 下 record_to_kb 不可见"
+
+
 # ---------- 知识库技能 ----------
 
 def test_kb_skill_exposes_kb_tool():

@@ -1,4 +1,5 @@
 """设备与配置可视化 API。"""
+import asyncio
 import json
 from typing import Any
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 from app import db
 from app.adapters.base import DeviceError
 from app.adapters.factory import get_client
+from app.config import settings
 from app.services.analyzer import run_checks
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
@@ -152,7 +154,10 @@ async def _with_client(device_id: str, fn) -> Any:
     _require(device_id)
     try:
         client = await get_client(device_id)   # 共享客户端，复用登录会话
-        return await fn(client)
+        # 兜底超时：登录超时/负缓存已挡住不可达设备，这里防端点内部拖长
+        return await asyncio.wait_for(fn(client), timeout=settings.device_http_timeout + 5)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "设备响应超时，请检查设备网络后重试")
     except DeviceError as e:
         raise HTTPException(502, f"设备连接失败：{e}")
 
@@ -169,8 +174,25 @@ async def get_status(device_id: str) -> dict:
 
 @router.get("/{device_id}/interfaces")
 async def get_interfaces(device_id: str) -> list[dict]:
-    rows = await _with_client(device_id, lambda c: c.get_interfaces())
-    return [i.to_dict() for i in rows]
+    async def do(client) -> list[dict]:
+        rows = [i.to_dict() for i in await client.get_interfaces()]
+        # AF：合并状态中心的实时接口状态（连接状态 + 收发速率），失败保留配置层状态
+        getter = getattr(client, "get_interface_status", None)
+        if getter:
+            try:
+                realtime = await asyncio.wait_for(getter(rows), timeout=15)
+                for row in rows:
+                    rt = realtime.get(row.get("name") or "")
+                    if not rt:
+                        continue
+                    row["status"] = "up" if rt.get("connect") else "down"
+                    row["rx_kbps"] = rt.get("rx_kbps", 0)
+                    row["tx_kbps"] = rt.get("tx_kbps", 0)
+            except Exception:   # noqa: BLE001 —— 实时状态失败不影响配置展示
+                pass
+        return rows
+
+    return await _with_client(device_id, do)
 
 
 @router.get("/{device_id}/zones")

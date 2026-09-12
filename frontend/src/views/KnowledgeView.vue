@@ -94,22 +94,31 @@
       </div>
 
       <!-- 反思报告 -->
-      <div class="page-card" style="margin-top: 12px" v-if="latestReflection || reflections.length">
+      <div class="page-card" style="margin-top: 12px" v-if="reflections.length">
         <div class="col-title" style="display: flex; align-items: center; gap: 10px">
           <el-icon><DataAnalysis /></el-icon> 反思与总结
-          <span v-if="latestReflection" class="kb-sub">{{ latestReflection.period }} · {{ latestReflection.created_at }}</span>
+          <span v-if="viewingReflection" class="kb-sub">
+            {{ viewingReflection.period }} · {{ viewingReflection.created_at }}
+          </span>
+          <el-button v-if="viewingReflection" size="small" text type="danger" style="margin-left: auto"
+                     @click="deleteReflection(viewingReflection)">
+            <el-icon><Delete /></el-icon> 删除此报告
+          </el-button>
+        </div>
+        <div class="refl-controls">
           <el-date-picker v-model="reflRange" type="daterange" value-format="YYYY-MM-DD" size="small"
                           start-placeholder="沉淀开始日期" end-placeholder="沉淀结束日期"
-                          style="width: 260px; margin-left: auto" :clearable="true" />
-          <el-button size="small" type="primary" :loading="reflecting" @click="makeReflection">按此范围生成</el-button>
-          <el-collapse v-if="reflections.length > 1" style="border: none; margin-left: 0">
-            <el-collapse-item :title="`历史报告（${reflections.length - 1}）`">
-              <div v-for="r in reflections.slice(1)" :key="r.id" class="refl-hist"
-                   @click="viewReflection(r)">{{ r.period }} · {{ r.created_at }}</div>
-            </el-collapse-item>
-          </el-collapse>
+                          :shortcuts="rangeShortcuts" style="width: 250px" :clearable="true" />
+          <el-button size="small" type="primary" :loading="reflecting" @click="makeReflection">
+            生成报告（不选日期=全部）
+          </el-button>
+          <el-select v-if="reflections.length > 1" v-model="viewingReflId" size="small"
+                     placeholder="历史报告" style="width: 200px; margin-left: auto">
+            <el-option v-for="r in reflections" :key="r.id"
+                       :label="`${r.period}（${(r.created_at || '').slice(5, 16)}）`" :value="r.id" />
+          </el-select>
         </div>
-        <div v-if="latestReflection" class="md-body" v-html="render(latestReflection.content_md)"></div>
+        <div v-if="viewingReflection" class="md-body" v-html="render(viewingReflection.content_md)"></div>
       </div>
 
       <!-- 词条列表 -->
@@ -223,7 +232,16 @@ const pendingItems = ref([])  // 待沉淀对话明细（标题/提问/消息数
 const selPending = ref([])    // 勾选的待沉淀对话
 
 const latestReflection = computed(() => reflections.value[0] || null)
-const viewReflection = (r) => { reflections.value = [r, ...reflections.value.filter(x => x.id !== r.id)] }
+const viewingReflId = ref('')
+// 当前查看的报告：优先下拉选中的，否则最新一份
+const viewingReflection = computed(() =>
+  reflections.value.find(r => r.id === viewingReflId.value) || reflections.value[0] || null)
+// 反思日期快捷选项
+const rangeShortcuts = [
+  { text: '最近7天', value: () => [new Date(Date.now() - 6 * 864e5), new Date()] },
+  { text: '最近30天', value: () => [new Date(Date.now() - 29 * 864e5), new Date()] },
+  { text: '最近90天', value: () => [new Date(Date.now() - 89 * 864e5), new Date()] },
+]
 // 点击图谱节点：按 id 取词条并打开详情抽屉
 async function openEntryById(id) {
   try { detail.value = await KB.entry(id) } catch { /* 静默 */ }
@@ -365,9 +383,22 @@ async function makeReflection() {
   try {
     const range = reflRange.value || []
     const r = await KB.reflection(range[0] || '', range[1] || '')
-    if (r.status === 'ok') { ElMessage.success('反思报告已生成'); await loadReflections() }
-    else ElMessage.warning(r.reason || '未能生成报告')
+    if (r.status === 'ok') {
+      ElMessage.success('反思报告已生成')
+      viewingReflId.value = ''   // 切回最新报告
+      await loadReflections()
+    } else ElMessage.warning(r.reason || '未能生成报告')
   } catch (e) { ElMessage.error(String(e.message || e)) } finally { reflecting.value = false }
+}
+
+async function deleteReflection(r) {
+  try {
+    await ElMessageBox.confirm(`确定删除「${r.period}」的反思报告吗？删除后不可恢复。`, '删除反思报告', { type: 'warning' })
+    await KB.deleteReflection(r.id)
+    viewingReflId.value = ''
+    ElMessage.success('报告已删除')
+    await loadReflections()
+  } catch (e) { if (e !== 'cancel') ElMessage.error(String(e.message || e)) }
 }
 
 async function removeEntry(e) {
@@ -413,6 +444,7 @@ onBeforeUnmount(() => {
 .entry-top { display: flex; align-items: center; gap: 6px; }
 .entry-summary { font-size: 12px; color: #606266; margin: 6px 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .entry-foot { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.refl-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 .detail-block { margin-top: 14px; }
 .ref-item { font-size: 13px; margin-top: 6px; word-break: break-all; }
 .ref-link { color: #409eff; text-decoration: none; }

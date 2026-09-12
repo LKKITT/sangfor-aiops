@@ -20,6 +20,8 @@ async def build_upgrade_advice(sw_version: str, status: dict | None = None,
     status = status or {}
     overview = await update_service.get_update_overview(sw_version)
     product, current = overview["product"], overview["current_version"]
+    # 升级路径 = 内置知识库固化的官方技术升级链（完整可执行路径，不跳过中间版本）；
+    # 升级价值（关键变更点）= 官方功能页版本条目优先（见 get_update_overview）
     path = kb.upgrade_path(product, current, overview["latest_version"])
 
     # ---- 是否升级的决策理由 ----

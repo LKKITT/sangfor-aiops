@@ -26,8 +26,26 @@ def test_upgrade_path_new_arch():
 def test_upgrade_path_old_arch_requires_migration():
     path = kb.upgrade_path("af", "8.0.32", "8.0.107")
     assert path["cross_arch_migration"] is True
-    assert path["hops"] == ["8.0.35", "8.0.45"]      # 旧链末端
-    assert "迁移" in path["notes"][0]
+    # 旧链走完后接新架构链：8.0.32 → 8.0.35 → 8.0.45 →（跨架构节点 8.0.48）→ … → 8.0.107
+    assert path["hops"][:3] == ["8.0.35", "8.0.45", "8.0.48"]
+    assert path["hops"][-1] == "8.0.107"
+    assert any("迁移" in n or "跨架构" in n for n in path["notes"])
+
+
+def test_upgrade_path_old_arch_tail_upgrades_to_new_chain():
+    """8.0.45（旧架构末端）可直接升级至新架构 8.0.48 起的完整路径。"""
+    path = kb.upgrade_path("af", "8.0.45", "8.0.107")
+    assert path["cross_arch_migration"] is True
+    assert path["hops"][0] == "8.0.48"               # 不再把 8.0.45 视为末端
+    assert path["hops"][-1] == "8.0.107"
+
+
+def test_upgrade_path_ac_direct_to_stable():
+    """AC 12.0.40 直达稳定版 13.0.121（需前置检测）。"""
+    path = kb.upgrade_path("ac", "12.0.40")
+    assert path["hops"] == ["13.0.121"]
+    assert path["direct_upgrade"] is True
+    assert any("前置检测" in n for n in path["notes"])
 
 
 def test_upgrade_path_up_to_date():

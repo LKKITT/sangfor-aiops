@@ -43,4 +43,5 @@ async def get_upgrade_advice(device_id: str) -> dict:
 
 @router.post("/updates/refresh")
 async def refresh_updates() -> dict:
-    return await update_service.refresh_update_cache("af")
+    """手动刷新：强制重抓官方数据（绕过缓存新鲜期）。"""
+    return await update_service.refresh_update_cache("af", force=True)

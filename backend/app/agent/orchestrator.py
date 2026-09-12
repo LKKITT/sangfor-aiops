@@ -15,6 +15,7 @@
   - 对话结束后自动生成摘要保存到短期记忆
   - 重要事实自动提取并保存到长期记忆
 """
+import asyncio
 import json
 import re
 from typing import AsyncGenerator
@@ -65,8 +66,12 @@ class AgentOrchestrator:
                           use_knowledge: bool = False) -> AsyncGenerator[dict, None]:
         guardrails.check_user_request(user_message)   # 黑名单先于 LLM 拦截
         device = db.get_device(device_id) or {}
+        # 本轮消息起点：勾选知识库时，沉淀只取本轮新增对话，不引入之前会话内容
+        since_id = db.max_message_id(conv_id)
         db.add_message(conv_id, "user", {"text": user_message})
-        db.touch_conversation(conv_id, title=user_message)
+        # 写入设备归属：供前端切换菜单后按设备恢复最近会话
+        db.touch_conversation(conv_id, title=user_message, device_id=device_id)
+        kb_since = since_id if use_knowledge else None
         yield {"type": "meta", "conv_id": conv_id, "device_id": device_id}
 
         if self._llm() is None:
@@ -74,7 +79,8 @@ class AgentOrchestrator:
                 yield ev
             return
         async for ev in self._run_llm_loop(conv_id, device_id, device,
-                                           user_message=user_message, use_knowledge=use_knowledge):
+                                           user_message=user_message, use_knowledge=use_knowledge,
+                                           kb_since_id=kb_since):
             yield ev
 
     # ================= 确认流恢复 =================
@@ -133,6 +139,9 @@ class AgentOrchestrator:
             db.update_pending_action(action_id, status="executed",
                                      result_json=json.dumps(result, ensure_ascii=False)[:4000])
             guardrails.audit_tool(action["tool_name"], tool_args, "executed", conv_id, device_id)
+            # 用户明确要求沉淀（record_to_kb 执行成功）：登记后触发后台提炼
+            if action["tool_name"] == skills.KB_RECORD_TOOL_NAME:
+                personal_kb_service.schedule_sediment(conv_id)
             db.add_message(conv_id, "tool", {
                 "tool_call_id": tool_call_id, "name": action["tool_name"],
                 "content": json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]})
@@ -146,6 +155,21 @@ class AgentOrchestrator:
             yield ev
 
     # ================= 记忆管理 =================
+
+    def _schedule_memory_extraction(self, conv_id: str, device_id: str) -> None:
+        """记忆提取后台化：两次额外 LLM 调用不阻塞 SSE 结束（失败仅记日志）。"""
+        async def _run():
+            try:
+                await self._extract_memory(conv_id, device_id)
+            except Exception:   # noqa: BLE001
+                import logging
+                logging.getLogger("sangfor-agent").warning(
+                    "记忆提取失败 conv=%s", conv_id, exc_info=True)
+
+        try:
+            asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:   # 无事件循环（如同步上下文）时跳过
+            pass
 
     def _build_memory_context(self, device_id: str) -> str | None:
         """加载该设备的长期记忆，构建上下文注入消息。"""
@@ -235,7 +259,7 @@ class AgentOrchestrator:
     # ================= LLM 工具循环 =================
 
     def _build_messages(self, conv_id: str, device: dict) -> list[dict]:
-        history = db.get_messages(conv_id)[-HISTORY_LIMIT:]
+        history = db.get_messages(conv_id, limit=HISTORY_LIMIT)
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
         # 注入设备上下文
         ctx = device_context_message(device, None)
@@ -294,18 +318,18 @@ class AgentOrchestrator:
     # ================= 技能路由 =================
 
     async def _llm_select_skill(self, user_message: str, dtype: str):
-        """LLM 兜底技能选择：一次非流式小调用；失败返回 None（回退全量模式）。"""
+        """LLM 兜底技能选择：一次非流式小调用；带独立超时（不拖慢首 token），失败回退全量模式。"""
         try:
-            resp = await self._llm().chat.completions.create(
+            resp = await asyncio.wait_for(self._llm().chat.completions.create(
                 model=get_llm_config()["model"],
                 messages=[
                     {"role": "system", "content": skills.skill_catalog_message(dtype)},
                     {"role": "user", "content": user_message[:500]},
                 ],
                 temperature=0.0, max_tokens=16,
-            )
+            ), timeout=2.5)
             return skills.parse_skill_choice(resp.choices[0].message.content or "", dtype)
-        except Exception:   # noqa: BLE001 —— 技能选择失败不影响主流程
+        except (asyncio.TimeoutError, Exception):   # noqa: BLE001 —— 选择失败/超时不影响主流程
             return None
 
     def _tool_scope(self, skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
@@ -321,7 +345,8 @@ class AgentOrchestrator:
         return tool_schemas, tools_by_name
 
     async def _run_llm_loop(self, conv_id: str, device_id: str, device: dict,
-                            user_message: str = "", use_knowledge: bool = False) -> AsyncGenerator[dict, None]:
+                            user_message: str = "", use_knowledge: bool = False,
+                            kb_since_id: int | None = None) -> AsyncGenerator[dict, None]:
         messages = self._build_messages(conv_id, device)
         dtype = device.get("type", "")
         # 技能路由：关键词优先（离线可用）→ LLM 按目录兜底 → 未命中回退全量工具模式
@@ -368,11 +393,10 @@ class AgentOrchestrator:
             final_text = "".join(text_parts).strip()
             if not tool_calls:
                 db.add_message(conv_id, "assistant", {"text": final_text, "tool_calls": []})
-                # 对话结束，提取记忆
-                await self._extract_memory(conv_id, device_id)
-                # 勾选知识库的对话：后台静默沉淀个人知识库词条
+                # 记忆提取与知识库沉淀均后台执行：SSE 立即结束，不产生"答完卡尾"
+                self._schedule_memory_extraction(conv_id, device_id)
                 if use_knowledge:
-                    personal_kb_service.schedule_sediment(conv_id)
+                    personal_kb_service.schedule_sediment(conv_id, since_id=kb_since_id)
                 yield {"type": "done"}
                 return
 

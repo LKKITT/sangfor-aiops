@@ -451,10 +451,11 @@ class AfRestClient(DeviceClient):
                             status = "up" if admin_st.lower() == "up" else "down"
                     elif "shutdown" in r:
                         # shutdown=false 仅表示管理启用，不等同于物理链路 UP
-                        # 保守处理：shutdown=true 肯定 DOWN，shutdown=false 仍需物理链路确认
+                        # 配置接口无实时链路字段：shutdown=true 判禁用；false 以配置状态呈现
                         if r.get("shutdown") is True:
                             status = "down"
-                        # shutdown=false 时保持默认 down，不假定 UP
+                        else:
+                            status = "enabled"
                 out.append(InterfaceInfo(
                     name=r.get("name", ""), zone=zone, ip=ip, netmask=bits,
                     extra_ips=extra_ips, status=status,
@@ -715,6 +716,41 @@ class AfRestClient(DeviceClient):
             protocols.append("ICMP")
         ports = tcp_ports if tcp_ports == udp_ports else ",".join(p for p in (tcp_ports, udp_ports) if p)
         return ("/".join(protocols) or "TCP"), ports
+
+    async def get_interface_status(self, ifaces: list[dict], concurrency: int = 5) -> dict[str, dict]:
+        """实时接口状态（状态中心 8.1.1.10）：连接状态 + 收发速率。
+
+        按网口名逐个调 /interfacestatus/{name}（该端点必须带接口名路径段），
+        并发受信号量限制；单口失败静默跳过，调用方保留配置层状态。
+        返回 {接口名: {connect: bool, rx_kbps: float, tx_kbps: float}}。
+        """
+        out: dict[str, dict] = {}
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _one(name: str):
+            async with sem:
+                try:
+                    data = await self._request(
+                        "GET", f"/api/v1/namespaces/{self.namespace}/interfacestatus/{name}", {})
+                    for r in self._rows(data):
+                        if r.get("interfaceName") != name:
+                            continue
+                        info = r.get("information") or {}
+                        speed = info.get("speed") or {}
+                        return name, {
+                            "connect": bool(info.get("connectStatus")),
+                            "rx_kbps": float(speed.get("recv") or 0),
+                            "tx_kbps": float(speed.get("send") or 0),
+                        }
+                except Exception:   # noqa: BLE001 —— 单口失败不影响其它口
+                    return None
+
+        names = [str(i.get("name")) for i in ifaces if i.get("name")]
+        results = await asyncio.gather(*[_one(n) for n in names])
+        for r in results:
+            if r:
+                out[r[0]] = r[1]
+        return out
 
     async def get_static_routes(self) -> list[StaticRoute]:
         data = await self._optional_list(f"/api/v1/namespaces/{self.namespace}/staticroutes/ipv4")()

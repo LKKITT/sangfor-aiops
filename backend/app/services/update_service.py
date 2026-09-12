@@ -30,16 +30,20 @@ def _support_cookie() -> str:
     return settings.support_cookie
 
 # support.sangfor.com.cn 关键栏目（调研确认的 URL 模式；发布说明免认证，软件列表需登录）
+# AF 发布说明 type=1 与 AC 的 category/version 参数为用户指定的关注范围入口
 OFFICIAL_URLS = {
     "af": {
-        "release_notes": "https://support.sangfor.com.cn/productDocument/read?product_id=13&version_id=1197&category_id=360973",
+        "release_notes": "https://support.sangfor.com.cn/productDocument/read?product_id=13&version_id=1197&category_id=360973&type=1",
         "software_list": "https://support.sangfor.com.cn/productSoftware/list?product_id=13",
     },
     "ac": {
-        "release_notes": "https://support.sangfor.com.cn/productDocument/read?product_id=22&version_id=1116&category_id=324129",
+        "release_notes": "https://support.sangfor.com.cn/productDocument/read?product_id=22&version_id=1196&category_id=359280",
         "software_list": "https://support.sangfor.com.cn/productSoftware/list?product_id=22",
     },
 }
+# 关注版本下限：低于该版本的发布说明不再展示（需求口径：AF 8.0.7 之前 / AC 13.0.62 之前不关注）
+MIN_INTEREST_VERSION = {"af": "8.0.7", "ac": "13.0.62"}
+CACHE_TTL_HOURS = 6            # 缓存新鲜期：期内刷新任务跳过重抓，避免重复爬取
 SEC_CENTER_URL = "https://www.sangfor.com.cn/sec_center/bulletins"
 
 CLASSIFY_RULES = [
@@ -246,25 +250,49 @@ async def fetch_software_list(product: str) -> dict:
 
 
 def _extract_software_items(html: str) -> list[dict]:
-    """从软件列表页提取版本条目（版本名/大小/发布时间/MD5，尽力而为）。"""
+    """从软件列表页提取版本条目（版本名/大小/发布时间/MD5/下载地址，尽力而为）。"""
     rows: list[dict] = []
     seen: set[str] = set()
 
-    def _push(name: str, size: str = "", published: str = "", md5: str = ""):
-        name = name.strip()
-        if name and name not in seen and 3 < len(name) < 120:
-            seen.add(name)
-            rows.append({"name": name, "size": size, "published": published, "md5": md5})
+    def _push(name: str, size: str = "", published: str = "", md5: str = "", url: str = ""):
+        name = (name or "").strip()
+        if not name or name in seen or not (3 < len(name) < 120):
+            return
+        seen.add(name)
+        rows.append({"name": name, "size": size, "published": published,
+                     "md5": md5, "url": (url or "").strip()})
 
-    # 形态1：页面内嵌 JSON 数组（vue 初始 state），如 {"name":"AF_8.0.107...","size":"1.2G",...}
-    for m in re.finditer(r'\{\\"name\\":\\"([^"\\]{3,100})\\"[^}]{0,400}?\\"md5\\":\\"([a-f0-9]{16,32})\\"',
+    # 下载地址登记：条目名 → 相邻的下载链接（页面 <a href> 或内嵌 JSON url 字段）
+    def _attach_url(name: str, url: str):
+        if not url:
+            return
+        for row in rows:
+            if row["name"] == name and not row.get("url"):
+                row["url"] = url.strip()
+                return
+
+    # 形态1：页面内嵌 JSON 数组（vue 初始 state），含 name/size/md5 及可能的下载地址字段
+    for m in re.finditer(r'\{\\"name\\":\\"([^"\\]{3,100})\\"[^}]{0,600}?\\"md5\\":\\"([a-f0-9]{16,32})\\"[^}]{0,600}?\}',
                          html, re.I):
-        _push(m.group(1), md5=m.group(2))
+        seg = m.group(0)
+        um = re.search(r'\\\\"(?:url|downloadUrl|download_url|fileUrl)\\\\":\\\\"([^"\\\\]{5,300})\\\\"', seg)
+        _push(m.group(1), md5=m.group(2), url=um.group(1) if um else "")
     for m in re.finditer(r'"name"\s*:\s*"([^"]{3,100})"\s*,\s*"size"\s*:\s*"([^"]{1,20})"', html):
         _push(m.group(1), size=m.group(2))
     # 形态2：表格/列表 DOM，形如 <td>AF_8.0.107_XXX升级包.tgz</td>…<td>2025-04-22</td>
     for m in re.finditer(r'>((?:AF|AC|SG|M6\w*|SP_[A-Z]+)[_\-][^<>\n]{3,100}?(?:\.tgz|\.zip|\.bin|\.pak|升级包|补丁包)?)<', html):
         _push(m.group(1))
+    # 形态2b：下载链接 <a href="...">AF_xxx.tgz</a> / 链接文本含条目名
+    for m in re.finditer(r'<a[^>]+href=["\']([^"\']+\.(?:tgz|zip|bin|pak)[^"\']*)["\'][^>]*>'
+                         r'([^<]{3,100})</a>', html, re.I):
+        url, label = m.group(1), m.group(2).strip()
+        _push(label, url=url)
+        _attach_url(label, url)
+        # 链接文本与已登记条目近似匹配（文件名被截断/加前后缀时）
+        base = label.rsplit("/", 1)[-1]
+        for row in rows:
+            if not row.get("url") and (row["name"] in base or base in row["name"]):
+                row["url"] = url
     # 形态3：含版本号的附件名
     for m in re.finditer(r'([A-Za-z]{1,6}[_-]?\d+\.\d+\.\d+[^<>"\n\\]{0,60}?\.(?:tgz|zip|bin|pak))', html):
         _push(m.group(1))
@@ -308,38 +336,71 @@ def _parse_psirt_detail(html: str) -> dict | None:
 
 # ---------------- 汇总入口 ----------------
 
-async def refresh_update_cache(product: str = "af") -> dict:
-    """手动/定时刷新：抓取官方平台（发布说明+软件列表，AF/AC 两条产品线）与 PSIRT，成功则落缓存。"""
-    official = await fetch_official_release_notes(product)
-    psirt = await fetch_psirt_bulletins()
+def _cache_fresh(record, ttl_hours: float = CACHE_TTL_HOURS) -> bool:
+    """缓存是否在新鲜期内（期内不重复爬取）。"""
+    if not record:
+        return False
+    try:
+        t = datetime.fromisoformat(str(record.get("fetched_at", "")))
+        return (datetime.now() - t).total_seconds() < ttl_hours * 3600
+    except (ValueError, TypeError):
+        return False
+
+
+async def refresh_update_cache(product: str = "af", force: bool = False) -> dict:
+    """手动/定时刷新：抓取官方平台（发布说明+软件列表，AF/AC 两条产品线）与 PSIRT。
+
+    非强制模式下，缓存处于新鲜期（CACHE_TTL_HOURS 内）的条目跳过重抓，避免重复爬取。
+    """
+    skipped = []
+
+    official_cache = db.get_update_cache(product, "release_notes")
+    official = None
+    if not force and _cache_fresh(official_cache):
+        skipped.append("release_notes")
+    else:
+        official = await fetch_official_release_notes(product)
+        if official["status"] == "ok":
+            db.save_update_cache(product, "release_notes", official["payload"],
+                                 f"official_platform@{datetime.now():%Y-%m-%d}")
+
+    psirt_cache = db.get_update_cache(product, "advisories")
+    psirt = None
+    if not force and _cache_fresh(psirt_cache):
+        skipped.append("advisories")
+    else:
+        psirt = await fetch_psirt_bulletins()
+        if psirt["status"] == "ok":
+            db.save_update_cache(product, "advisories", psirt["payload"],
+                                 f"psirt@{datetime.now():%Y-%m-%d}")
+
     soft = {}
     for prod in ("af", "ac"):
+        soft_cache = db.get_update_cache(prod, "software_list")
+        if not force and _cache_fresh(soft_cache):
+            skipped.append(f"software_list:{prod}")
+            soft[prod] = {"status": "cached", "count": len(soft_cache["payload"] or []),
+                          "reason": "缓存新鲜，跳过重抓"}
+            continue
         result = await fetch_software_list(prod)
         soft[prod] = {"status": result["status"], "count": len(result.get("payload") or []),
                       "reason": result.get("reason", "")}
         if result["status"] == "ok":
             db.save_update_cache(prod, "software_list", result["payload"],
                                  f"official_platform@{datetime.now():%Y-%m-%d}")
-    if official["status"] == "ok":
-        db.save_update_cache(product, "release_notes", official["payload"],
-                             f"official_platform@{datetime.now():%Y-%m-%d}")
-    if psirt["status"] == "ok":
-        db.save_update_cache(product, "advisories", psirt["payload"],
-                             f"psirt@{datetime.now():%Y-%m-%d}")
-    return {"official": {"status": official["status"], "reason": official.get("reason", "")},
-            "psirt": {"status": psirt["status"], "reason": psirt.get("reason", "")},
-            "software_list": soft}
+
+    return {"official": {"status": (official or {}).get("status", "cached"),
+                         "reason": (official or {}).get("reason", "")},
+            "psirt": {"status": (psirt or {}).get("status", "cached") if psirt else "cached",
+                      "reason": (psirt or {}).get("reason", "") if psirt else ""},
+            "software_list": soft,
+            "skipped_fresh": skipped}
 
 
 async def get_software_list(product: str, force: bool = False) -> dict:
-    """官方软件更新列表：缓存优先（可选强制刷新），AF/AC 各自一条产品线。"""
-    if force:
-        result = await fetch_software_list(product)
-        if result["status"] == "ok":
-            db.save_update_cache(product, "software_list", result["payload"],
-                                 f"official_platform@{datetime.now():%Y-%m-%d}")
+    """官方软件更新列表：缓存优先（可选强制刷新；缓存超 24h 自动重抓），AF/AC 各自一条产品线。"""
     cached = db.get_update_cache(product, "software_list")
-    if cached:
+    if cached and not force and _cache_fresh(cached, ttl_hours=24):
         return {"product": product, "status": "ok", "items": cached["payload"],
                 "source": cached["source"], "fetched_at": cached["fetched_at"], "from_cache": True}
     live = await fetch_software_list(product)
@@ -349,6 +410,10 @@ async def get_software_list(product: str, force: bool = False) -> dict:
         return {"product": product, "status": "ok", "items": live["payload"],
                 "source": "official_platform", "fetched_at": live.get("fetched_at", ""),
                 "from_cache": False}
+    if cached:   # 抓取失败时回退旧缓存
+        return {"product": product, "status": "ok", "items": cached["payload"],
+                "source": cached["source"] + "（历史缓存）", "fetched_at": cached["fetched_at"],
+                "from_cache": True}
     return {"product": product, "status": live["status"], "items": [],
             "reason": live.get("reason", ""), "source": "official_platform",
             "fetched_at": db.now(), "from_cache": False}
@@ -365,6 +430,18 @@ async def get_update_overview(sw_version: str) -> dict:
 
     sources_tried = []
     cached = db.get_update_cache(product, "release_notes")
+    if cached and not _cache_fresh(cached, ttl_hours=24):
+        # 缓存超过 24h：自动重抓一次（避免长期重复使用过期数据，也不阻塞响应）
+        try:
+            live = await fetch_official_release_notes(product)
+            if live["status"] == "ok":
+                db.save_update_cache(product, "release_notes", live["payload"],
+                                     f"official_platform@{datetime.now():%Y-%m-%d}")
+                cached = db.get_update_cache(product, "release_notes") or cached
+                sources_tried.append({"source": "official_platform", "auto_refreshed": True,
+                                      "fetched_at": db.now()})
+        except Exception:   # noqa: BLE001 —— 刷新失败继续用旧缓存
+            pass
     if cached:
         scraped_map = _scraped_version_map(cached["payload"])
         sources_tried.append({"source": cached["source"], "fetched_at": cached["fetched_at"]})
@@ -377,26 +454,61 @@ async def get_update_overview(sw_version: str) -> dict:
                                  f"official_platform@{datetime.now():%Y-%m-%d}")
         scraped_map = _scraped_version_map(live.get("payload"))
 
-    # 发布说明：逐版本优先取官方平台抓取条目，缺失版本回退内置知识库
+    # 官方功能版本集合：以用户指定入口页抓到的真实版本清单为骨架（过滤关注下限），
+    # 替代内置知识库版本链——内置链可能包含官方功能页未覆盖的版本，导致路线/价值展示失真
+    min_interest = MIN_INTEREST_VERSION.get(product)
+    official_versions = sorted(
+        [v for v in scraped_map
+         if not min_interest or kb.version_key(v) >= kb.version_key(min_interest)],
+        key=kb.version_key)
+
     releases = []
     scraped_count = 0
-    for rel in kb.releases_between(product, current, latest):
-        scraped = scraped_map.get(rel.version)
-        if scraped:
+    if official_versions:
+        # 官方优先：仅展示官方功能页覆盖的版本（≥当前版本），known_issues 从内置知识库补充
+        for v in official_versions:
+            if kb.version_key(v) <= kb.version_key(current):
+                continue
+            scraped = scraped_map.get(v) or []
             notes = _classify_release_notes([dict(n) for n in scraped])
-            data_source = "official_platform"
+            if not notes:
+                continue
             scraped_count += 1
-        else:
-            notes = _classify_release_notes([dict(n) for n in rel.notes])
-            data_source = "builtin_snapshot"
-        releases.append({
-            "version": rel.version, "release_date": rel.release_date,
-            "is_latest": rel.is_latest,
-            "notes": notes,
-            "known_issues": rel.known_issues,
-            "upgrade_notes": rel.upgrade_notes,
-            "data_source": data_source,
-        })
+            builtin = kb.RELEASES.get(f"{product}:{v}")
+            releases.append({
+                "version": v,
+                "release_date": builtin.release_date if builtin else "",
+                "is_latest": v == official_versions[-1],
+                "notes": notes,
+                "known_issues": builtin.known_issues if builtin else [],
+                "upgrade_notes": builtin.upgrade_notes if builtin else [],
+                "data_source": "official_platform",
+            })
+    else:
+        # 官方抓取缺失：回退内置知识库版本链
+        for rel in kb.releases_between(product, current, latest):
+            if min_interest and kb.version_key(rel.version) < kb.version_key(min_interest):
+                continue
+            scraped = scraped_map.get(rel.version)
+            if scraped:
+                notes = _classify_release_notes([dict(n) for n in scraped])
+                data_source = "official_platform"
+                scraped_count += 1
+            else:
+                notes = _classify_release_notes([dict(n) for n in rel.notes])
+                data_source = "builtin_snapshot"
+            releases.append({
+                "version": rel.version, "release_date": rel.release_date,
+                "is_latest": rel.is_latest,
+                "notes": notes,
+                "known_issues": rel.known_issues,
+                "upgrade_notes": rel.upgrade_notes,
+                "data_source": data_source,
+            })
+
+    # 最新版本以官方功能页覆盖的最高版本为准（与用户指定入口口径一致）
+    if official_versions:
+        latest = official_versions[-1]
 
     adv_cached = db.get_update_cache(product, "advisories")
     advisory_pool = (adv_cached or {}).get("payload") or kb.PSIRT_ADVISORIES
@@ -414,6 +526,7 @@ async def get_update_overview(sw_version: str) -> dict:
         "advisories_hit": advisories_hit,
         "eol": {"hit": eol, "detail": eol_detail},
         "scraped_note_versions": scraped_count,
+        "official_versions": official_versions,
         "sources": sources_tried,
         "fetched_at": db.now(),
     }

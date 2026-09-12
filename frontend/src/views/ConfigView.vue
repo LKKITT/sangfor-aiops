@@ -7,30 +7,57 @@
     <el-tabs v-model="tab" class="page-card">
       <!-- ========== 设备状态（AF / AC 通用） ========== -->
       <el-tab-pane label="设备状态" name="status">
-        <div v-if="status" class="status-grid">
-          <div class="stat"><div class="stat-label">软件版本</div><div class="stat-value">{{ status.sw_version }}</div></div>
-          <div class="stat"><div class="stat-label">型号</div><div class="stat-value">{{ status.model }}</div></div>
-          <div class="stat"><div class="stat-label">运行时间</div><div class="stat-value sm">{{ status.uptime }}</div></div>
-          <div class="stat" v-if="isAF"><div class="stat-label">HA 状态</div><div class="stat-value">{{ status.ha_status }}</div></div>
-          <div class="stat" v-for="m in meters" :key="m.key">
-            <div class="stat-label">{{ m.label }}</div>
-            <el-progress :percentage="status[m.key]" :color="meterColor(status[m.key])" :stroke-width="14" />
-          </div>
-          <div class="stat">
-            <div class="stat-label">会话数</div>
-            <div class="stat-value">{{ status.session_count?.toLocaleString() || 0 }} / {{ status.session_capacity?.toLocaleString() || 'N/A' }}</div>
-          </div>
-          <!-- AC 特有状态 -->
-          <template v-if="isAC && status.extra">
-            <div class="stat" v-if="status.extra.online_users != null">
-              <div class="stat-label">在线用户</div>
-              <div class="stat-value">{{ status.extra.online_users }}</div>
+        <div v-if="status" class="status-wrap">
+          <!-- 系统信息 -->
+          <div class="status-section">
+            <div class="status-section-title">系统信息</div>
+            <div class="status-grid">
+              <div class="stat"><div class="stat-label">软件版本</div><div class="stat-value">{{ status.sw_version }}</div></div>
+              <div class="stat"><div class="stat-label">型号</div><div class="stat-value">{{ status.model }}</div></div>
+              <div class="stat"><div class="stat-label">运行时间</div><div class="stat-value sm">{{ status.uptime }}</div></div>
+              <div class="stat" v-if="isAF"><div class="stat-label">HA 状态</div><div class="stat-value">{{ status.ha_status }}</div></div>
             </div>
-            <div class="stat" v-if="status.extra.bandwidth_usage != null">
-              <div class="stat-label">带宽使用率</div>
-              <el-progress :percentage="Math.round(status.extra.bandwidth_usage * 100)" :color="meterColor(status.extra.bandwidth_usage * 100)" :stroke-width="14" />
+          </div>
+          <!-- 资源与用户 -->
+          <div class="status-section">
+            <div class="status-section-title">资源与用户</div>
+            <div class="status-grid">
+              <div class="stat" v-for="m in meters" :key="m.key">
+                <div class="stat-label">{{ m.label }}</div>
+                <el-progress :percentage="status[m.key]" :color="meterColor(status[m.key])" :stroke-width="14" />
+              </div>
+              <div class="stat">
+                <div class="stat-label">会话数</div>
+                <div class="stat-value">{{ status.session_count?.toLocaleString() || 0 }} / {{ status.session_capacity?.toLocaleString() || 'N/A' }}</div>
+              </div>
+              <div class="stat" v-if="isAC && status.extra?.online_users != null">
+                <div class="stat-label">在线用户</div>
+                <div class="stat-value">{{ status.extra.online_users?.toLocaleString() || 0 }}</div>
+              </div>
             </div>
-          </template>
+          </div>
+          <!-- 流量概况（AC） -->
+          <div class="status-section" v-if="isAC">
+            <div class="status-section-title">流量概况</div>
+            <div class="status-grid">
+              <div class="stat">
+                <div class="stat-label">上行吞吐量</div>
+                <div class="stat-value">{{ fmtThroughput(acThroughput.up_throughput || acThroughput.upstream || 0) }}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">下行吞吐量</div>
+                <div class="stat-value">{{ fmtThroughput(acThroughput.down_throughput || acThroughput.downstream || 0) }}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">总吞吐量</div>
+                <div class="stat-value">{{ fmtThroughput(acThroughput.total || (acThroughput.up_throughput || 0) + (acThroughput.down_throughput || 0)) }}</div>
+              </div>
+              <div class="stat" v-if="status.extra?.bandwidth_usage != null">
+                <div class="stat-label">带宽使用率</div>
+                <el-progress :percentage="Math.min(100, Math.round(status.extra.bandwidth_usage))" :color="meterColor(status.extra.bandwidth_usage)" :stroke-width="14" />
+              </div>
+            </div>
+          </div>
         </div>
         <el-alert v-else-if="loadErrors.status" type="error" :closable="false"
                   :title="`状态读取失败：${loadErrors.status}`" />
@@ -55,8 +82,12 @@
                 </template>
               </template>
             </el-table-column>
-            <el-table-column prop="status" label="状态" width="80">
-              <template #default="{ row }"><el-tag size="small" :type="row.status === 'up' ? 'success' : 'info'">{{ row.status }}</el-tag></template>
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.status === 'up' ? 'success' : row.status === 'enabled' ? '' : 'info'">
+                  {{ row.status === 'up' ? '运行中' : row.status === 'enabled' ? '已启用' : '未运行' }}
+                </el-tag>
+              </template>
             </el-table-column>
             <el-table-column prop="speed" label="速率" width="80" />
             <el-table-column prop="comment" label="备注" min-width="140" />
@@ -201,46 +232,6 @@
 
       <!-- ========== AC 特有 tabs ========== -->
       <template v-if="isAC">
-        <el-tab-pane :label="`上网策略（${acNetPolicies.length}）`" name="ac-net-policies">
-          <el-alert v-if="acNetPolicies.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
-                    title="AC 开放接口返回的上网策略数据为空" />
-          <el-table :data="acNetPolicies" size="small" border stripe>
-            <el-table-column type="index" label="#" width="50" />
-            <el-table-column prop="name" label="策略名称" min-width="160" />
-            <el-table-column prop="action" label="动作" width="80">
-              <template #default="{ row }"><el-tag size="small" :type="(row.action || 'allow') === 'allow' ? 'success' : 'danger'">{{ row.action || 'allow' }}</el-tag></template>
-            </el-table-column>
-            <el-table-column prop="rule" label="规则" min-width="200">
-              <template #default="{ row }"><span class="mono">{{ row.rule || row.desc || '-' }}</span></template>
-            </el-table-column>
-            <el-table-column prop="status" label="状态" width="80">
-              <template #default="{ row }"><el-tag size="small" :type="row.enabled !== false ? 'success' : 'info'">{{ row.enabled !== false ? '启用' : '禁用' }}</el-tag></template>
-            </el-table-column>
-            <el-table-column label="启用" width="70">
-              <template #default="{ row }"><el-tag size="small" :type="row.enabled !== false ? 'success' : 'info'">{{ row.enabled !== false ? '是' : '否' }}</el-tag></template>
-            </el-table-column>
-          </el-table>
-        </el-tab-pane>
-
-        <el-tab-pane :label="`流控策略（${acFluxPolicies.length}）`" name="ac-flux-policies">
-          <el-alert v-if="acFluxPolicies.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
-                    title="AC 开放接口返回的流控策略数据为空" />
-          <el-table :data="acFluxPolicies" size="small" border stripe>
-            <el-table-column type="index" label="#" width="50" />
-            <el-table-column prop="name" label="通道名称" min-width="160" />
-            <el-table-column label="上行带宽" min-width="120">
-              <template #default="{ row }"><span class="mono">{{ row.up_bandwidth || row.upstream || '-' }}</span></template>
-            </el-table-column>
-            <el-table-column label="下行带宽" min-width="120">
-              <template #default="{ row }"><span class="mono">{{ row.down_bandwidth || row.downstream || '-' }}</span></template>
-            </el-table-column>
-            <el-table-column prop="priority" label="优先级" width="80" />
-            <el-table-column label="启用" width="70">
-              <template #default="{ row }"><el-tag size="small" :type="row.enabled !== false ? 'success' : 'info'">{{ row.enabled !== false ? '是' : '否' }}</el-tag></template>
-            </el-table-column>
-          </el-table>
-        </el-tab-pane>
-
         <el-tab-pane :label="`在线用户（${acOnlineUsers.length}）`" name="ac-online-users">
           <el-alert v-if="acOnlineUsers.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
                     title="暂无在线用户数据" />
@@ -302,24 +293,6 @@
             </div>
           </div>
         </el-tab-pane>
-
-        <el-tab-pane label="吞吐量" name="ac-throughput">
-          <div v-if="Object.keys(acThroughput).length" class="throughput-grid">
-            <div class="stat">
-              <div class="stat-label">上行吞吐量</div>
-              <div class="stat-value">{{ fmtThroughput(acThroughput.up_throughput || acThroughput.upstream || 0) }}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">下行吞吐量</div>
-              <div class="stat-value">{{ fmtThroughput(acThroughput.down_throughput || acThroughput.downstream || 0) }}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">总吞吐量</div>
-              <div class="stat-value">{{ fmtThroughput(acThroughput.total || (acThroughput.up_throughput || 0) + (acThroughput.down_throughput || 0)) }}</div>
-            </div>
-          </div>
-          <el-alert v-else type="info" :closable="false" title="暂无吞吐量数据" />
-        </el-tab-pane>
       </template>
 
       <!-- ========== 用户绑定（仅 AC） ========== -->
@@ -368,9 +341,7 @@ const bindKeyword = ref('')
 const bindSearching = ref(false)
 const refreshing = ref(false)
 
-// AC 特有数据
-const acNetPolicies = ref([])
-const acFluxPolicies = ref([])
+// AC 特有数据（只取 STATUS 范畴：在线用户/吞吐量/流量排行）
 const acOnlineUsers = ref([])
 const acThroughput = ref({})
 const acAppRank = ref([])
@@ -428,11 +399,9 @@ async function load() {
       fetchOne(dev, 'routes', 'routes', r => { routes.value = r }),
     )
   } else {
-    // AC 特有数据
+    // AC：只取 STATUS 范畴数据（在线用户/吞吐量/用户流量排行/应用流量排行）
     fetches.push(
       fetchOne(dev, 'bindings', 'bindings', r => { bindings.value = r }),
-      fetchOne(dev, 'ac_net_policies', 'ac/net-policies', r => { acNetPolicies.value = r }),
-      fetchOne(dev, 'ac_flux_policies', 'ac/flux-policies', r => { acFluxPolicies.value = r }),
       fetchOne(dev, 'ac_online_users', 'ac/online-users', r => { acOnlineUsers.value = r }),
       fetchOne(dev, 'ac_throughput', 'ac/throughput', r => { acThroughput.value = r }),
       fetchOne(dev, 'ac_app_rank', 'ac/app-rank?top=10', r => { acAppRank.value = r }),
@@ -509,6 +478,8 @@ onMounted(() => { load() })
 .config-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 8px; }
 .config-toolbar-title { flex: 1; font-size: 12px; color: #909399; }
 .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.status-section { margin-bottom: 18px; }
+.status-section-title { font-size: 13px; font-weight: 600; color: #606266; margin-bottom: 10px; padding-left: 8px; border-left: 3px solid #409eff; }
 .stat { background: #f8f9fb; border-radius: 8px; padding: 12px 14px; }
 .stat-label { color: #909399; font-size: 12px; margin-bottom: 6px; }
 .stat-value { font-size: 18px; font-weight: 600; }

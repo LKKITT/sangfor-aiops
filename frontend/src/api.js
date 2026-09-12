@@ -1,26 +1,53 @@
 // 后端 API 封装
 const BASE = ''
 
-export async function apiGet(path) {
-  const resp = await fetch(BASE + path)
-  if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`)
-  return resp.json()
+// 请求超时：手写 AbortController（兼容性优于 AbortSignal.timeout），超时抛中文错误
+function timeoutSignal(ms, reason) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(reason || new Error(`请求超时（${Math.round(ms / 1000)}s），请稍后重试`)), ms)
+  return { signal: ctrl.signal, done: () => clearTimeout(timer) }
 }
 
-export async function apiPost(path, body = {}) {
-  const resp = await fetch(BASE + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  })
-  if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`)
-  return resp.json()
+async function readError(resp) {
+  return (await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`
 }
 
-export async function apiDelete(path) {
-  const resp = await fetch(BASE + path, { method: 'DELETE' })
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+export async function apiGet(path, timeout = 45000) {
+  const { signal, done } = timeoutSignal(timeout)
+  try {
+    const resp = await fetch(BASE + path, { signal })
+    if (!resp.ok) throw new Error(await readError(resp))
+    return resp.json()
+  } finally {
+    done()
+  }
+}
+
+export async function apiPost(path, body = {}, timeout = 45000) {
+  const { signal, done } = timeoutSignal(timeout)
+  try {
+    const resp = await fetch(BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal
+    })
+    if (!resp.ok) throw new Error(await readError(resp))
+    return resp.json()
+  } finally {
+    done()
+  }
+}
+
+export async function apiDelete(path, timeout = 45000) {
+  const { signal, done } = timeoutSignal(timeout)
+  try {
+    const resp = await fetch(BASE + path, { method: 'DELETE', signal })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    return resp.json()
+  } finally {
+    done()
+  }
 }
 
 /**
@@ -56,14 +83,20 @@ export async function chatStream(path, body, onEvent, signal) {
 
 // ---------- 业务 API ----------
 
-export async function apiPut(path, body = {}) {
-  const resp = await fetch(BASE + path, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  })
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+export async function apiPut(path, body = {}, timeout = 45000) {
+  const { signal, done } = timeoutSignal(timeout)
+  try {
+    const resp = await fetch(BASE + path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    return resp.json()
+  } finally {
+    done()
+  }
 }
 
 export const Health = { get: () => apiGet('/api/health') }
@@ -116,7 +149,9 @@ export const KB = {
   removeEntry: (id) => apiDelete(`/api/kb/entries/${id}`),
   pending: () => apiGet('/api/kb/pending'),
   dismissPending: (id) => apiDelete(`/api/kb/pending/${id}`),
-  process: (limit = 10, convs = []) => apiPost('/api/kb/process', { limit, convs }),
-  reflection: (start = '', end = '') => apiPost('/api/kb/reflection', { start, end }),
+  // 沉淀/反思涉及多轮 LLM 调用，超时放宽到 300s
+  process: (limit = 10, convs = []) => apiPost('/api/kb/process', { limit, convs }, 300000),
+  reflection: (start = '', end = '') => apiPost('/api/kb/reflection', { start, end }, 300000),
+  deleteReflection: (id) => apiDelete(`/api/kb/reflections/${id}`),
   reflections: () => apiGet('/api/kb/reflections')
 }

@@ -165,26 +165,50 @@ def _chain_for(product: str, version: str) -> list[str]:
 
 
 def upgrade_path(product: str, current: str, target: str | None = None) -> dict:
-    """计算升级路径。跨架构（AF 旧→新）标记需售后迁移。"""
+    """计算升级路径。
+
+    - AF 旧架构（≤8.0.45）：旧链走完后接新架构链（8.0.48 为跨架构节点，标注需按官方
+      迁移指引执行）；
+    - AC 12.x / 早期 13.x：可直接升级至稳定版 13.0.121（官方支持直升，需前置检测）。
+    """
     target = target or LATEST.get(product, "")
-    chain = _chain_for(product, current)
     cur_k, tgt_k = version_key(current), version_key(target)
-    path = [v for v in chain if cur_k < version_key(v) <= tgt_k]
-    result = {"product": product, "current": current, "target": target, "hops": path,
-              "cross_arch_migration": False, "notes": []}
-    # 跨架构检测：当前为旧架构（≤8.0.45）且目标为新架构（≥8.0.48，新架构首个版本）
-    is_old_arch = product == AF and cur_k < version_key(AF_ARCH_SPLIT)
-    is_new_arch_target = product == AF and tgt_k >= version_key(AF_CHAIN_NEW[0])
-    if is_old_arch and is_new_arch_target:
-        old_hops = [v for v in AF_CHAIN_OLD if cur_k < version_key(v)]
-        result["hops"] = old_hops
-        result["cross_arch_migration"] = True
+    result = {"product": product, "current": current, "target": target, "hops": [],
+              "cross_arch_migration": False, "direct_upgrade": False, "notes": []}
+
+    # AC：12.x 及早于稳定版的 13.x 可直接升级至稳定版 13.0.121（无需逐级过渡）
+    if product == AC and cur_k < version_key(AC_LATEST_STABLE):
+        result["hops"] = [AC_LATEST_STABLE]
+        result["direct_upgrade"] = True
         result["notes"].append(
-            f"当前为旧架构版本（≤{AF_ARCH_SPLIT} 分界），不可直接升级新架构；"
-            f"可先直升至旧架构末端 {AF_CHAIN_OLD[-1]}，再联系深信服售后执行新旧架构迁移")
-    if product == AF and cur_k >= version_key(AF_ARCH_SPLIT) and not path:
+            f"{current} 可直接升级至稳定版 {AC_LATEST_STABLE}（无需逐级过渡）；"
+            "升级前需完成前置检测：配置备份、磁盘空间、接口与 License 状态核对")
+        if tgt_k > version_key(AC_LATEST_STABLE):
+            result["notes"].append(f"{LATEST[AC]} 为最新版本，稳健场景推荐 {AC_LATEST_STABLE}")
+        return result
+
+    chain = _chain_for(product, current)
+    path = [v for v in chain if cur_k < version_key(v) <= tgt_k]
+    result["hops"] = path
+
+    # AF 跨架构：旧架构（≤8.0.45）旧链走完后，接新架构链继续升级
+    if product == AF and cur_k < version_key(AF_ARCH_SPLIT):
+        old_tail = [v for v in AF_CHAIN_OLD if cur_k < version_key(v) <= tgt_k]
+        new_part = [v for v in AF_CHAIN_NEW if cur_k < version_key(v) <= tgt_k]
+        result["hops"] = old_tail + new_part
+        result["cross_arch_migration"] = True
+        if old_tail:
+            result["notes"].append(
+                f"旧架构先逐级升至 {old_tail[-1]}；{old_tail[-1]} → {new_part[0] if new_part else target} "
+                "为跨架构节点，请按官方迁移指引执行并联系深信服售后确认")
+        elif new_part:
+            result["notes"].append(
+                f"当前已处于旧架构末端，可直接升级至新架构 {new_part[0]}，"
+                "该跳为跨架构节点，请按官方迁移指引执行并联系深信服售后确认")
+    elif product == AF and cur_k >= version_key(AF_ARCH_SPLIT) and not path:
         result["notes"].append("当前已在新架构链上，按链内相邻版本逐级升级")
-    if not path and cur_k >= tgt_k:
+
+    if not result["hops"] and cur_k >= tgt_k:
         result["notes"].append("当前已是最新版本，无需升级")
     return result
 
@@ -195,10 +219,17 @@ def advisories_for(product: str, version: str) -> list[dict]:
 
 
 def releases_between(product: str, current: str, target: str | None = None) -> list[Release]:
-    """返回 current 之后（含 target）的已知版本发布说明，按版本升序。"""
+    """返回 current 之后（含 target）的已知版本发布说明，按版本升序。
+
+    AF 旧架构版本：跨架构后的新架构版本一并纳入，完整呈现升级价值。
+    """
     target = target or LATEST.get(product, "")
     cur_k, tgt_k = version_key(current), version_key(target)
-    vers = [v for v in _chain_for(product, current) if cur_k < version_key(v) <= tgt_k]
+    chain = _chain_for(product, current)
+    vers = [v for v in chain if cur_k < version_key(v) <= tgt_k]
+    if product == AF and cur_k < version_key(AF_ARCH_SPLIT):
+        vers += [v for v in AF_CHAIN_NEW if cur_k < version_key(v) <= tgt_k]
+        vers = sorted(set(vers), key=version_key)
     out = []
     for v in vers:
         rel = RELEASES.get(f"{product}:{v}")

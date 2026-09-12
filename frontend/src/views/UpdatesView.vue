@@ -5,7 +5,7 @@
         <el-icon><Refresh /></el-icon> 刷新官方更新信息
       </el-button>
       <span class="hint">
-        数据来源：深信服技术支持平台（正文需认证，可配置 Cookie 抓取）+ 官网 PSIRT 安全公告（公开）+ 内置版本知识库快照。
+        数据来源：深信服技术支持平台版本发布说明（免认证抓取）+ 官网 PSIRT 安全公告（公开）+ 内置版本知识库快照。
       </span>
     </div>
 
@@ -32,9 +32,10 @@
               </template>
               <el-tag v-if="!advice.upgrade_path.hops.length" size="small" type="success">无需升级</el-tag>
             </div>
-            <el-alert v-if="advice.upgrade_path.cross_arch_migration" type="error" :closable="false"
-                      style="margin-top: 8px; font-size: 12px"
-                      :title="advice.upgrade_path.notes[0]" />
+            <template v-if="advice.upgrade_path.notes?.length">
+              <el-alert v-for="(n, ni) in advice.upgrade_path.notes" :key="ni"
+                        type="warning" :closable="false" style="margin-top: 8px; font-size: 12px" :title="n" />
+            </template>
           </div>
         </div>
         <!-- 升级理由 -->
@@ -88,9 +89,6 @@
       <div class="page-card" style="margin-top: 12px">
         <div class="col-title" style="display: flex; align-items: center; gap: 10px">
           官方软件更新列表（support.sangfor.com.cn）
-          <el-tag size="small" :type="cookieReady ? 'success' : 'info'">
-            {{ cookieReady ? '平台 Cookie 已配置（.env）' : '未配置平台 Cookie（软件列表需认证，可在 backend/.env 配置 SANGFOR_SUPPORT_COOKIE）' }}
-          </el-tag>
           <el-button size="small" text type="primary" @click="loadSoftwareList(true)" :loading="softLoading">
             重新抓取
           </el-button>
@@ -101,13 +99,22 @@
             <div v-if="softwareList[p.k]?.status === 'ok' && softwareList[p.k]?.items?.length">
               <el-table :data="softwareList[p.k].items" size="small" border stripe max-height="360">
                 <el-table-column type="index" label="#" width="50" />
-                <el-table-column prop="name" label="版本/升级包" min-width="300">
+                <el-table-column prop="name" label="版本/升级包" min-width="260">
                   <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
                 </el-table-column>
+                <el-table-column label="下载地址" min-width="220">
+                  <template #default="{ row }">
+                    <a v-if="row.url" :href="row.url" target="_blank" rel="noopener noreferrer"
+                       class="dl-link" :title="row.url">
+                      <el-icon style="vertical-align: -2px"><Download /></el-icon> 下载
+                    </a>
+                    <span v-else class="muted">需登录平台获取</span>
+                  </template>
+                </el-table-column>
                 <el-table-column prop="size" label="大小" width="90" />
-                <el-table-column prop="published" label="发布时间" width="120" />
-                <el-table-column prop="md5" label="MD5" min-width="180">
-                  <template #default="{ row }"><span class="mono" style="font-size: 11px">{{ row.md5 || '-' }}</span></template>
+                <el-table-column prop="published" label="发布时间" width="110" />
+                <el-table-column prop="md5" label="MD5" min-width="170">
+                  <template #default="{ row }"><span class="mono" style="font-size: 11px">{{ row.md5 || '—' }}</span></template>
                 </el-table-column>
               </el-table>
               <div class="hint" style="margin-top: 6px">
@@ -133,7 +140,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { store, currentDevice } from '../store.js'
-import { Updates, Settings } from '../api.js'
+import { Updates } from '../api.js'
 
 const advice = ref(null)
 const refreshing = ref(false)
@@ -142,7 +149,6 @@ const refreshing = ref(false)
 const softTab = ref('af')
 const softwareList = ref({})
 const softLoading = ref(false)
-const cookieReady = ref(false)
 
 async function loadSoftwareList(force = false) {
   softLoading.value = true
@@ -156,8 +162,7 @@ async function loadSoftwareList(force = false) {
 }
 
 async function loadCookieState() {
-  const s = await Settings.get().catch(() => null)
-  cookieReady.value = !!(s && s.platform_cookie_configured)
+  // Cookie 配置已改为 .env 通道，不再展示状态标签（保留函数以兼容 onMounted 调用序）
 }
 
 const riskType = computed(() => ({ high: 'danger', medium: 'warning', low: 'info' }[advice.value?.risk] || 'info'))

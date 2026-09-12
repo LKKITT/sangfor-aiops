@@ -62,9 +62,9 @@ async def chat(payload: ChatIn):
     # 续接已有对话（含待确认卡片上下文）或开启新对话
     conv_id = payload.conv_id
     if conv_id and db.get_conversation(conv_id):
-        db.touch_conversation(conv_id, title=payload.message)
+        db.touch_conversation(conv_id, title=payload.message, device_id=payload.device_id)
     else:
-        conv = db.create_conversation(payload.message[:40])
+        conv = db.create_conversation(payload.message[:40], device_id=payload.device_id)
         conv_id = conv["id"]
     # 注册取消信号
     _cancel_events[conv_id] = asyncio.Event()
@@ -98,39 +98,11 @@ def conversations() -> list[dict]:
 
 
 @router.get("/conversations/detail")
-def conversation_detail_list() -> list[dict]:
-    """返回对话列表（含摘要、消息数、设备名）。"""
-    convs = db.list_conversations(limit=100)
-    devices = {d["id"]: d["name"] for d in db.list_devices()}
-    out = []
-    for c in convs:
-        msgs = db.get_messages(c["id"])
-        summary = db.get_conv_summary(c["id"])
-        user_msgs = [m for m in msgs if m["role"] == "user"]
-        assistant_msgs = [m for m in msgs if m["role"] == "assistant"]
-        # 从记忆摘要或对话历史提取设备
-        device_name = ""
-        for m in msgs:
-            t = m.get("content", {}).get("text", "")
-            for did, dname in devices.items():
-                if did in t or dname in t:
-                    device_name = dname
-                    break
-            if device_name:
-                break
-        out.append({
-            "id": c["id"],
-            "title": c["title"],
-            "created_at": c["created_at"],
-            "updated_at": c["updated_at"],
-            "msg_count": len(msgs),
-            "user_msg_count": len(user_msgs),
-            "assistant_msg_count": len(assistant_msgs),
-            "summary": (summary or {}).get("summary", ""),
-            "device_name": device_name,
-            "last_message": user_msgs[-1]["content"].get("text", "")[:100] if user_msgs else "",
-        })
-    return out
+def conversation_detail_list(page: int = 1, page_size: int = 20, keyword: str = "",
+                             device_id: str = "", start: str = "", end: str = "") -> dict:
+    """分页会话列表（含消息数/最后消息/摘要/设备名），支持关键词/设备/时间范围筛选。"""
+    return db.list_conversations_paged(page=page, page_size=page_size, keyword=keyword,
+                                       device_id=device_id, start=start, end=end)
 
 
 @router.get("/conversations/{conv_id}")
@@ -139,6 +111,23 @@ def conversation_messages(conv_id: str) -> list[dict]:
     if not conv:
         raise HTTPException(404, "会话不存在")
     return db.get_messages(conv_id)
+
+
+@router.get("/last-conversation/{device_id}")
+def last_conversation(device_id: str) -> dict:
+    """该设备最近一次会话：消息历史 + 待确认动作（供前端切换菜单后恢复对话）。"""
+    conv = db.latest_conversation_by_device(device_id)
+    if not conv:
+        return {"conv_id": None, "messages": [], "pending_action": None}
+    pending = db.get_pending_action_by_conv(conv["id"])
+    return {
+        "conv_id": conv["id"],
+        "messages": db.get_messages(conv["id"], limit=60),
+        "pending_action": {
+            "action_id": pending["id"], "tool_name": pending["tool_name"],
+            "summary": pending["summary"], "status": pending["status"],
+        } if pending and pending["status"] == "pending" else None,
+    }
 
 
 @router.get("/audit")

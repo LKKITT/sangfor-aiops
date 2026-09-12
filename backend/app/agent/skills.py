@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from app.agent.tools import get_tools_by_name
 
 KB_TOOL_NAME = "search_official_knowledge"
+KB_RECORD_TOOL_NAME = "record_to_kb"
 
 
 @dataclass
@@ -141,14 +142,15 @@ def parse_skill_choice(text: str, device_type: str = "") -> Skill | None:
 
 
 def resolve_skill_tools(skill: Skill | None, device_type: str = "") -> list:
-    """技能工具集 = 全部只读工具 + 技能解锁的写工具（按设备类型过滤）。
+    """技能工具集 = 全部只读工具 + 技能解锁的写工具 + 知识库沉淀登记工具（按设备类型过滤）。
 
-    只读工具永远可用：跨技能的查询不被卡死；写权限只收不扩。
+    只读工具与 record_to_kb（用户明确要求沉淀时的入口，走确认卡片）永远可用：
+    跨技能查询不被卡死；写权限只收不扩。
     """
     available = get_tools_by_name(device_type)
     if skill is None:
         return list(available.values())
-    unlocked = set(skill.tools)
+    unlocked = set(skill.tools) | {KB_RECORD_TOOL_NAME}
     return [t for name, t in available.items() if not t.write or name in unlocked]
 
 

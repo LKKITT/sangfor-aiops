@@ -157,6 +157,31 @@ def test_process_pending_selected_convs():
     assert r["processed"] == 1 and r["results"][0]["conv_id"] == c1
 
 
+def test_topic_update_keeps_entry_fresh():
+    """同主题沉淀：刷新词条内容而非跳过，保留原 id 与创建时间。"""
+    e1 = db.save_kb_entry(_entry("AC绑定配置主题", conv="conv_old"))
+    got = db.get_kb_entry_by_topic("AC绑定配置主题")
+    assert got["id"] == e1["id"]
+    db.update_kb_entry_content(e1["id"], "conv_new", "新摘要", "新正文",
+                               ["k1"], [{"title": "官方", "url": "https://a.b/c"}], ["tag"])
+    got2 = db.get_kb_entry_by_topic("AC绑定配置主题")
+    assert got2["id"] == e1["id"]                      # 原 id 保留（图谱节点不悬空）
+    assert got2["summary"] == "新摘要"
+    assert got2["references"][0]["url"] == "https://a.b/c"
+    assert got2["created_at"] == e1["created_at"]      # 创建时间不变
+
+
+def test_get_messages_since_id_incremental():
+    conv = db.create_conversation("增量测试")
+    db.add_message(conv["id"], "user", {"text": "旧消息1"})
+    db.add_message(conv["id"], "assistant", {"text": "旧回复"})
+    since = db.max_message_id(conv["id"])
+    db.add_message(conv["id"], "user", {"text": "新消息"})
+    msgs = db.get_messages(conv["id"], since_id=since)
+    assert [m["content"]["text"] for m in msgs] == ["新消息"]
+    assert db.max_message_id(conv["id"]) > since
+
+
 def test_stats_and_reflections():
     db.save_kb_entry(_entry("统计词条A", tags=["t1", "t2"]))
     db.save_kb_entry(_entry("统计词条B", tags=["t1"]))

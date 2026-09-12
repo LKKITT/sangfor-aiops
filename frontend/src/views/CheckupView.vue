@@ -4,7 +4,7 @@
       <el-button type="primary" @click="runCheckup" :loading="running">
         <el-icon><Odometer /></el-icon> 运行配置体检
       </el-button>
-      <span class="hint">确定性规则引擎：规则冲突（遮蔽/矛盾）/ 空策略 / 过宽权限 / 高危端口暴露 / 资源异常。部分风险支持一键修复（进入对话确认流）。</span>
+      <span class="hint">确定性规则引擎：规则冲突（遮蔽/矛盾）/ 空策略 / 过宽权限 / 高危端口暴露 / 资源异常。风险项附带修复建议，变更请通过 AI 对话（走确认卡片）执行。</span>
     </div>
 
     <div v-if="report">
@@ -18,9 +18,6 @@
             <div class="cnt medium"><div class="cnt-num">{{ report.counts.medium }}</div>中危</div>
             <div class="cnt low"><div class="cnt-num">{{ report.counts.low }}</div>低危</div>
           </div>
-          <el-button style="margin-top: 14px" type="warning" plain @click="aiFix">
-            <el-icon><MagicStick /></el-icon> 让 AI 一键修复可自动处理的风险
-          </el-button>
         </div>
 
         <div class="page-card items-card">
@@ -34,7 +31,6 @@
                 <div class="risk-title">
                   <el-tag :type="item.auto_fix ? 'warning' : 'info'" size="small">{{ item.category }}</el-tag>
                   <b style="margin-left: 6px">{{ item.title }}</b>
-                  <el-tag v-if="item.auto_fix" size="small" type="success" style="margin-left: 6px">可一键修复</el-tag>
                 </div>
                 <div class="risk-row"><span class="risk-k">说明：</span>{{ item.evidence }}</div>
                 <div class="risk-row"><span class="risk-k">建议：</span>{{ item.suggestion }}</div>
@@ -73,11 +69,6 @@ async function runCheckup() {
     report.value = await Devices.checkup(dev.id)
     ElMessage.success(`体检完成：${report.value.grade}（${report.value.score} 分）`)
   } catch (e) { ElMessage.error(String(e.message || e)) } finally { running.value = false }
-}
-
-async function aiFix() {
-  store.view = 'chat'
-  ElMessage.info('已切换到对话页，发送"修复体检发现的可自动处理风险"即可执行')
 }
 
 watch(() => store.currentDeviceId, () => { report.value = null })

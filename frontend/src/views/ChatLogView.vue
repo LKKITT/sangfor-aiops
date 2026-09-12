@@ -9,6 +9,21 @@
         </el-button>
       </div>
 
+      <!-- 筛选栏 -->
+      <div class="filter-bar">
+        <el-input v-model="filters.keyword" size="small" clearable placeholder="搜索标题/消息内容"
+                  style="width: 220px" @keyup.enter="applyFilters" @clear="applyFilters" />
+        <el-select v-model="filters.device_id" size="small" clearable placeholder="全部设备"
+                   style="width: 170px" @change="applyFilters">
+          <el-option v-for="d in store.devices" :key="d.id" :label="d.name" :value="d.id" />
+        </el-select>
+        <el-date-picker v-model="filters.range" type="daterange" value-format="YYYY-MM-DD" size="small"
+                        start-placeholder="开始日期" end-placeholder="结束日期"
+                        style="width: 240px" @change="applyFilters" />
+        <el-button size="small" type="primary" @click="applyFilters">查询</el-button>
+        <el-button size="small" @click="resetFilters">重置</el-button>
+      </div>
+
       <div v-if="loading" style="text-align: center; padding: 40px; color: #909399">
         <el-icon class="is-loading" style="font-size: 24px"><Loading /></el-icon>
         <div style="margin-top: 8px">加载对话日志…</div>
@@ -16,37 +31,47 @@
 
       <div v-else-if="!conversations.length" style="text-align: center; padding: 40px; color: #909399">
         <el-icon style="font-size: 48px; color: #c0c4cc"><ChatDotRound /></el-icon>
-        <p style="margin-top: 12px">暂无对话日志，开始使用 AI 对话后会自动记录</p>
+        <p style="margin-top: 12px">没有符合条件的对话日志</p>
       </div>
 
-      <el-timeline v-else>
-        <el-timeline-item
-          v-for="conv in conversations"
-          :key="conv.id"
-          :timestamp="conv.updated_at"
-          placement="top"
-          :type="conv.msg_count > 0 ? 'primary' : 'info'"
-        >
-          <div class="conv-item" @click="showDetail(conv.id)">
-            <div class="conv-title">
-              <el-tag size="small" :type="conv.msg_count > 1 ? 'success' : 'info'" style="margin-right: 6px">
-                {{ conv.msg_count }} 条消息
-              </el-tag>
-              {{ conv.title }}
-              <span v-if="conv.device_name" class="conv-device">
-                <el-icon><Monitor /></el-icon> {{ conv.device_name }}
-              </span>
-            </div>
-            <div v-if="conv.last_message" class="conv-preview">{{ conv.last_message }}</div>
-            <div v-if="conv.summary" class="conv-summary">
-              <el-icon><Memo /></el-icon> {{ conv.summary }}
-            </div>
-            <div class="conv-meta">
-              {{ conv.created_at }}
-            </div>
-          </div>
-        </el-timeline-item>
-      </el-timeline>
+      <template v-else>
+        <el-table :data="conversations" size="small" style="width: 100%">
+          <el-table-column prop="title" label="对话标题" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="conv-link" @click="showDetail(row.id)">{{ row.title }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="设备" width="140">
+            <template #default="{ row }">
+              <span v-if="row.device_name"><el-icon style="vertical-align: -2px"><Monitor /></el-icon> {{ row.device_name }}</span>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="msg_count" label="消息" width="60" align="center" />
+          <el-table-column prop="last_message" label="最后提问" min-width="200" show-overflow-tooltip />
+          <el-table-column label="AI 摘要" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.summary" class="muted">{{ row.summary }}</span>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="最后活跃" width="140">
+            <template #default="{ row }">{{ (row.updated_at || '').slice(0, 16) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="70">
+            <template #default="{ row }">
+              <el-button size="small" text type="primary" @click="showDetail(row.id)">查看</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div style="display: flex; justify-content: flex-end; margin-top: 10px">
+          <el-pagination layout="total, prev, pager, next, sizes" :total="total"
+                         :current-page="page" :page-size="pageSize"
+                         :page-sizes="[10, 20, 50]" background
+                         @current-change="p => { page = p; loadLogs() }"
+                         @size-change="s => { pageSize = s; page = 1; loadLogs() }" />
+        </div>
+      </template>
     </div>
 
     <!-- 对话详情弹窗 -->
@@ -76,15 +101,20 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { apiGet } from '../api.js'
+import { store } from '../store.js'
 
 const md = new MarkdownIt({ breaks: true })
 const render = (text) => md.render(text || '')
 
 const loading = ref(false)
 const conversations = ref([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
+const filters = reactive({ keyword: '', device_id: '', range: null })
 const showDetailDialog = ref(false)
 const detailTitle = ref('')
 const detailMessages = ref([])
@@ -93,12 +123,32 @@ const loadingDetail = ref(false)
 async function loadLogs() {
   loading.value = true
   try {
-    conversations.value = await apiGet('/api/chat/conversations/detail')
+    const params = new URLSearchParams({
+      page: String(page.value), page_size: String(pageSize.value),
+      keyword: filters.keyword || '', device_id: filters.device_id || '',
+      start: filters.range?.[0] || '', end: filters.range?.[1] || ''
+    })
+    const data = await apiGet(`/api/chat/conversations/detail?${params}`)
+    conversations.value = data.items || []
+    total.value = data.total || 0
   } catch (e) {
     conversations.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
+}
+
+function applyFilters() {
+  page.value = 1
+  loadLogs()
+}
+
+function resetFilters() {
+  filters.keyword = ''
+  filters.device_id = ''
+  filters.range = null
+  applyFilters()
 }
 
 async function showDetail(convId) {
@@ -119,16 +169,13 @@ onMounted(loadLogs)
 </script>
 
 <style scoped>
-.chatlog-page { max-width: 900px; margin: 0 auto; }
-.header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.chatlog-page { max-width: 1000px; margin: 0 auto; }
+.header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .subtitle { font-size: 12px; color: #909399; }
-.conv-item { cursor: pointer; padding: 8px 12px; border-radius: 6px; transition: background 0.2s; }
-.conv-item:hover { background: #f5f7fa; }
-.conv-title { font-weight: 500; margin-bottom: 4px; }
-.conv-device { margin-left: 8px; font-size: 12px; color: #909399; }
-.conv-preview { font-size: 12px; color: #606266; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conv-summary { font-size: 12px; color: #909399; margin-top: 2px; }
-.conv-meta { font-size: 11px; color: #c0c4cc; margin-top: 4px; }
+.filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+.conv-link { cursor: pointer; color: #409eff; }
+.conv-link:hover { text-decoration: underline; }
+.muted { color: #909399; font-size: 12px; }
 .detail-messages { max-height: 65vh; overflow-y: auto; }
 .detail-row { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
 .detail-role-tag { flex-shrink: 0; width: 50px; }

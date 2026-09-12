@@ -339,12 +339,21 @@ class AcApiClient(DeviceClient):
             return []
 
     async def get_throughput(self) -> dict:
-        """获取吞吐量（上行/下行流速）。"""
+        """获取吞吐量（上行/下行流速，统一换算为 bps）。
+
+        文档 1.10：GET status/throughput 返回 {send, recv, unit}（send=上行/recv=下行）。
+        实测部分固件忽略 unit=bits 仍返回 bytes/s，此处统一 ×8 换算为 bps，
+        字段规范化为 up_throughput/down_throughput。
+        """
         try:
-            body = {"_method": "GET"}
+            body = {"_method": "GET", "unit": "bits"}
             data = await self._post("status/throughput", body)
             if isinstance(data, dict):
-                return data
+                unit = str(data.get("unit", "bits")).lower()
+                factor = 8.0 if unit == "bytes" else 1.0
+                return {"up_throughput": float(data.get("send") or 0) * factor,
+                        "down_throughput": float(data.get("recv") or 0) * factor,
+                        "unit": "bits"}
             return {}
         except DeviceError:
             return {}

@@ -47,10 +47,13 @@ def _llm() -> AsyncOpenAI | None:
     return AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=120)
 
 
-def _conversation_text(conv_id: str) -> str:
-    """取对话的用户/助手文本与知识库引用（含官方链接），截断保护。"""
+def _conversation_text(conv_id: str, since_id: int | None = None) -> str:
+    """取对话的用户/助手文本与知识库引用（含官方链接），截断保护。
+
+    since_id 给定时只取该消息 id 之后的内容（增量沉淀，不引入之前的会话内容）。
+    """
     parts = []
-    for m in db.get_messages(conv_id):
+    for m in db.get_messages(conv_id, since_id=since_id):
         c = m.get("content", {})
         text = (c.get("text") or "").strip()
         if not text:
@@ -175,16 +178,21 @@ def _merge_refs(llm_refs: list[dict], official_refs: list[dict]) -> list[dict]:
     return out[:8]
 
 
-async def generate_entries_for_conv(conv_id: str, force: bool = False) -> dict:
-    """把一个对话沉淀为知识词条（按主题去重）。"""
+async def generate_entries_for_conv(conv_id: str, force: bool = False,
+                                    since_id: int | None = None) -> dict:
+    """把对话沉淀为知识词条（按主题去重）。
+
+    since_id 给定时为增量沉淀（只取该消息 id 之后的对话，供勾选后逐次沉淀），
+    不受“已沉淀过”跳过限制；全量路径（手动沉淀）仍按会话幂等。
+    """
     if db.kb_conv_dismissed(conv_id):
         return {"status": "skipped", "conv_id": conv_id, "reason": "该对话已被移出沉淀队列"}
-    if not force and db.conv_kb_sedimented(conv_id):
+    if since_id is None and not force and db.conv_kb_sedimented(conv_id):
         return {"status": "skipped", "conv_id": conv_id, "reason": "该对话已沉淀过词条"}
     llm = _llm()
     if llm is None:
         return {"status": "skipped", "conv_id": conv_id, "reason": "未配置 LLM，无法自动提炼词条"}
-    text = _conversation_text(conv_id)
+    text = _conversation_text(conv_id, since_id)
     if len(text) < 50:
         return {"status": "skipped", "conv_id": conv_id, "reason": "对话内容过少，无沉淀价值"}
     resp = await llm.chat.completions.create(
@@ -197,26 +205,37 @@ async def generate_entries_for_conv(conv_id: str, force: bool = False) -> dict:
     if finish == "length":
         log.warning("知识库提炼输出被截断(conv=%s)，使用截断修复解析", conv_id)
     entries = _parse_entries(raw)
-    saved, skipped = 0, 0
+    saved, updated = 0, 0
     for e in entries:
         topic = (e.get("topic") or "").strip()
-        if db.kb_entry_topic_exists(topic):
-            skipped += 1
-            continue
-        db.save_kb_entry({
-            "conv_id": conv_id, "topic": topic[:80],
-            "category": (e.get("category") or "其他")[:20],
+        entry_fields = {
             "summary": (e.get("summary") or "")[:200],
             "content_md": e.get("content_md") or "",
             "key_points": [str(x) for x in (e.get("key_points") or [])][:8],
             "tags": [str(x)[:20] for x in (e.get("tags") or [])][:8],
             "references": _merge_refs(_norm_entry_refs(e.get("references")),
                                       _conv_official_refs(conv_id)),
+        }
+        existing = db.get_kb_entry_by_topic(topic) if topic else None
+        if existing:
+            # 同主题：刷新内容保持知识最新（不产生重复词条，也不静默丢弃新内容）
+            db.update_kb_entry_content(existing["id"], conv_id, entry_fields["summary"],
+                                       entry_fields["content_md"], entry_fields["key_points"],
+                                       entry_fields["references"], entry_fields["tags"])
+            updated += 1
+            continue
+        db.save_kb_entry({
+            "conv_id": conv_id, "topic": topic[:80],
+            "category": (e.get("category") or "其他")[:20],
+            **entry_fields,
         })
         saved += 1
-    log.info("知识库沉淀完成 conv=%s 生成=%s 保存=%s 去重=%s", conv_id, len(entries), saved, skipped)
+    log.info("知识库沉淀完成 conv=%s 生成=%s 新增=%s 更新=%s", conv_id, len(entries), saved, updated)
     return {"status": "ok", "conv_id": conv_id,
-            "generated": len(entries), "saved": saved, "dedup_skipped": skipped}
+            "generated": len(entries), "saved": saved, "updated": updated}
+
+
+KB_AUDIT_ACTIONS = ("agent.tool.search_official_knowledge", "agent.tool.record_to_kb")
 
 
 def pending_items() -> list[dict]:
@@ -228,13 +247,14 @@ def pending_items() -> list[dict]:
     qa: dict[str, list[str]] = {c: [] for c in conv_ids}
     for a in db.list_audit(limit=1000):
         cid = a.get("conv_id", "")
-        if cid in conv_set and a.get("action") == "agent.tool.search_official_knowledge":
+        if cid in conv_set and a.get("action") in KB_AUDIT_ACTIONS:
             try:
-                q = (json.loads(a.get("detail_json") or "{}").get("args") or {}).get("question")
+                args = json.loads(a.get("detail_json") or "{}").get("args") or {}
             except (ValueError, TypeError):
-                q = None
+                args = {}
+            q = str(args.get("question") or args.get("note") or "").strip()
             if q and len(qa[cid]) < 5:
-                qa[cid].append(str(q))
+                qa[cid].append(q)
     items = []
     for conv_id in conv_ids:
         conv = db.get_conversation(conv_id) or {}
@@ -320,11 +340,11 @@ async def generate_reflection(start: str = "", end: str = "") -> dict:
     return {"status": "ok", "reflection": rec}
 
 
-def schedule_sediment(conv_id: str) -> None:
+def schedule_sediment(conv_id: str, since_id: int | None = None) -> None:
     """对话结束后台静默沉淀（不阻塞、不影响对话主流程）。"""
     async def _run():
         try:
-            await generate_entries_for_conv(conv_id)
+            await generate_entries_for_conv(conv_id, since_id=since_id)
         except Exception:   # noqa: BLE001
             log.warning("个人知识库后台沉淀失败 conv=%s", conv_id, exc_info=True)
 

@@ -36,13 +36,12 @@ def init_database():
 
 @pytest.fixture(autouse=True)
 def _reset_client_cache():
-    """每个用例独立事件循环：清空工厂的共享客户端缓存，避免跨 loop 复用报错。"""
+    """每个用例独立事件循环：清空工厂的共享客户端缓存（含 per-device 锁与失败负缓存），
+    避免跨 loop 复用 asyncio.Lock 报错。"""
     from app.adapters import factory
-    factory._clients.clear()
-    factory._client_signatures.clear()
+    factory.reset_cache()
     yield
-    factory._clients.clear()
-    factory._client_signatures.clear()
+    factory.reset_cache()
 
 
 @pytest.fixture()

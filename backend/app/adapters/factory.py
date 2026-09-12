@@ -5,13 +5,20 @@
 
 真实设备限制 API 并发会话数：按 device_id 缓存已登录客户端并复用 token，
 避免每次请求都重新登录导致会话堆积超限；设备配置变更时自动重建。
+
+可用性保护：
+- 锁按设备隔离（per-device lock）：一台设备登录慢/不可达不会阻塞其它设备的请求；
+- 登录带独立超时（DEVICE_LOGIN_TIMEOUT，默认 8s），不可达设备快速失败；
+- 失败负缓存：登录失败的设备在冷却期（默认 10s）内直接拒绝新请求，避免排队放大。
 """
 import asyncio
+import time
+
 import httpx
 
 from app.adapters.ac_rest import AcApiClient
 from app.adapters.af_rest import AfRestClient
-from app.adapters.base import DeviceClient
+from app.adapters.base import DeviceClient, DeviceError
 from app.adapters.simulator.app import create_simulator_app
 from app.adapters.simulator.state import STATE
 from app.config import settings
@@ -19,7 +26,9 @@ from app.db import get_device
 
 _clients: dict[str, DeviceClient] = {}
 _client_signatures: dict[str, str] = {}
-_client_lock = asyncio.Lock()   # 串行化首次登录：并发 get_client 会各自登录触发设备会话上限
+_client_locks: dict[str, asyncio.Lock] = {}     # per-device：只串行同设备登录
+_failed_until: dict[str, float] = {}            # 失败负缓存：device_id -> 冷却截止时间戳
+FAIL_COOLDOWN = 10.0                            # 登录失败后的重试冷却（秒）
 
 _simulator_app = None
 
@@ -29,6 +38,14 @@ def simulator_app():
     if _simulator_app is None:
         _simulator_app = create_simulator_app(STATE)
     return _simulator_app
+
+
+def _device_lock(device_id: str) -> asyncio.Lock:
+    """取（或建）该设备的登录锁。单事件循环内 dict 读写原子，无需外层锁。"""
+    lock = _client_locks.get(device_id)
+    if lock is None:
+        lock = _client_locks[device_id] = asyncio.Lock()
+    return lock
 
 
 def _signature(device: dict) -> str:
@@ -62,17 +79,56 @@ async def get_client(device_id: str) -> DeviceClient:
     device = get_device(device_id)
     if not device:
         raise ValueError(f"设备不存在：{device_id}")
+    # 失败负缓存：冷却期内快速失败，避免排队请求反复挂满登录超时
+    until = _failed_until.get(device_id)
+    if until and time.monotonic() < until:
+        raise DeviceError(f"设备「{device.get('name')}」连接失败，{int(until - time.monotonic()) + 1}s 内暂不重试；"
+                          f"请检查设备网络可达性")
     sig = _signature(device)
-    async with _client_lock:   # 并发请求只做一次登录，避免触发设备并发会话限制
+    async with _device_lock(device_id):   # 仅串行同设备登录，不阻塞其它设备
         client = _clients.get(device_id)
         if client is None or _client_signatures.get(device_id) != sig:
             if client is not None:
                 await client.aclose()
             client = create_client(device)
-            await client.login()
+            try:
+                await asyncio.wait_for(client.login(), timeout=settings.device_login_timeout)
+            except asyncio.TimeoutError:
+                await _close_quietly(client)
+                _mark_failed(device_id)
+                raise DeviceError(f"设备「{device.get('name')}」登录超时（>{int(settings.device_login_timeout)}s），"
+                                  f"请检查设备网络可达性")
+            except DeviceError:
+                await _close_quietly(client)
+                _mark_failed(device_id)
+                raise
+            except Exception as e:   # noqa: BLE001 —— 其它连接异常统一转 DeviceError 并负缓存
+                await _close_quietly(client)
+                _mark_failed(device_id)
+                raise DeviceError(f"设备「{device.get('name')}」连接失败：{e}") from e
+            _failed_until.pop(device_id, None)
             _clients[device_id] = client
             _client_signatures[device_id] = sig
     return client
+
+
+def _mark_failed(device_id: str) -> None:
+    _failed_until[device_id] = time.monotonic() + FAIL_COOLDOWN
+
+
+async def _close_quietly(client: DeviceClient) -> None:
+    try:
+        await client.aclose()
+    except Exception:   # noqa: BLE001
+        pass
+
+
+def reset_cache() -> None:
+    """清空全部客户端/锁/负缓存状态（测试隔离用；请求路径不要调用）。"""
+    _clients.clear()
+    _client_signatures.clear()
+    _client_locks.clear()
+    _failed_until.clear()
 
 
 async def close_all_clients() -> None:
@@ -83,8 +139,7 @@ async def close_all_clients() -> None:
             await client.aclose()
         except Exception:   # noqa: BLE001
             pass
-    _clients.clear()
-    _client_signatures.clear()
+    reset_cache()
 
 
 # ---------------- token 保活：每 3 分钟对已缓存客户端 keepalive，防止会话过期 ----------------
