@@ -52,9 +52,9 @@ CONFIG = {
     # AES加密参数（从前端JS逆向得到）
     "aes_key": b"eaA8eBa7EfeMfcfZ",
     "aes_iv": b"TRYTOCN394402133",
-    # 社区登录凭证
-    "bbs_username": "***REMOVED***",
-    "bbs_password": "***REMOVED***",
+    # 社区登录凭证：仅从环境变量读取，禁止在代码中硬编码
+    "bbs_username": os.environ.get("ZHUGE_BBS_USERNAME", ""),
+    "bbs_password": os.environ.get("ZHUGE_BBS_PASSWORD", ""),
     # 请求超时
     "timeout": 30,
 }
