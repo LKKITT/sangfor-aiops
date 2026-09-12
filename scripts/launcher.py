@@ -343,7 +343,7 @@ def update_status():
 # 构建 GUI
 # ============================================================
 def build_gui():
-    global root, entry_backend_host, entry_backend_port, entry_frontend_port
+    global root, entry_backend_host, entry_backend_port, entry_frontend_port, entry_frontend_host
     global lbl_backend_status, lbl_frontend_status, lbl_status
     global lbl_backend_url, lbl_frontend_url, lbl_config_status
     global btn_start, btn_restart
