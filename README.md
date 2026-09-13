@@ -67,6 +67,10 @@
 
 - Python 3.10+（开发用 3.12）、Node.js 18+
 
+> 全新 Windows 电脑（未装 Python/Node）？先运行环境引导脚本：
+> `powershell -ExecutionPolicy Bypass -File skills\windows-quickstart\scripts\setup_windows.ps1 -Mirror`
+> 说明见 [skills/windows-quickstart/SKILL.md](skills/windows-quickstart/SKILL.md)。
+
 ### 一键启动
 
 提供两种方式：
