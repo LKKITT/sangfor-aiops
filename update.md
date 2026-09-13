@@ -6,6 +6,11 @@
 
 ## 2026-09-13
 
+### `d37cd15` docs: README 推荐 Agent 技能启动方式，平台设置描述与界面对齐
+- README 启动方式按推荐顺序重排：Agent 技能启动（windows-quickstart）> 一键脚本 > GUI 控制台 > 手动
+- design.md 平台设置表：Cookie 行改为 BBS 社区账号/密码，Cookie 标注仅 .env 可配
+- demo-script.md 修正两处过时的 Cookie 界面配置描述；删除 docs/new/ 草稿文档
+
 ### `710f3a5` docs: 对照代码审查并修订 README 与 design
 - 工具数量口径统一为 50 个，意图模式修正为 70+，测试结果更新为 112/112
 - 移除已删除文件的失效引用（launch.bat / start_all.sh / run_simulator.py）
