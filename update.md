@@ -6,6 +6,12 @@
 
 ## 2026-09-13
 
+### `6b201b2` feat: 新增 windows-quickstart 技能，全新 Windows 电脑一键部署
+- skills/windows-quickstart：SKILL.md 部署指南 + setup_windows.ps1 引导脚本
+- 引导脚本仅依赖系统自带 PowerShell，自动检测/经 winget 安装 Python 3.10+ 与 Node 18+，幂等可重复执行
+- 支持 -Mirror（国内镜像）与 -Launch（完成后直接启动）参数
+- 收录 contest 问答准备文档与 docs/new 设计文档
+
 ### `a790b6e` feat: 新增深信服支持平台爬虫技能，赛事文档迁移至 contest 目录
 - 新增 sangfor-support-crawler 技能：社区登录抓取官方支持内容（凭据经参数传入，无硬编码）
 - 赛事交付物（产品文档 / 演讲PPT / 图表素材 / 构建脚本）移入 contest/
