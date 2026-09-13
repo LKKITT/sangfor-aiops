@@ -6,6 +6,12 @@
 
 ## 2026-09-13
 
+### `710f3a5` docs: 对照代码审查并修订 README 与 design
+- 工具数量口径统一为 50 个，意图模式修正为 70+，测试结果更新为 112/112
+- 移除已删除文件的失效引用（launch.bat / start_all.sh / run_simulator.py）
+- 凭据链描述更新（代码不再内置任何账号）
+- 修正 design 小节编号错乱与记忆表名；项目结构补齐 SCP/quickstart/contest
+
 ### `0f0a1e2` feat: 知识库与编排器增强，赛事文档更新
 - 个人知识库服务与测试改进，编排器/技能/工具链增强
 - db 初始化调整，ChatView 小修复
