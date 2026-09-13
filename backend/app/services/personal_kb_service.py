@@ -48,14 +48,18 @@ def _load_crawler_module():
 
 log = logging.getLogger("sangfor-agent")
 
-WIKI_SYSTEM_PROMPT = """你是个人知识库管理员。把一段「工程师与AI助手的对话」提炼为结构化知识词条（WIKI），要求：
+WIKI_SYSTEM_PROMPT = """你是个人知识库管理员，按 LLM-Wiki 方式维护知识：每个词条是一个原子主题的 wiki 页面，
+词条之间通过"相关主题"互相链接，同类知识会与已有页面合并而不是重复建页。把「工程师与AI助手的对话」提炼为结构化知识词条，要求：
 1. 只提炼有沉淀价值的技术知识（配置方法、故障排查、版本知识、安全策略、最佳实践），忽略寒暄与过程性内容；
-2. 每个词条聚焦一个主题；对话含多个独立主题时拆分为多个词条；
-3. 忠实于对话内容与引用来源，不得编造对话中没有的信息；
+2. **原子主题**：一个词条只讲一个独立概念/问题；对话含多个独立主题时拆分为多个词条；
+3. **固定骨架**：content_md 按需包含「适用版本 / 现象 / 根因 / 处理步骤 / 验证方法」，让同类词条结构一致、便于比对；
+4. **别名**：aliases 给出该主题的常见同义说法 2~4 个（如 ["HA 主备不同步","双机切换异常"]），用于提高检索命中；
+5. **交叉引用**：若词条与某已有主题相关，在 related 数组里写已有主题名（如 ["AF双机聚合HA-traffic配置与恢复方法"]）；
+6. 忠实于对话内容与引用来源，不得编造对话中没有的信息；
 4. 正文精炼：content_md 控制在 300 字内，key_points 最多 5 条，避免超长；
 5. 标签用简洁一致的名词（产品优先写 AF/AC，避免「深信服AF」「AF防火墙」「下一代防火墙」等同义变体；每条不超过 4 个）；
 6. 只输出 JSON 数组，不要输出任何其他文字或代码块标记。元素格式：
-{"topic": "词条主题（简洁名词短语）", "category": "分类（配置方法/故障排查/版本升级/安全策略/最佳实践/其他 之一）", "summary": "一句话摘要", "content_md": "词条正文（markdown，150-300字，步骤用有序列表）", "key_points": ["要点1", "要点2"], "tags": ["标签", "标签"], "references": [{"title": "引用标题", "url": "官方链接"}]}
+{"topic": "词条主题（简洁名词短语）", "category": "分类（配置方法/故障排查/版本升级/安全策略/最佳实践/其他 之一）", "summary": "一句话摘要", "content_md": "词条正文（markdown，150-300字，按固定骨架组织）", "key_points": ["要点1", "要点2"], "tags": ["标签", "标签"], "aliases": ["同义说法", "别名"], "related": ["相关已有主题名"], "references": [{"title": "引用标题", "url": "官方链接"}]}
 7. references 引用材料中出现的官方链接时，必须使用对象形式并原样保留 url，不得改写、编造或丢弃链接；材料中没有 url 的引用只用 {"title": "标题"}。
 如果对话没有沉淀价值，只输出 []。"""
 
@@ -242,11 +246,18 @@ async def generate_entries_for_conv(conv_id: str, force: bool = False,
             "generated": len(entries), "saved": saved, "updated": updated}
 
 
+def _similar_entry(topic: str) -> tuple[dict | None, float]:
+    """按主题检索最相似已有词条；返回 (词条, 相关度)。"""
+    rows = db.search_kb_entries(topic, limit=1)
+    return (rows[0] if rows else None, float(rows[0].get("score", 0)) if rows else 0.0)
+
+
 def _persist_entries(entries: list[dict], conv_id: str = "",
                      extra_refs: list[dict] | None = None) -> tuple[int, int]:
-    """词条入库（按主题去重/更新）。返回 (新增数, 更新数)。
+    """词条入库（LLM-Wiki 合并式记忆）。返回 (新增数, 更新数)。
 
-    引用来源合并顺序：LLM 提炼的引用 → 对话中知识库工具返回的官方链接 → extra_refs（如链接沉淀的来源页）。
+    去重合并三级：①精确同主题 → 刷新；②相似主题（检索高分且词元重合）→ 合并入库；
+    ③全新主题 → 新建。引用合并顺序：LLM 提炼 → 对话官方链接 → extra_refs。
     """
     saved, updated = 0, 0
     for e in entries:
@@ -256,20 +267,41 @@ def _persist_entries(entries: list[dict], conv_id: str = "",
         refs = _merge_refs(_norm_entry_refs(e.get("references")),
                            _conv_official_refs(conv_id) if conv_id else [])
         refs = _merge_refs(refs, list(extra_refs or []))
+        aliases = [str(x)[:20] for x in (e.get("aliases") or [])][:8]
+        related = [str(x)[:60] for x in (e.get("related") or [])][:5]
         entry_fields = {
             "summary": (e.get("summary") or "")[:200],
             "content_md": e.get("content_md") or "",
             "key_points": [str(x) for x in (e.get("key_points") or [])][:8],
             "tags": [str(x)[:20] for x in (e.get("tags") or [])][:8],
             "references": refs,
+            "aliases": aliases,
         }
+        if related:
+            see_also = "相关主题：" + "、".join(f"[[{r}]]" for r in related)
+            entry_fields["content_md"] = (entry_fields["content_md"]
+                                          + chr(10) * 2 + see_also).strip()
+
+        # ① 精确同主题 / ② 相似主题（检索高分 + 主题词元覆盖率 + 产品线一致）→ 合并更新
         existing = db.get_kb_entry_by_topic(topic)
+        if existing is None:
+            similar, score = _similar_entry(topic)
+            topic_tokens = set(db._tokenize_keyword(topic))
+            if similar and score >= 12:
+                sim_tokens = set(db._tokenize_keyword(similar.get("topic") or ""))
+                lat_new = {t for t in topic_tokens if t.isascii()}
+                lat_old = {t for t in sim_tokens if t.isascii()}
+                lat_ok = not lat_new or not lat_old or bool(lat_new & lat_old)   # 产品线保护：af 与 scp 不合并
+                coverage = len(topic_tokens & sim_tokens) / max(1, len(topic_tokens))
+                if lat_ok and (score >= 18 or (score >= 12 and coverage >= 0.4)):
+                    existing = similar
         if existing:
-            # 同主题：刷新内容保持知识最新（不产生重复词条，也不静默丢弃新内容）
-            db.update_kb_entry_content(existing["id"], conv_id or existing["conv_id"],
+            # 合并更新：新信息并入已有页面（要点/标签/引用/别名并集去重），保持单一权威页面
+            db.update_kb_entry_content(existing["id"], conv_id or existing.get("conv_id", ""),
                                        entry_fields["summary"],
                                        entry_fields["content_md"], entry_fields["key_points"],
-                                       entry_fields["references"], entry_fields["tags"])
+                                       entry_fields["references"], entry_fields["tags"],
+                                       aliases=entry_fields.get("aliases"))
             updated += 1
             continue
         db.save_kb_entry({

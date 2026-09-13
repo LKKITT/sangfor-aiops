@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     key_points_json TEXT NOT NULL DEFAULT '[]',
     references_json TEXT NOT NULL DEFAULT '[]',
     tags_json TEXT NOT NULL DEFAULT '[]',
+    aliases_json TEXT NOT NULL DEFAULT '[]',
     product TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -150,6 +151,9 @@ def init_db() -> None:
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
         if "device_id" not in cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN device_id TEXT NOT NULL DEFAULT ''")
+        kb_cols = [r["name"] for r in conn.execute("PRAGMA table_info(kb_entries)")]
+        if "aliases_json" not in kb_cols:
+            conn.execute("ALTER TABLE kb_entries ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'")
 
 
 def now() -> str:
@@ -602,7 +606,7 @@ def tag_display_map(entries: list[dict]) -> dict[str, str]:
 def _kb_entry_from_row(row) -> dict:
     d = _row_to_dict(row)
     for field, col in (("key_points", "key_points_json"), ("references", "references_json"),
-                       ("tags", "tags_json")):
+                       ("tags", "tags_json"), ("aliases", "aliases_json")):
         try:
             d[field] = json.loads(d.get(col) or "[]")
         except (ValueError, TypeError):
@@ -617,13 +621,14 @@ def save_kb_entry(rec: dict) -> dict:
             "key_points_json": json.dumps(rec.get("key_points") or [], ensure_ascii=False),
             "references_json": json.dumps(rec.get("references") or [], ensure_ascii=False),
             "tags_json": json.dumps(_normalize_tags(rec.get("tags") or []), ensure_ascii=False),
+            "aliases_json": json.dumps(_normalize_tags(rec.get("aliases") or []), ensure_ascii=False),
             "product": rec.get("product", ""), "created_at": now(), "updated_at": now()}
     with _connect() as conn:
         conn.execute(
             "INSERT INTO kb_entries (id,conv_id,topic,category,summary,content_md,"
-            "key_points_json,references_json,tags_json,product,created_at,updated_at)"
+            "key_points_json,references_json,tags_json,aliases_json,product,created_at,updated_at)"
             " VALUES (:id,:conv_id,:topic,:category,:summary,:content_md,"
-            ":key_points_json,:references_json,:tags_json,:product,:created_at,:updated_at)", data)
+            ":key_points_json,:references_json,:tags_json,:aliases_json,:product,:created_at,:updated_at)", data)
     return get_kb_entry(data["id"])
 
 
@@ -667,16 +672,41 @@ def get_kb_entry_by_topic(topic: str) -> Optional[dict]:
 
 
 def update_kb_entry_content(entry_id: str, conv_id: str, summary: str, content_md: str,
-                            key_points: list, references: list, tags: list) -> None:
-    """同主题词条刷新：内容/要点/引用/标签以最新沉淀为准，保留原 id 与首次创建时间。"""
+                            key_points: list, references: list, tags: list,
+                            aliases: list | None = None) -> None:
+    """同主题词条合并更新（Karpathy-Wiki 式记忆）：summary/正文以最新沉淀为准，
+    要点/标签/引用/别名做并集去重——增量信息保留，不覆盖旧知识。保留原 id 与首次创建时间。"""
+    row = None
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM kb_entries WHERE id=?", (entry_id,)).fetchone()
+    if not row:
+        return
+    old = _kb_entry_from_row(row)
+
+    def _union(old_list, new_list):
+        out, seen = [], set()
+        for item in (old_list or []) + (new_list or []):
+            k = json.dumps(item, ensure_ascii=False, sort_keys=True) if isinstance(item, dict) else str(item)
+            if k not in seen:
+                seen.add(k)
+                out.append(item)
+        return out
+
+    merged_points = _union(old.get("key_points"), key_points)[:8]
+    merged_refs = _union(old.get("references"), references)[:8]
+    merged_tags = _normalize_tags(_union(old.get("tags"), tags))[:6]
+    merged_aliases = _normalize_tags(_union(old.get("aliases"), aliases))[:8]
+
     with _connect() as conn:
         conn.execute(
             "UPDATE kb_entries SET conv_id=?, summary=?, content_md=?, key_points_json=?,"
-            " references_json=?, tags_json=?, updated_at=? WHERE id=?",
-            (conv_id, summary[:200], content_md,
-             json.dumps(key_points[:8], ensure_ascii=False),
-             json.dumps(references[:8], ensure_ascii=False),
-             json.dumps(tags[:6], ensure_ascii=False), now(), entry_id))
+            " references_json=?, tags_json=?, aliases_json=?, updated_at=? WHERE id=?",
+            (conv_id or old.get("conv_id", ""), summary[:200], content_md,
+             json.dumps(merged_points, ensure_ascii=False),
+             json.dumps(merged_refs, ensure_ascii=False),
+             json.dumps(merged_tags, ensure_ascii=False),
+             json.dumps(merged_aliases, ensure_ascii=False),
+             now(), entry_id))
 
 
 def conv_kb_sedimented(conv_id: str) -> bool:
@@ -742,6 +772,58 @@ def list_kb_reflections(limit: int = 20) -> list[dict]:
 def delete_kb_reflection(reflection_id: str) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM kb_reflections WHERE id=?", (reflection_id,))
+
+
+def _tokenize_keyword(keyword: str) -> list[str]:
+    """查询词分词：拉丁/数字串整体为一个词元，中文段做 2-gram（无分词依赖的中文检索）。"""
+    tokens: set[str] = set()
+    for seg in re.split(r"[\s,，。;；/、|？?！!]+", keyword or ""):
+        if not seg:
+            continue
+        for m in re.findall(r"[A-Za-z0-9.\-]{2,}", seg):
+            tokens.add(m.lower())
+        han = re.sub(r"[A-Za-z0-9.\-]+", " ", seg)
+        for chunk in han.split():
+            if len(chunk) >= 2:
+                for i in range(len(chunk) - 1):
+                    tokens.add(chunk[i:i + 2])
+            elif chunk:
+                tokens.add(chunk)
+    return [t for t in tokens if len(t) >= 2]
+
+
+def search_kb_entries(keyword: str, limit: int = 5) -> list[dict]:
+    """本地知识库相关度检索：词元多字段加权评分（topic×5 / tags×3 / summary×2 / 正文×1）。
+
+    返回 [{词条字段..., "score": 分, "matched": [命中词元]}]，按分数降序。
+    """
+    tokens = _tokenize_keyword(keyword)
+    if not tokens:
+        return []
+    scored = []
+    for e in list_kb_entries(limit=1000):
+        fields = [
+            ((e.get("topic") or "").lower(), 5),
+            (" ".join((e.get("aliases") or []) + (e.get("tags") or [])).lower(), 4),
+            ((e.get("summary") or "").lower(), 2),
+            ((e.get("content_md") or "").lower(), 1),
+        ]
+        score, hits = 0, []
+        for tok in tokens:
+            best = 0
+            for text, w in fields:
+                if tok in text and w > best:
+                    best = w
+            if best:
+                score += best
+                hits.append(tok)
+        if score > 0:
+            d = dict(e)
+            d["score"] = score
+            d["matched"] = hits
+            scored.append((score, d))
+    scored.sort(key=lambda x: -x[0])
+    return [d for _score, d in scored[:limit]]
 
 
 def kb_stats() -> dict:

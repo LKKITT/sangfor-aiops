@@ -167,7 +167,11 @@ def test_topic_update_keeps_entry_fresh():
     got2 = db.get_kb_entry_by_topic("AC绑定配置主题")
     assert got2["id"] == e1["id"]                      # 原 id 保留（图谱节点不悬空）
     assert got2["summary"] == "新摘要"
-    assert got2["references"][0]["url"] == "https://a.b/c"
+    # 合并式更新：旧引用保留 + 新引用并入
+    urls = [r.get("url", "") if isinstance(r, dict) else "" for r in got2["references"]]
+    titles = [r.get("title", "") if isinstance(r, dict) else str(r) for r in got2["references"]]
+    assert "https://a.b/c" in urls      # 新引用并入
+    assert any("官方文档A" in t for t in titles)   # 旧引用保留（合并不覆盖）
     assert got2["created_at"] == e1["created_at"]      # 创建时间不变
 
 

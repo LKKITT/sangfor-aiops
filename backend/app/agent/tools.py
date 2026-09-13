@@ -369,6 +369,31 @@ async def _p_add_device(client: DeviceClient, args: dict, device: dict) -> dict:
     }
 
 
+async def _h_search_personal_kb(client: DeviceClient, args: dict, device: dict) -> dict:
+    """检索本地个人知识库：分词加权评分（中文 2-gram），不同措辞也能命中，毫秒级。"""
+    from app import db
+    keyword = str(args.get("keyword") or "").strip()
+    rows = db.search_kb_entries(keyword, limit=5)
+    if not rows:
+        return {"matches": 0, "entries": [],
+                "_llm_summary": ("本地个人知识库未命中相关词条。可换更短的核心词再试一次"
+                                 "（如只传 'HA 主备' / '内存 虚高'）；仍未命中可调用 "
+                                 "search_official_knowledge 检索官方知识库作答。")}
+    entries = [{"topic": e.get("topic"), "category": e.get("category"),
+                "summary": e.get("summary"),
+                "key_points": (e.get("key_points") or [])[:5],
+                "content": (e.get("content_md") or "")[:600],
+                "tags": (e.get("tags") or [])[:5],
+                "aliases": (e.get("aliases") or [])[:5],
+                "relevance": e.get("score"),
+                "matched_keywords": e.get("matched")} for e in rows]
+    topics = "；".join(e["topic"] for e in entries)
+    return {"matches": len(entries), "entries": entries,
+            "_llm_summary": (f"本地个人知识库命中 {len(entries)} 条（按相关度排序：{topics}）。"
+                             f"请优先基于高相关度词条作答，并向用户注明出自个人知识库；"
+                             f"如本地信息不足以完整回答，再调用 search_official_knowledge 查询官方知识库补充。")}
+
+
 async def _h_search_kb(client: DeviceClient, args: dict, device: dict) -> dict:
     """查询深信服官方知识库（诸葛小T），按当前设备产品线定向检索。"""
     question = str(args.get("question", "")).strip()
@@ -649,6 +674,13 @@ TOOLS: list[Tool] = [
                                 "note": {"type": "string", "description": "可选：用户希望重点关注的方向"}},
                  "required": ["url"],
                  }, _h_ingest_url, prepare=_p_ingest_url),
+    Tool("search_personal_kb",
+         "检索本地个人知识库（此前沉淀的词条与官方案例知识）。设备功能作用、故障排查类问题优先检索本地；keyword 传 2~3 个空格分隔的核心词（如：HA 主备 / 内存 虚高 / 445 端口），不要传整句",
+         {"type": "object",
+          "properties": {"keyword": {"type": "string",
+                                     "description": "核心技术关键词，如：HA 主备、内存虚高、445 端口、ARP 冲突"}},
+          "required": ["keyword"]},
+         _h_search_personal_kb),
     Tool("search_official_knowledge",
          "检索深信服官方知识库（诸葛小T）：适用于产品配置方法、故障排查思路、版本兼容性、官方最佳实践等通用技术问题，回答附带官方引用来源。设备实时数据（状态/策略/资源）请使用设备查询工具，不要用本工具。",
          {"type": "object",

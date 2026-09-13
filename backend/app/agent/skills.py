@@ -99,6 +99,24 @@ SKILLS: list[Skill] = [
 ]
 
 
+# 知识问答意图：设备功能作用类 / 故障排查类（未勾选知识库时自动启用本地优先检索）
+KB_INTENT_PATTERN = re.compile(
+    r"故障|报错|错误|异常|告警|不生效|不通|断网|丢包|无法|失败|排查|原因|为什么|为何|解决|处理|恢复|"
+    "冲突|占满|虚高|抖动|频繁|重启后|掉线|变慢|超时|丢包率|"
+    "作用|用途|是什么|什么是|怎么用|怎么配|如何配|如何使用|怎么解决|如何解决|区别|原理|场景|功能介绍|意义|好处|优缺点|"
+    "支持哪些|支持什么|哪些版本|哪个版本|版本特性|特性|新版本功能|新功能|新增功能|功能列表|"
+    "怎么配置|如何配置|配置方法|配置教程|用法|使用方法|步骤|教程|最好|最佳|建议.*(?:配置|设置|方案)|"
+    "注意事项|前提条件|前置条件|依赖|兼容",
+    re.I)
+
+
+def is_kb_intent(message: str) -> bool:
+    """判断是否为知识问答类提问（功能作用/故障排查），未勾选知识库时也自动启用分层检索。"""
+    if not message:
+        return False
+    return bool(KB_INTENT_PATTERN.search(message))
+
+
 def _skills_for(device_type: str) -> list[Skill]:
     return [s for s in SKILLS if s.device_type is None or s.device_type == device_type]
 
@@ -157,6 +175,21 @@ def resolve_skill_tools(skill: Skill | None, device_type: str = "") -> list:
 
 def skill_guide_message(skill: Skill) -> str:
     return f"## 当前技能：{skill.name}\n{skill.guide}"
+
+
+def kb_auto_guide() -> str:
+    """未勾选知识库时的自动检索指引：本地个人知识库优先，官方知识库兜底。"""
+    lines = [
+        "## 知识问答技能（本地优先，自动启用）",
+        "该问题属于设备功能/故障排查类，请按以下顺序检索后作答：",
+        "1. 先调用 search_personal_kb 检索本地个人知识库（keyword 传 2~3 个空格分隔的核心词，如 'HA 主备'，不要传整句）；",
+        "2. 本地命中（matches>0）：基于本地词条作答，并向用户注明出自个人知识库；"
+        "本地信息不足以完整回答时，再调用 search_official_knowledge 查询官方知识库补充；",
+        "3. 本地未命中：调用 search_official_knowledge 查询官方知识库，回答末尾附官方引用"
+        "（带 url 的引用以 [标题](url) 呈现）；官方也未命中则如实说明，不要编造；",
+        "4. 设备实时数据（状态/策略/资源）仍以设备工具为准。此模式不自动沉淀个人知识库。",
+    ]
+    return chr(10).join(lines)
 
 
 def kb_search_skill() -> Skill:

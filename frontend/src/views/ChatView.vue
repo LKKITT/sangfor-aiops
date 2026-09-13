@@ -350,7 +350,7 @@ const TOOL_NAMES = {
   run_config_checkup: '运行配置体检', create_backup: '创建备份', list_backups: '查询备份列表',
   diff_backups: '对比备份差异', get_software_updates: '获取软件更新信息', get_upgrade_advice: '生成升级建议',
   get_audit_logs: '查询审计日志', restore_backup: '生成恢复计划', execute_restore: '执行恢复',
-  search_official_knowledge: '查询官方知识库',
+  search_official_knowledge: '查询官方知识库', search_personal_kb: '检索本地知识库',
   get_scp_clusters: '查询 SCP 集群', get_scp_hosts: '查询 SCP 物理机',
   get_scp_host_interfaces: '查询物理机网口', get_scp_vms: '查询 SCP 虚拟机',
   get_scp_vm_detail: '查询虚拟机详情', get_scp_storages: '查询 SCP 存储',

@@ -72,6 +72,8 @@ class AgentOrchestrator:
         # 写入设备归属：供前端切换菜单后按设备恢复最近会话
         db.touch_conversation(conv_id, title=user_message, device_id=device_id)
         kb_since = since_id if use_knowledge else None
+        # 知识问答意图：未勾选时对功能/故障类提问自动启用分层检索（本地个人知识库优先 → 官方兜底）
+        kb_auto = (not use_knowledge) and bool(user_message) and skills.is_kb_intent(user_message)
         yield {"type": "meta", "conv_id": conv_id, "device_id": device_id}
 
         if self._llm() is None:
@@ -80,7 +82,7 @@ class AgentOrchestrator:
             return
         async for ev in self._run_llm_loop(conv_id, device_id, device,
                                            user_message=user_message, use_knowledge=use_knowledge,
-                                           kb_since_id=kb_since):
+                                           kb_since_id=kb_since, kb_auto=kb_auto):
             yield ev
 
     # ================= 确认流恢复 =================
@@ -346,7 +348,8 @@ class AgentOrchestrator:
 
     async def _run_llm_loop(self, conv_id: str, device_id: str, device: dict,
                             user_message: str = "", use_knowledge: bool = False,
-                            kb_since_id: int | None = None) -> AsyncGenerator[dict, None]:
+                            kb_since_id: int | None = None,
+                            kb_auto: bool = False) -> AsyncGenerator[dict, None]:
         messages = self._build_messages(conv_id, device)
         dtype = device.get("type", "")
         # 技能路由：关键词优先（离线可用）→ LLM 按目录兜底 → 未命中回退全量工具模式
@@ -361,7 +364,12 @@ class AgentOrchestrator:
             kb = skills.kb_search_skill()
             messages.append({"role": "system", "content": kb.guide})
             yield {"type": "skill_selected", "skill": kb.id, "name": kb.name}
-        tool_schemas, tools_by_name = self._tool_scope(skill, dtype, use_knowledge)
+        elif kb_auto:
+            # 未勾选但命中知识问答意图：本地个人知识库优先、官方知识库兜底（不自动沉淀）
+            messages.append({"role": "system", "content": skills.kb_auto_guide()})
+            yield {"type": "skill_selected", "skill": "kb-auto", "name": "知识问答（本地优先）"}
+        tool_schemas, tools_by_name = self._tool_scope(skill, dtype,
+                                                       use_knowledge=use_knowledge or kb_auto)
         executed_results: dict = {}   # (工具名, 参数) -> 结果：同一提问内重复调用直接合并
         failed_write_tools: set = set()   # 写工具失败后终止同工具重试
         for _ in range(MAX_TOOL_ROUNDS):
