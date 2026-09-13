@@ -410,7 +410,7 @@ async def _h_record_kb(client: DeviceClient, args: dict, device: dict) -> dict:
     return result
 
 
-def _p_record_kb(client: DeviceClient, args: dict, device: dict) -> dict:
+async def _p_record_kb(client: DeviceClient, args: dict, device: dict) -> dict:
     note = str(args.get("note") or "").strip()
     return {
         "title": "记录当前对话到个人知识库",
@@ -441,7 +441,7 @@ async def _h_ingest_url(client: DeviceClient, args: dict, device: dict) -> dict:
     return result
 
 
-def _p_ingest_url(client: DeviceClient, args: dict, device: dict) -> dict:
+async def _p_ingest_url(client: DeviceClient, args: dict, device: dict) -> dict:
     url = str(args.get("url", "")).strip()
     note = str(args.get("note") or "").strip()
     return {
@@ -643,7 +643,7 @@ TOOLS: list[Tool] = [
                                          "description": "可选：用户希望重点记录的内容或备注"}},
                  }, _h_record_kb, prepare=_p_record_kb),
     _write_tool("ingest_url_to_kb",
-                "抓取用户提供的网页链接，把页面内容提炼沉淀到个人知识库（用户给出 URL 并要求『把这个链接录入/沉淀到知识库』时使用）。生成确认卡片供用户确认后执行。",
+                "抓取用户提供的网页链接，把页面内容提炼沉淀到个人知识库（用户给出 URL 并要求『把这个链接录入/沉淀到知识库』时使用）。深信服官方案例库链接（support.sangfor.com.cn/cases/...）走社区爬虫认证读取，效果最佳。生成确认卡片供用户确认后执行。",
                 {"type": "object",
                  "properties": {"url": {"type": "string", "description": "要沉淀的网页链接（http/https）"},
                                 "note": {"type": "string", "description": "可选：用户希望重点关注的方向"}},

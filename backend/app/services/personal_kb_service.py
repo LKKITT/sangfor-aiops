@@ -8,16 +8,43 @@
 """
 import asyncio
 import html as htmllib
+import importlib.util
 import json
 import logging
 import re
+import sys
+import threading
+from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI
 
 from app import db
+from app.config import PROJECT_DIR
 from app.services.app_settings import get_llm_config
 from app.services.update_service import UA, _embedded_content_lines, _strip_html_to_lines
+
+CRAWLER_SCRIPT = PROJECT_DIR / "skills" / "sangfor-support-crawler" / "scripts" / "sangfor_support_crawler.py"
+_crawler_mod = None
+_crawler_lock = threading.Lock()
+
+
+def _load_crawler_module():
+    """按路径加载 sangfor-support-crawler 技能脚本（复用，不复制代码）。"""
+    global _crawler_mod
+    if _crawler_mod is not None:
+        return _crawler_mod
+    with _crawler_lock:
+        if _crawler_mod is not None:
+            return _crawler_mod
+        if not CRAWLER_SCRIPT.exists():
+            raise FileNotFoundError(f"案例爬虫技能脚本不存在：{CRAWLER_SCRIPT}")
+        spec = importlib.util.spec_from_file_location("sangfor_support_crawler", CRAWLER_SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        _crawler_mod = mod
+        return mod
 
 log = logging.getLogger("sangfor-agent")
 
@@ -254,11 +281,123 @@ def _persist_entries(entries: list[dict], conv_id: str = "",
     return saved, updated
 
 
+def _probe_case_error(mod, crawler_holder: dict, url: str) -> str | None:
+    """爬虫取不到案例时，查一次原始 API 拿明确原因（权限/不存在）；非案例链接返回 None。"""
+    crawler = crawler_holder.get("crawler")
+    if crawler is None:
+        return None
+    params = mod.SangforSupportCrawler.parse_support_url(url)
+    sid = params.get("source_id", "")
+    if not sid:
+        return None   # 非案例链接（如 productDocument 页面）→ 交回静态抓取
+    try:
+        resp = crawler.session.get(f"{crawler.API_BASE}/getDetailById/{sid}", timeout=20)
+        data = resp.json()
+    except Exception:   # noqa: BLE001
+        return None
+    code = data.get("code")
+    msg = str(data.get("msg") or "")
+    if code not in (0, 200):
+        hint = "该案例可能需要更高的社区权限" + (f"（要求：{msg}）" if msg else "")             if code == 666 else f"平台返回：{msg or f'code={code}'}"
+        return f"官方案例读取失败：{hint}；可换用当前账号有权访问的案例链接，或改用内容页链接沉淀"
+    if not data.get("rows"):
+        return "官方案例不存在或已下架"
+    return None
+
+
+def _crawler_credentials() -> tuple[str, str]:
+    """爬虫凭据：界面配置/.env（与诸葛知识库同一社区账号体系）→ zhuge 技能内置账号兜底。"""
+    from app.services import zhuge_kb_service
+    return zhuge_kb_service._credentials()
+
+
+async def _ingest_via_crawler(url: str, note: str = "") -> dict | None:
+    """用案例爬虫技能抓取 support 链接并沉淀词条。
+
+    返回 dict = 技能路径结论（成功/明确失败）；None = 技能不可用，调用方回退静态抓取。
+    """
+    try:
+        mod = _load_crawler_module()
+    except Exception as e:   # noqa: BLE001 —— 技能或依赖缺失
+        log.warning("案例爬虫技能不可用：%s", e)
+        return None
+
+    user, pwd = _crawler_credentials()
+    if not user or not pwd:
+        return {"status": "error",
+                "reason": "未配置社区账号：请在『平台设置』填写 BBS 社区账号密码后重试"}
+
+    crawler_holder: dict = {}
+
+    def _crawl():
+        crawler = mod.SangforSupportCrawler(user, pwd)
+        if not crawler.login():
+            raise RuntimeError("社区SSO登录失败：请检查『平台设置』中的社区账号密码")
+        crawler_holder["crawler"] = crawler
+        return crawler.crawl_by_url(url)
+
+    try:
+        case = await asyncio.wait_for(asyncio.to_thread(_crawl), timeout=90)
+    except asyncio.TimeoutError:
+        return {"status": "error", "reason": "案例爬取超时（>90s），请稍后重试"}
+    except RuntimeError as e:
+        return {"status": "error", "reason": str(e)}
+    except Exception as e:   # noqa: BLE001 —— 爬虫异常（网络等）：回退静态
+        log.warning("案例爬虫失败，回退静态抓取：%s", e)
+        return None
+    if case is None:
+        # 区分：非案例链接（无 category_id）→ 回退静态；案例读取失败（权限/不存在）→ 明确报错
+        err = _probe_case_error(mod, crawler_holder, url)
+        if err:
+            return {"status": "error", "reason": err}
+        return None
+
+    # 案例材料 → LLM WIKI 提炼
+    llm = _llm()
+    if llm is None:
+        return {"status": "skipped", "reason": "未配置 LLM，无法提炼案例内容"}
+    NL = chr(10)
+    NL2 = NL
+    material = (f"案例标题：{case.title}"
+                f"{NL}产品：{case.product_name} {case.product_version}"
+                f"{NL}适用版本：{case.suite_version or '不限'}"
+                f"{NL}分类：{case.category or '不限'}"
+                f"{NL}摘要：{case.summary or ''}"
+                f"{NL}{NL}案例正文：{NL}{(case.content_text or '')[:8000]}")
+    if len(material) < 100:
+        return {"status": "error", "reason": "案例内容过少，未能提炼有效知识"}
+    resp = await llm.chat.completions.create(
+        model=get_llm_config()["model"],
+        messages=[{"role": "system", "content": WIKI_SYSTEM_PROMPT},
+                  {"role": "user",
+                   "content": "来源标题：" + case.title + NL2 + "来源链接：" + (case.url or url)
+                              + NL2 + NL2 + "以下是需要提炼的案例内容：" + NL2 + material}],
+        temperature=0.2, max_tokens=8000)
+    entries = _parse_entries(resp.choices[0].message.content or "")
+    if not entries:
+        return {"status": "error", "reason": "未能从案例内容提炼出知识词条，请换一个案例链接"}
+    case_ref = [{"title": f"官方案例：{case.title}", "url": case.url or url}]
+    saved, updated = _persist_entries(entries, conv_id="", extra_refs=case_ref)
+    log.info("案例沉淀完成 url=%s 新增=%s 更新=%s", url, saved, updated)
+    return {"status": "ok", "title": case.title, "url": case.url or url,
+            "generated": len(entries), "saved": saved, "updated": updated, "via": "crawler"}
+
+
 async def ingest_url(url: str, note: str = "") -> dict:
-    """抓取网页内容，经 LLM WIKI 提炼为知识词条沉淀到个人知识库（词条引用附来源链接）。"""
+    """抓取网页内容，经 LLM WIKI 提炼为知识词条沉淀到个人知识库（词条引用附来源链接）。
+
+    support.sangfor.com.cn 链接优先走 sangfor-support-crawler 技能
+    （BBS 社区 SSO 认证的案例 OpenAPI，可获取静态抓取拿不到的动态渲染内容），
+    技能不可用/非案例链接时回退静态抓取。
+    """
     url = (url or "").strip()
     if not url.startswith(("http://", "https://")):
         return {"status": "error", "reason": "请提供有效的 http(s) 链接"}
+    if "support.sangfor.com.cn" in url:
+        crawler_result = await _ingest_via_crawler(url, note)
+        if crawler_result is not None:
+            return crawler_result   # 技能路径有明确结论
+        # None = 技能不可用/链接不适用 → 回退静态抓取
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as cli:
             resp = await cli.get(url, headers={"User-Agent": UA})

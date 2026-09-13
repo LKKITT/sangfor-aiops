@@ -363,6 +363,7 @@ class AgentOrchestrator:
             yield {"type": "skill_selected", "skill": kb.id, "name": kb.name}
         tool_schemas, tools_by_name = self._tool_scope(skill, dtype, use_knowledge)
         executed_results: dict = {}   # (工具名, 参数) -> 结果：同一提问内重复调用直接合并
+        failed_write_tools: set = set()   # 写工具失败后终止同工具重试
         for _ in range(MAX_TOOL_ROUNDS):
             text_parts: list[str] = []
             tool_calls: dict[int, dict] = {}
@@ -444,6 +445,14 @@ class AgentOrchestrator:
                         yield {"type": "tool_result", "name": name, "preview": "已合并重复的写操作"}
                         continue
                     # ---- 写操作：护栏 → 生成变更计划 → 挂起等待确认 ----
+                    if name in failed_write_tools:
+                        hint = (f"工具 {name} 刚才执行失败（原因见上方工具结果），请勿再次重试；"
+                                "请基于失败原因向用户说明情况")
+                        db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
+                                                         "content": hint})
+                        messages.append({"role": "tool", "tool_call_id": call["id"], "content": hint})
+                        yield {"type": "tool_result", "name": name, "preview": "已终止重复重试"}
+                        continue
                     try:
                         guardrails.check_tool_call(name, args, device)
                         client = await get_client(device_id)
@@ -456,6 +465,7 @@ class AgentOrchestrator:
                         yield {"type": "tool_result", "name": name, "preview": f"已拦截：{e}"}
                         continue
                     except Exception as e:   # noqa: BLE001
+                        failed_write_tools.add(name)   # 防止 LLM 变着参数无限重试
                         err = f"生成变更计划失败：{e}"
                         db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
                                                          "content": err})
