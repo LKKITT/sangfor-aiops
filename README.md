@@ -76,15 +76,17 @@
 
 - Python 3.10+（开发用 3.12）、Node.js 18+
 
-> 全新 Windows 电脑（未装 Python/Node）？先运行环境引导脚本：
-> `powershell -ExecutionPolicy Bypass -File skills\windows-quickstart\scripts\setup_windows.ps1 -Mirror`
-> 说明见 [skills/windows-quickstart/SKILL.md](skills/windows-quickstart/SKILL.md)。
+### 启动方式（按推荐顺序）
 
-### 一键启动
+**方式一：Agent 技能启动（推荐）**
 
-提供两种方式：
+本仓库内置 [windows-quickstart](skills/windows-quickstart/SKILL.md) 技能。在常见 Agent 软件（ZCode / Claude Code / Cursor 等）中打开本项目，让 Agent 加载该技能即可：自动检测并安装 Python 与 Node.js（经 winget）、创建虚拟环境、安装前后端依赖、生成 .env 并启动服务、健康检查验证——**全新 Windows 电脑全程零手动排障**。也可不经过 Agent 直接运行引导脚本：
 
-**方式一：一键启动脚本（推荐）**
+```powershell
+powershell -ExecutionPolicy Bypass -File skills\windows-quickstart\scripts\setup_windows.ps1 -Mirror
+```
+
+**方式二：一键启动脚本**
 
 ```bat
 :: Windows
@@ -93,14 +95,14 @@ scripts\start_all.bat
 
 自动完成：创建 venv → 检查并补装依赖 → 生成 .env → 分离进程启动前后端（无多余命令窗口）→ 打开浏览器。
 
-**方式二：服务管理控制台（可自定义监听 IP/端口）**
+**方式三：服务管理控制台（可自定义监听 IP/端口）**
 
 ```bat
 :: Windows
 python scripts\launcher.py
 ```
 
-图形化界面：一键启动/停止/重启、自定义**后端/前端的监听 IP 与端口**（保存后同步到前端代理配置）、恢复默认配置。
+图形化界面：一键启动/停止/重启、自定义**后端/前端的监听 IP 与端口**（保存后同步到 `vite.config.js` 代理目标）、恢复默认配置。
 
 **手动启动：**
 
