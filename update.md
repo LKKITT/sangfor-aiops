@@ -6,6 +6,11 @@
 
 ## 2026-09-13
 
+### `a790b6e` feat: 新增深信服支持平台爬虫技能，赛事文档迁移至 contest 目录
+- 新增 sangfor-support-crawler 技能：社区登录抓取官方支持内容（凭据经参数传入，无硬编码）
+- 赛事交付物（产品文档 / 演讲PPT / 图表素材 / 构建脚本）移入 contest/
+- 编排器与工具链增强，个人知识库服务改进；更新 README 与 design.md
+
 ### `0e9bfdd` fix: launcher 前端服务增加 frontend_host 绑定配置
 
 ### `aed5677` security: 移除硬编码的社区登录凭据，改为环境变量读取
