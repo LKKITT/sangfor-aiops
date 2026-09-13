@@ -6,6 +6,12 @@
 
 ## 2026-09-13
 
+### `0f0a1e2` feat: 知识库与编排器增强，赛事文档更新
+- 个人知识库服务与测试改进，编排器/技能/工具链增强
+- db 初始化调整，ChatView 小修复
+- 赛事文档（产品文档 / PPT / PDF / 渲染页）同步更新
+- .gitignore 增加 `_patch_*.py` 与 Office 锁定文件（`~$*`）规则
+
 ### `6b201b2` feat: 新增 windows-quickstart 技能，全新 Windows 电脑一键部署
 - skills/windows-quickstart：SKILL.md 部署指南 + setup_windows.ps1 引导脚本
 - 引导脚本仅依赖系统自带 PowerShell，自动检测/经 winget 安装 Python 3.10+ 与 Node 18+，幂等可重复执行
