@@ -40,3 +40,4 @@ test_verify.py
 
 # Office 文档锁定文件（~$ 开头）
 ~$*
+contest/
