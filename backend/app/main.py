@@ -11,9 +11,9 @@ from app.adapters.factory import close_all_clients, start_keepalive
 from app.adapters.simulator.app import create_simulator_app
 from app.adapters.simulator.state import STATE
 from app.api import backups, chat, devices, updates
-from app.api import knowledge, settings as settings_api
+from app.api import channel, knowledge, settings as settings_api
 from app.config import settings
-from app.services import config_service, update_service
+from app.services import config_service, update_service, wecom_bot_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("sangfor-agent")
@@ -51,9 +51,11 @@ async def lifespan(app: FastAPI):
                       minute=30, id="update_refresh")
     scheduler.start()
     start_keepalive()
+    await wecom_bot_service.start()
     log.info("定时任务已启动：每日 %02d:00 自动备份；每日 %02d:30 刷新更新信息；每 3 分钟设备会话保活",
              settings.auto_backup_hour, settings.update_refresh_hour)
     yield
+    await wecom_bot_service.stop()
     scheduler.shutdown(wait=False)
     await close_all_clients()
 
@@ -78,6 +80,7 @@ app.include_router(chat.router)
 app.include_router(updates.router)
 app.include_router(knowledge.router)
 app.include_router(settings_api.router)
+app.include_router(channel.router)
 # 模拟器挂载到 /simulator 便于独立调试观察（演示时可展示设备端视角）
 app.mount("/simulator", create_simulator_app(STATE), name="simulator")
 

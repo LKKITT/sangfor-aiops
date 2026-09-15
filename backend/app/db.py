@@ -130,6 +130,16 @@ CREATE TABLE IF NOT EXISTS kb_dismissed (
     conv_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS channel_bindings (
+    id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,                       -- 渠道标识：wecom / 预留 feishu、qq 等
+    sender_id TEXT NOT NULL,                     -- 渠道内发送方唯一标识（企微 userid 等）
+    conv_id TEXT NOT NULL DEFAULT '',            -- 绑定的会话（首条消息自动创建）
+    device_id TEXT NOT NULL DEFAULT '',          -- 当前操作设备（可通过"切换设备"指令变更）
+    last_active_at TEXT NOT NULL DEFAULT '',     -- 最近一次对话时间（会话超时自动新开判断）
+    updated_at TEXT NOT NULL,
+    UNIQUE(channel, sender_id)
+);
 """
 
 
@@ -154,6 +164,9 @@ def init_db() -> None:
         kb_cols = [r["name"] for r in conn.execute("PRAGMA table_info(kb_entries)")]
         if "aliases_json" not in kb_cols:
             conn.execute("ALTER TABLE kb_entries ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'")
+        chn_cols = [r["name"] for r in conn.execute("PRAGMA table_info(channel_bindings)")]
+        if chn_cols and "last_active_at" not in chn_cols:
+            conn.execute("ALTER TABLE channel_bindings ADD COLUMN last_active_at TEXT NOT NULL DEFAULT ''")
 
 
 def now() -> str:
@@ -457,6 +470,46 @@ def set_setting(key: str, value: str) -> None:
             " ON CONFLICT(key) DO UPDATE SET value=:value, updated_at=:updated_at",
             {"key": key, "value": value, "updated_at": now()},
         )
+
+
+# ---------------- channel bindings（外部消息渠道的用户/会话/设备绑定） ----------------
+
+def get_channel_binding(channel: str, sender_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM channel_bindings WHERE channel=? AND sender_id=?",
+                           (channel, sender_id)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def upsert_channel_binding(channel: str, sender_id: str,
+                           conv_id: Optional[str] = None,
+                           device_id: Optional[str] = None) -> dict:
+    """创建或更新绑定；传 None 的字段保持原值。任何调用都刷新 last_active_at。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT id,conv_id,device_id FROM channel_bindings"
+                           " WHERE channel=? AND sender_id=?", (channel, sender_id)).fetchone()
+        if row is None:
+            rec = {"id": new_id("chn_"), "channel": channel, "sender_id": sender_id,
+                   "conv_id": conv_id or "", "device_id": device_id or "",
+                   "last_active_at": now(), "updated_at": now()}
+            conn.execute(
+                "INSERT INTO channel_bindings (id,channel,sender_id,conv_id,device_id,"
+                "last_active_at,updated_at)"
+                " VALUES (:id,:channel,:sender_id,:conv_id,:device_id,:last_active_at,:updated_at)",
+                rec)
+            return rec
+        sets = {k: v for k, v in {"conv_id": conv_id, "device_id": device_id}.items()
+                if v is not None}
+        sets["last_active_at"] = now()
+        assign = ",".join(f"{k}=:{k}" for k in sets)
+        conn.execute(f"UPDATE channel_bindings SET {assign}, updated_at=:updated_at"
+                     " WHERE channel=:channel AND sender_id=:sender_id",
+                     {**sets, "updated_at": now(), "channel": channel, "sender_id": sender_id})
+        row = conn.execute("SELECT id,conv_id,device_id,last_active_at FROM channel_bindings"
+                           " WHERE channel=? AND sender_id=?", (channel, sender_id)).fetchone()
+        return {"id": row["id"], "channel": channel, "sender_id": sender_id,
+                "conv_id": row["conv_id"], "device_id": row["device_id"],
+                "last_active_at": row["last_active_at"], "updated_at": now()}
 
 
 # ---------------- backup file helpers ----------------

@@ -7,6 +7,30 @@ ZHUGE_PASS_KEY = "zhuge_bbs_password"
 LLM_URL_KEY = "llm_base_url"
 LLM_KEY_KEY = "llm_api_key"
 LLM_MODEL_KEY = "llm_model"
+WECOM_ENABLED_KEY = "wecom_aibot_enabled"
+WECOM_ID_KEY = "wecom_aibot_id"
+WECOM_SECRET_KEY = "wecom_aibot_secret"
+
+
+def get_wecom_config() -> dict:
+    """企微智能机器人渠道配置。来源优先级：界面配置(DB) → .env。
+
+    enabled 的 DB 值（true/false）一旦保存即覆盖 .env 开关；bot_id/secret 同理。
+    source 取值 database / env / none（供界面展示配置来源）。
+    """
+    db_enabled = db.get_setting(WECOM_ENABLED_KEY, "")
+    if db_enabled:
+        enabled = db_enabled.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        enabled = settings.wecom_aibot_enabled
+    bot_id = db.get_setting(WECOM_ID_KEY, "") or settings.wecom_aibot_id
+    secret = db.get_setting(WECOM_SECRET_KEY, "") or settings.wecom_aibot_secret
+    has_db = bool(db_enabled or db.get_setting(WECOM_ID_KEY, "")
+                  or db.get_setting(WECOM_SECRET_KEY, ""))
+    has_env = bool(settings.wecom_aibot_enabled or settings.wecom_aibot_id
+                   or settings.wecom_aibot_secret)
+    return {"enabled": enabled, "bot_id": bot_id, "secret": secret,
+            "source": "database" if has_db else ("env" if has_env else "none")}
 
 
 def get_zhuge_credentials() -> tuple[str, str, str]:

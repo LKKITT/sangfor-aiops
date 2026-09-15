@@ -24,6 +24,7 @@ IMPORT_MAP = {
     "pycryptodome": "Crypto",
     "websocket-client": "websocket",
     "pytest-asyncio": "pytest_asyncio",
+    "wecom-aibot-python-sdk": "aibot",
 }
 
 

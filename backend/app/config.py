@@ -48,6 +48,17 @@ class Settings:
         "password": os.getenv("SIMULATOR_PASSWORD", "Sangfor@123"),
     }
 
+    # 企业微信智能机器人渠道（WebSocket 长连接，可选；默认关闭不影响现有部署）
+    wecom_aibot_enabled: bool = _bool("WECOM_AIBOT_ENABLED")
+    wecom_aibot_id: str = os.getenv("WECOM_AIBOT_ID", "")
+    wecom_aibot_secret: str = os.getenv("WECOM_AIBOT_SECRET", "")
+    # 发送方白名单（逗号分隔 userid，空=允许全部企微成员）
+    wecom_allowed_users: str = os.getenv("WECOM_ALLOWED_USERS", "")
+    # 渠道端只读模式：true 时微信端不开放写操作确认入口，引导回 Web 界面
+    channel_readonly: bool = _bool("CHANNEL_READONLY_MODE", "true")
+    # 渠道会话超时（分钟）：超过该时长未对话，下次消息自动开启新会话（0=关闭该行为）
+    channel_session_timeout_min: int = int(os.getenv("CHANNEL_SESSION_TIMEOUT_MINUTES", "30"))
+
 
 settings = Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)

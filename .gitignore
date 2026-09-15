@@ -20,7 +20,7 @@ data/backups/
 *.log
 
 # 厂商 API 文档（版权原因不上传，含 PDF 及转换的 markdown）
-api/
+/api/
 
 # ZCode 本地工作区
 .zcode/

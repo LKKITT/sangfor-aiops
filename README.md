@@ -68,6 +68,15 @@
 - 更新建议：SCP 与 HCI 双产品线（官方『新版本发布信息』页锚定），软件列表含下载地址与 MD5
 - 数据真实：0-1 比例使用率自动修正；虚拟机使用率接监控接口真实值（列表接口恒 0）；OS 型号码解码（如 l2664 → Linux 2.6.64）
 
+**功能六：企业微信机器人渠道（移动端对话）**
+
+- 基于企微智能机器人官方 **WebSocket 长连接**（`wecom-aibot` 协议，仅 BotID + Secret，无需公网 IP/回调加密）：在企业微信 App 内单聊机器人即可使用全部 AI 对话能力
+- 渠道无关网关层（`channel_gateway`）：发送方绑定会话与设备、白名单、管理指令（设备列表/切换设备/新会话/帮助，支持自然语言表达如「开个新会话」「切换到演示」，疑问句不误判），编排器/护栏/工具/记忆零改动复用
+- **会话自动管理**：初始绑定默认指向演示设备（模拟器优先）；超过 `CHANNEL_SESSION_TIMEOUT_MINUTES`（默认 30 分钟，0=关闭）未对话，下次消息自动开启新会话并提示；「切换设备」与「新会话」指令均强制开启新会话，对话日志按会话/设备独立成条、归属清晰
+- 默认**渠道只读**：写操作生成变更计划后引导回 Web 界面确认；`CHANNEL_READONLY_MODE=false` 时支持企微内「确认/取消 <ID>」文本指令与按钮卡片确认执行
+- 待确认变更可收到**按钮交互卡片**，点击确认/拒绝即执行并回推结果；长回复自动分段，含 30s 心跳断线自动重连
+- 配置见 `.env`（`WECOM_AIBOT_ENABLED/ID/SECRET` 等）；`GET /api/channel/wecom/status` 可查连接状态，`POST /api/channel/message` 为渠道联调入口
+
 ## 快速开始
 
 ### 环境要求
@@ -139,6 +148,19 @@ LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
 LLM_API_KEY=your-key
 LLM_MODEL=glm-4-flash
 # DeepSeek 示例：LLM_BASE_URL=https://api.deepseek.com/v1  LLM_MODEL=deepseek-chat
+```
+
+### 企业微信机器人渠道（可选）
+
+在企业微信管理后台创建**智能机器人**（开启「API 模式 → 长连接」，建议由超级管理员创建以保证 userid 明文），将 BotID 与 Secret 写入 `backend/.env` 重启后端，即可在企微 App 内单聊机器人对话：
+
+```ini
+WECOM_AIBOT_ENABLED=true
+WECOM_AIBOT_ID=你的机器人ID
+WECOM_AIBOT_SECRET=你的机器人Secret
+WECOM_ALLOWED_USERS=          # 可选，逗号分隔 userid 白名单，留空允许全部企微成员
+CHANNEL_READONLY_MODE=true    # 渠道只读（默认）；false 支持企微内确认执行写变更
+CHANNEL_SESSION_TIMEOUT_MINUTES=30  # 会话超时（分钟），超时后自动开启新会话，0=关闭
 ```
 
 ### 运行测试

@@ -606,5 +606,5 @@ API：`/api/kb/entries`（列表/详情/删除）、`/api/kb/pending`（待沉�
 
 - 定时巡检与异常告警推送（webhook/邮件）
 
-- 微信、飞书、QQ机器人对接
+- 微信、飞书、QQ机器人对接（**企微智能机器人长连接已上线**：`channel_gateway` 渠道无关网关 + `wecom-aibot` WebSocket 长连接，企微 App 内单聊对话/按钮卡片确认，默认渠道只读；飞书、QQ 可复用同一网关层接入）
 
