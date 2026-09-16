@@ -13,12 +13,13 @@ AC 与 AF 核心差异：
 - 状态端点：version, cpu-usage, mem-usage, disk-usage, online-user, session-num, throughput
 """
 import hashlib
+import time
 import uuid
 from typing import Any
 
 import httpx
 
-from app.adapters.af_rest import permissive_ssl_context
+from app.adapters.af_rest import VERSION_CACHE_TTL, VERSION_CACHE_TTL_MISS, permissive_ssl_context
 from app.adapters.base import (
     AclRule, ChangeOp, DeviceClient, DeviceError, DeviceStatus,
     InterfaceInfo, NatRule, NetworkObject, ServiceConfig, StaticRoute, UserBinding,
@@ -41,6 +42,9 @@ class AcApiClient(DeviceClient):
             base_url=self.base_url, timeout=self._timeout, transport=transport,
             verify=permissive_ssl_context())
         self._managed_bindings: list[dict] = []
+        # 版本探测缓存（get_status 高频复用；Web 页降级提取耗时，需缓存）
+        self._version_cache: str | None = None
+        self._version_cached_at: float = 0.0
         # AC 设备能力缺口说明（与 AF 对比）
         self.capability_gaps: dict[str, str] = {
             "interfaces": "AC 无接口列表端点，上网行为管理类设备不管理网络接口配置",
@@ -234,6 +238,30 @@ class AcApiClient(DeviceClient):
         return None
 
     # ---------- 状态 ----------
+    async def _resolve_version(self, _str) -> str:
+        """版本解析（带短 TTL 缓存）：开放接口 → Web 管理页降级提取。
+
+        Web 页降级提取耗时明显，且版本号仅在设备升级后变化，结果按 TTL 缓存复用。
+        """
+        now = time.monotonic()
+        if self._version_cache is not None:
+            ttl = VERSION_CACHE_TTL if self._version_cache else VERSION_CACHE_TTL_MISS
+            if now - self._version_cached_at < ttl:
+                return self._version_cache
+        version = await _str("status/version", "version", "sw_version", "ver", "appVersion",
+                             "afVersion")
+        # 如果开放接口无法获取版本，尝试从 Web 管理界面提取
+        if not version or version == "unknown":
+            try:
+                web_ver = await self._get_version_from_web()
+                if web_ver:
+                    version = web_ver
+            except Exception:
+                pass
+        self._version_cache = version or ""
+        self._version_cached_at = now
+        return self._version_cache
+
     async def get_status(self) -> DeviceStatus:
         """Status 接口聚合：版本/CPU/内存/磁盘/在线用户数/会话数。
         端点失败或返回空数据时逐项降级为 0 / unknown。"""
@@ -268,15 +296,7 @@ class AcApiClient(DeviceClient):
                 pass
             return ""
 
-        version = await _str("status/version", "version", "sw_version", "ver", "appVersion", "afVersion")
-        # 如果开放接口无法获取版本，尝试从 Web 管理界面提取
-        if not version or version == "unknown":
-            try:
-                web_ver = await self._get_version_from_web()
-                if web_ver:
-                    version = web_ver
-            except Exception:
-                pass
+        version = await self._resolve_version(_str)
         cpu = await _num("status/cpu-usage", "cpu", "usage", "value", "cpu_usage")
         mem = await _num("status/mem-usage", "mem", "memory", "usage", "value", "mem_usage")
         disk = await _num("status/disk-usage", "disk", "usage", "value", "disk_usage")

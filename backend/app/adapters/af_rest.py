@@ -9,6 +9,7 @@
 """
 import asyncio
 import ssl
+import time
 from typing import Any
 
 import httpx
@@ -24,6 +25,10 @@ AUTH_FAIL_CODES = {1003, 1012}
 HTTP_AUTH_CODES = {401, 404}
 # API 文档规定 _length 最大 200（AF 8.0.48 传 10000 会返回 code=1001）
 MAX_PAGE_LENGTH = 200
+# 版本探测缓存 TTL：版本号仅在设备升级后变化。get_status 被状态/体检/知识库/升级
+# 等高频复用，而慢设备探测需串行尝试多个端点甚至抓取 Web 页（秒级~数十秒），必须缓存。
+VERSION_CACHE_TTL = 600.0        # 探测成功
+VERSION_CACHE_TTL_MISS = 60.0    # 全部探测失败（设备暂时不可达），短缓存后快速重试
 
 
 def permissive_ssl_context() -> ssl.SSLContext:
@@ -59,6 +64,9 @@ class AfRestClient(DeviceClient):
         self._token: str = ""
         self._login_data: dict = {}
         self._auth_lock = asyncio.Lock()
+        # 版本探测缓存（get_status 高频复用，避免每次串行试探多个端点）
+        self._version_cache: dict | None = None
+        self._version_cached_at: float = 0.0
         # 真实设备形态标记：非进程内 ASGI 传输即真实设备（写操作需翻译为设备原生格式）
         self.real_shape = transport is None
         # 可选能力端点的降级记录（真实设备型号/版本差异时可见）
@@ -156,8 +164,23 @@ class AfRestClient(DeviceClient):
 
     # ---------- 状态 ----------
     async def _get_version_safe(self) -> dict:
-        """安全获取版本信息。AF 8.0.45/8.0.48 等设备 systemversion 返回 code=1007，
-        依次尝试多种方案获取版本信息。"""
+        """安全获取版本信息（带短 TTL 缓存，见 VERSION_CACHE_TTL）。
+
+        AF 8.0.45/8.0.48 等设备 systemversion 返回 code=1007，需依次尝试多种方案，
+        结果缓存后高频复用方（状态/体检/知识库/升级建议）不再重复支付探测耗时。
+        """
+        now = time.monotonic()
+        if self._version_cache is not None:
+            ttl = VERSION_CACHE_TTL if self._version_cache else VERSION_CACHE_TTL_MISS
+            if now - self._version_cached_at < ttl:
+                return self._version_cache
+        version = await self._probe_version()
+        self._version_cache = version
+        self._version_cached_at = now
+        return version
+
+    async def _probe_version(self) -> dict:
+        """实际探测：依次尝试版本端点 → 登录响应 → 设备 Web 页面。"""
         # 尝试 systemversion 端点（无参数）
         try:
             return await self._request("GET", f"/api/v1/namespaces/{self.namespace}/systemversion")
@@ -304,7 +327,7 @@ class AfRestClient(DeviceClient):
             memory_usage=float(summary.get("memory_usage", 0) or 0),
             disk_usage=float(summary.get("disk_usage", 0) or 0),
             session_count=int(summary.get("session_count", 0) or 0),
-            session_capacity=int(summary.get("session_capacity", 0) or 0) or 1,
+            session_capacity=int(summary.get("session_capacity", 0) or 0),
             mbuf_usage=float(summary.get("mbuf_usage", 0) or 0),
             ha_status=summary.get("ha_status", "standalone"),
         )
@@ -330,18 +353,42 @@ class AfRestClient(DeviceClient):
             self._request("GET", f"/api/v1/namespaces/{self.namespace}/memoryusage"),
             self._request("GET", f"/api/v1/namespaces/{self.namespace}/diskusage"),
             self._request("GET", f"/api/v1/namespaces/{self.namespace}/uptimes"),
+            self._request("GET", f"/api/v1/namespaces/{self.namespace}/topsessionnumbers",
+                          {"topFilter": "TOTAL", "_start": 0, "_length": MAX_PAGE_LENGTH}),
             return_exceptions=True)
         cpu = results[0] if not isinstance(results[0], BaseException) else {}
         mem = results[1] if not isinstance(results[1], BaseException) else {}
         disk = results[2] if not isinstance(results[2], BaseException) else {}
         ups = results[3] if not isinstance(results[3], BaseException) else {}
+        tops = results[4] if not isinstance(results[4], BaseException) else {}
         out["cpu_usage"] = _num(cpu if isinstance(cpu, dict) else {}, "cpuCurrent", "cpuAverage", "usage", "value")
         out["memory_usage"] = _num(mem if isinstance(mem, dict) else {}, "memoryUsage", "memory_usage", "usage")
         out["disk_usage"] = _num(disk if isinstance(disk, dict) else {}, "diskUsage", "disk_usage", "usage")
         if isinstance(ups, dict):
             out["uptime"] = ups.get("upTimes") or ups.get("uptime", "")
+        # 会话总数：状态中心 8.2.2.1 会话数量排行（topFilter=TOTAL）按内网 IP 求和；
+        # 设备 API 未提供全局会话容量上限，capacity 保持未知（0）
+        total = self._sum_session_totals(tops if isinstance(tops, dict) else {})
+        if total:
+            out["session_count"] = total
+            self.capability_gaps.setdefault(
+                "session_capacity", "设备 API 未提供会话容量上限，容量未知")
+        if isinstance(ups, dict):
+            out["uptime"] = ups.get("upTimes") or ups.get("uptime", "")
         self.capability_gaps["status_summary"] = "该版本无聚合状态端点，已降级为逐项查询"
         return out
+
+    @staticmethod
+    def _sum_session_totals(payload: dict) -> int:
+        """会话数量排行响应（topsessionnumbers）→ 各内网 IP 总会话数求和；取不到返回 0。"""
+        total = 0
+        for it in (payload.get("items") or []):
+            sn = it.get("sessionNumber") if isinstance(it, dict) else None
+            try:
+                total += int((sn or {}).get("total", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        return total
 
     @staticmethod
     def _rows(data) -> list[dict]:
@@ -613,34 +660,42 @@ class AfRestClient(DeviceClient):
         return out
 
     # ---------- 访问控制 ----------
+    @classmethod
+    def _acl_flat(cls, r: dict) -> dict:
+        """原生应用控制策略 → Agent 扁平字段（与 API 文档结构一致，供展示与变更比对）。"""
+        src = r.get("src") or {}
+        dst = r.get("dst") or {}
+        src_addrs = src.get("srcAddrs") or {}
+        dst_addrs = dst.get("dstAddrs") or {}
+        action = r.get("action")
+        # 实测 AF 8.0.45：0=拒绝（默认策略 Default Policy action=0 兜底拒绝），
+        # 1=允许（名为 allow 的放行策略 action=1 持续命中）
+        action_str = {0: "deny", 1: "allow"}.get(action, str(action))
+        # lastHitTime 为 1970 表示从未命中
+        never_hit = str(r.get("lastHitTime", "")).startswith("1970")
+        return {
+            "id": r.get("uuid", ""), "name": r.get("name", ""),
+            "enabled": bool(r.get("enable", True)),
+            "src_zone": cls._join(src.get("srcZones"), "any"),
+            "dst_zone": cls._join(dst.get("dstZones"), "any"),
+            "src_addr": cls._join(src_addrs.get("srcIpGroups"), "全部"),
+            "dst_addr": cls._join(dst_addrs.get("dstIpGroups") or dst_addrs.get("srcIpGroups"),
+                                  "全部"),
+            "service": cls._join(dst.get("services"), "any"),
+            "app": cls._join(dst.get("applications"), "全部"),
+            "action": action_str,
+            "hit_count": 0 if never_hit else -1,
+            "log": bool((r.get("advanceOption") or {}).get("logEnable", False)),
+            "comment": r.get("description", ""),
+        }
+
     async def get_acl_rules(self) -> list[AclRule]:
         data = await self._request("GET", f"/api/v1/namespaces/{self.namespace}/appcontrols/policys",
                                    {"_start": 0, "_length": MAX_PAGE_LENGTH})
         out = []
         for r in self._rows(data):
             if "uuid" in r:   # 真实设备形态
-                src = r.get("src") or {}
-                dst = r.get("dst") or {}
-                src_addrs = src.get("srcAddrs") or {}
-                dst_addrs = dst.get("dstAddrs") or {}
-                action = r.get("action")
-                # 实测 AF 8.0.45：0=拒绝（默认策略 Default Policy action=0 兜底拒绝），
-                # 1=允许（名为 allow 的放行策略 action=1 持续命中）
-                action_str = {0: "deny", 1: "allow"}.get(action, str(action))
-                # lastHitTime 为 1970 表示从未命中
-                never_hit = str(r.get("lastHitTime", "")).startswith("1970")
-                out.append(AclRule(
-                    id=r.get("uuid", ""), name=r.get("name", ""), enabled=bool(r.get("enable", True)),
-                    src_zone=self._join(src.get("srcZones")),
-                    dst_zone=self._join(dst.get("dstZones")),
-                    src_addr=self._join(src_addrs.get("srcIpGroups")),
-                    dst_addr=self._join(dst_addrs.get("dstIpGroups") or dst_addrs.get("srcIpGroups")),
-                    service=self._join(dst.get("services")),
-                    app=self._join(dst.get("applications")),
-                    action=action_str,
-                    hit_count=0 if never_hit else -1,
-                    log=bool((r.get("advanceOption") or {}).get("logEnable", False)),
-                    comment=r.get("description", "")))
+                out.append(AclRule(**self._acl_flat(r)))
             else:
                 out.append(AclRule(**{k: r.get(k, d) for k, d in
                         (("id", ""), ("name", ""), ("enabled", True), ("src_zone", "any"), ("dst_zone", "any"),
@@ -689,6 +744,21 @@ class AfRestClient(DeviceClient):
                 out.append(ServiceConfig(
                     id=r.get("id", ""), name=r.get("name", ""), protocol=r.get("protocol", "TCP"),
                     ports=r.get("ports", ""), comment=r.get("comment", "")))
+        return out
+
+    async def get_predefined_services(self) -> list[ServiceConfig]:
+        """设备预定义服务（servType=PREDEF_SERV：ftp/https/any 等内置服务）。"""
+        data = await self._request("GET", f"/api/v1/namespaces/{self.namespace}/services",
+                                   {"servType": "PREDEF_SERV",
+                                    "_start": 0, "_length": MAX_PAGE_LENGTH})
+        out = []
+        for r in self._rows(data):
+            if "uuid" not in r:
+                continue
+            protocol, ports = self._ports_from_entries(r)
+            out.append(ServiceConfig(
+                id=r.get("uuid", ""), name=r.get("name", ""), protocol=protocol,
+                ports=ports, comment=r.get("description", "")))
         return out
 
     @staticmethod
@@ -786,6 +856,19 @@ class AfRestClient(DeviceClient):
             raise DeviceError(f"不支持的资源类型：{change.resource}")
         base = f"/api/v1/namespaces/{self.namespace}{path}"
         data = self._translate_write(change) if self.real_shape else change.data
+        if self.real_shape and change.resource == "acl":
+            if change.op in ("update", "create"):
+                # 引用的 IP组/服务 不存在时自动创建（裸 IP/网段 → 同名网络对象；
+                # 端口形态 → 同名自定义服务），再执行变更
+                await self._ensure_acl_addr_groups(change.data)
+                await self._ensure_acl_services(change.data)
+            # 应用控制策略要求原生结构（action 为 0/1 整数、嵌套 src/dst 对象等），
+            # 扁平字段直接下发会被设备以"[策略动作]：参数类型不匹配"拒绝
+            if change.op == "update":
+                raw = await self._acl_raw_rule(change.target_id)
+                data = self._acl_native_payload(raw, change.data)
+            elif change.op == "create":
+                data = self._acl_create_payload(change.data)
         target = change.target_id
         if change.op in ("delete", "update") and self.real_shape and change.resource in ("object", "service", "nat", "acl", "binding"):
             # 真实设备删除/修改按资源名称定位（uuid 仅用于列表标识）
@@ -887,6 +970,211 @@ class AfRestClient(DeviceClient):
             }
             data = payload
         return data
+
+    # ---------- 应用控制策略（ACL）真实设备原生格式 ----------
+    @staticmethod
+    def _ip_like(part: str) -> bool:
+        """是否为可自动创建为 IP组 的形态：IP / CIDR / IP-IP 范围。"""
+        import ipaddress
+        part = part.strip()
+        try:
+            ipaddress.ip_network(part, strict=False)
+            return True
+        except ValueError:
+            pass
+        if "-" in part:
+            try:
+                start, end = part.split("-", 1)
+                ipaddress.ip_address(start.strip())
+                ipaddress.ip_address(end.strip())
+                return True
+            except ValueError:
+                pass
+        return False
+
+    async def _ensure_acl_addr_groups(self, data: dict) -> None:
+        """确保 ACL 引用的地址（IP组）存在：裸 IP/网段自动创建同名网络对象后再引用。
+
+        设备要求 srcIpGroups/dstIpGroups 引用已存在的网络对象名称，直接给
+        192.168.1.10 这类裸 IP 会报"网络对象[x] 不存在"。这里对可解析为
+        IP/网段/范围的缺失项自动创建同名 IP组（CIDR 的"/"替换为"_"）并同步改写
+        引用值；名称形态（如"总部IP组"、内置"全部"）不存在的交给设备校验，不代建。
+        """
+        for key in ("src_addr", "dst_addr"):
+            value = str(data.get(key) or "").strip()
+            # 地址字段约定：任意地址对应内置网络对象「全部」（官方文档样例即引用"全部"），
+            # 区域字段的 "any" 惯例不能用于地址引用，设备会报"网络对象[any] 不存在"
+            if value.lower() in ("any", "any4", "任意", "所有"):
+                data[key] = value = "全部"
+            if not value:
+                continue
+            parts = [p.strip() for p in value.replace("，", ",").split(",") if p.strip()]
+            existing = {o.name for o in await self.get_network_objects()}
+            missing = [p for p in parts if p not in existing and self._ip_like(p)]
+            for part in missing:
+                name = part.replace("/", "_")
+                await self.apply_change(ChangeOp(
+                    op="create", resource="object", target_id="",
+                    data={"name": name, "members": part,
+                          "comment": "访问控制策略引用，由 Agent 自动创建"}))
+                if name != part:
+                    parts[parts.index(part)] = name
+            if any(p not in existing for p in parts):
+                data[key] = ",".join(parts)
+
+    @staticmethod
+    def _parse_port_spec(part: str):
+        """解析端口形态的服务引用：'TCP5211'/'tcp/5211'/'5211'/'UDP 53'/'5211-5220'
+        → (协议大写, 端口串)；非端口形态返回 None。无协议前缀时默认 TCP。"""
+        import re as _re
+        m = _re.fullmatch(r"(?:(tcp|udp)[\s/:_-]*)?(\d{1,5})(?:\s*-\s*(\d{1,5}))?",
+                          str(part).strip(), _re.IGNORECASE)
+        if not m:
+            return None
+        proto = (m.group(1) or "tcp").upper()
+        start, end = m.group(2), m.group(3) or m.group(2)
+        return proto, (start if start == end else f"{start}-{end}")
+
+    async def _ensure_acl_services(self, data: dict) -> None:
+        """确保 ACL 引用的服务存在：自定义 → 预定义 → 端口形态自动建自定义服务。
+
+        设备要求 services 引用服务名称。解析顺序：自定义服务（USRDEF_SERV）→
+        预定义服务（PREDEF_SERV，如 ftp/any）→ 端口形态（如 TCP5211/5211-5220）
+        自动创建同名自定义服务（同协议同端口的服务已存在则直接复用）；均未命中
+        且无端口信息时明确报错（无法凭空推断端口），不盲建空服务。
+        """
+        value = str(data.get("service") or "").strip()
+        if not value:
+            return
+        parts = [p.strip() for p in value.replace("，", ",").split(",") if p.strip()]
+        custom = {s.name: s for s in await self.get_services()}
+        try:
+            predefined = {s.name for s in await self.get_predefined_services()}
+        except Exception:   # noqa: BLE001 —— 预定义列表不可用时保留原值交由设备校验
+            predefined = None
+        changed = False
+        for i, part in enumerate(parts):
+            if part in custom or (predefined is not None and part in predefined):
+                continue
+            spec = AfRestClient._parse_port_spec(part)
+            if not spec:
+                if predefined is not None:
+                    raise DeviceError(
+                        f"服务「{part}」在自定义服务与预定义服务中均不存在。"
+                        "请改用设备上已有的服务名，或指定端口（如 TCP5211），"
+                        "系统将自动创建自定义服务后再下发变更")
+                continue
+            proto, ports = spec
+            reuse = next((s.name for s in custom.values()
+                          if s.protocol.upper() == proto and s.ports == ports), None)
+            if reuse:
+                parts[i] = reuse
+                changed = True
+                continue
+            name = f"{proto}_{ports}"
+            while name in custom:   # 同名但端口不同（罕见）：追加序号避让
+                name = f"{name}_2"
+            await self.apply_change(ChangeOp(
+                op="create", resource="service", target_id="",
+                data={"name": name, "protocol": proto, "ports": ports,
+                      "comment": "访问控制策略引用，由 Agent 自动创建"}))
+            custom[name] = ServiceConfig(id="", name=name, protocol=proto, ports=ports)
+            parts[i] = name
+            changed = True
+        if changed:
+            data["service"] = ",".join(parts)
+
+    @staticmethod
+    def _acl_action_int(value) -> int:
+        """动作 → 设备原生 uint32（API 文档：0=拒绝，1=允许）。"""
+        if isinstance(value, int):
+            return 1 if value >= 1 else 0
+        return 1 if str(value).strip().lower() in ("allow", "permit", "accept", "1") else 0
+
+    async def _acl_raw_rule(self, rule_id: str) -> dict:
+        """按 uuid 取设备上的原生应用控制策略（更新时的基底，保证未改字段格式正确）。"""
+        data = await self._request("GET", f"/api/v1/namespaces/{self.namespace}/appcontrols/policys",
+                                   {"_start": 0, "_length": MAX_PAGE_LENGTH})
+        for r in self._rows(data):
+            if r.get("uuid") == rule_id or r.get("id") == rule_id:
+                return r
+        raise DeviceError(f"未找到应用控制策略 {rule_id}，可能已被删除，请刷新策略列表后重试")
+
+    @classmethod
+    def _acl_native_payload(cls, raw: dict, data: dict) -> dict:
+        """把发生变化的扁平字段翻译后合并到设备原生策略结构（update 用）。
+
+        以设备当前原生规则为基底，仅覆盖与当前扁平值不同的字段——未修改字段保持
+        设备原样，避免展示值（如"全部"）无法逆翻译、或类型偏差触发"参数类型不匹配"。
+        """
+        import copy as _copy
+        payload = _copy.deepcopy(raw)
+        cur = cls._acl_flat(raw)
+        src = payload["src"] if isinstance(payload.get("src"), dict) else {}
+        dst = payload["dst"] if isinstance(payload.get("dst"), dict) else {}
+        src_addrs = src["srcAddrs"] if isinstance(src.get("srcAddrs"), dict) else {}
+        dst_addrs = dst["dstAddrs"] if isinstance(dst.get("dstAddrs"), dict) else {}
+        advance = payload["advanceOption"] if isinstance(payload.get("advanceOption"), dict) else {}
+
+        def split_list(value) -> list[str]:
+            return [p.strip() for p in str(value).replace("，", ",").split(",") if p.strip()]
+
+        def changed(key) -> bool:
+            return key in data and str(data.get(key)) != str(cur.get(key))
+
+        if changed("name"):
+            payload["name"] = data["name"]
+        if changed("enabled"):
+            payload["enable"] = bool(data["enabled"])
+        if changed("comment"):
+            payload["description"] = data.get("comment", "")
+        if changed("action"):
+            payload["action"] = cls._acl_action_int(data["action"])
+        if changed("log"):
+            advance["logEnable"] = bool(data["log"])
+        if changed("src_zone"):
+            src["srcZones"] = split_list(data["src_zone"])
+        if changed("dst_zone"):
+            dst["dstZones"] = split_list(data["dst_zone"])
+        if changed("src_addr"):
+            src_addrs.setdefault("srcAddrType", "NETOBJECT")
+            src_addrs["srcIpGroups"] = split_list(data["src_addr"])
+        if changed("dst_addr"):
+            dst_addrs.setdefault("dstAddrType", "NETOBJECT")
+            dst_addrs["dstIpGroups"] = split_list(data["dst_addr"])
+        if changed("service"):
+            dst["services"] = split_list(data["service"])
+        if changed("app"):
+            dst["applications"] = split_list(data["app"])
+        payload["src"], payload["dst"], payload["advanceOption"] = src, dst, advance
+        src["srcAddrs"], dst["dstAddrs"] = src_addrs, dst_addrs
+        return payload
+
+    @classmethod
+    def _acl_create_payload(cls, data: dict) -> dict:
+        """扁平字段 → 原生应用控制策略完整载荷（create 用，结构按 API 文档样例）。"""
+
+        def split_list(value) -> list[str]:
+            return [p.strip() for p in str(value or "").replace("，", ",").split(",") if p.strip()]
+
+        return {
+            "name": str(data.get("name", "")),
+            "enable": bool(data.get("enabled", True)),
+            "action": cls._acl_action_int(data.get("action", "allow")),
+            "description": str(data.get("comment", "")),
+            "schedule": "全天",
+            "group": "默认策略组",
+            "labels": {},
+            "src": {"srcZones": split_list(data.get("src_zone")) or {},
+                    "srcAddrs": {"srcAddrType": "NETOBJECT",
+                                 "srcIpGroups": split_list(data.get("src_addr")) or ["全部"]}},
+            "dst": {"dstZones": split_list(data.get("dst_zone")) or {},
+                    "dstAddrs": {"dstAddrType": "NETOBJECT",
+                                 "dstIpGroups": split_list(data.get("dst_addr")) or ["全部"]},
+                    "services": split_list(data.get("service")) or ["any"],
+                    "applications": split_list(data.get("app")) or ["全部"]},
+            "advanceOption": {"logEnable": bool(data.get("log", False))},
+        }
 
     # ---------- 安全区域（Zone） ----------
     async def get_zones(self) -> list[dict]:

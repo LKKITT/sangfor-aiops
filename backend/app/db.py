@@ -130,6 +130,13 @@ CREATE TABLE IF NOT EXISTS kb_dismissed (
     conv_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS kb_sediment_status (
+    conv_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,                        -- pending / running / done / skipped / failed
+    note TEXT NOT NULL DEFAULT '',               -- 进度说明（完成条数/跳过或失败原因）
+    saved INTEGER NOT NULL DEFAULT 0,            -- 本次沉淀新增词条数
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS channel_bindings (
     id TEXT PRIMARY KEY,
     channel TEXT NOT NULL,                       -- 渠道标识：wecom / 预留 feishu、qq 等
@@ -691,7 +698,9 @@ def get_kb_entry(entry_id: str) -> Optional[dict]:
     return _kb_entry_from_row(row) if row else None
 
 
-def list_kb_entries(category: str = "", keyword: str = "", limit: int = 200) -> list[dict]:
+def list_kb_entries(category: str = "", keyword: str = "", limit: int = 200,
+                    order: str = "created") -> list[dict]:
+    """词条列表。order: created=按创建时间（默认）/ updated=按最近更新（合并更新可见）。"""
     sql, args = "SELECT * FROM kb_entries WHERE 1=1", []
     if category:
         sql += " AND category=?"
@@ -699,7 +708,8 @@ def list_kb_entries(category: str = "", keyword: str = "", limit: int = 200) -> 
     if keyword:
         sql += " AND (topic LIKE ? OR summary LIKE ? OR content_md LIKE ? OR tags_json LIKE ?)"
         args.extend([f"%{keyword}%"] * 4)
-    sql += " ORDER BY created_at DESC LIMIT ?"
+    order_col = "updated_at" if order == "updated" else "created_at"
+    sql += f" ORDER BY {order_col} DESC LIMIT ?"
     args.append(limit)
     with _connect() as conn:
         rows = conn.execute(sql, args).fetchall()
@@ -769,16 +779,45 @@ def conv_kb_sedimented(conv_id: str) -> bool:
 
 
 def list_pending_kb_convs() -> list[str]:
-    """待沉淀对话：勾选过知识库或明确要求沉淀（KB 检索/沉淀登记审计）且尚未沉淀、未被忽略。"""
+    """待沉淀对话：官方知识库实际命中（agent.kb.hit）或用户明确要求沉淀（record_to_kb），
+    且尚未沉淀、未被忽略。仅调用过知识库但未命中（未返回内容）的会话不进入队列。
+    """
     with _connect() as conn:
         rows = conn.execute(
             "SELECT DISTINCT conv_id FROM audit_logs"
-            " WHERE action IN ('agent.tool.search_official_knowledge', 'agent.tool.record_to_kb')"
+            " WHERE action IN ('agent.kb.hit', 'agent.tool.record_to_kb')"
             " AND conv_id != ''"
             " AND conv_id NOT IN (SELECT DISTINCT conv_id FROM kb_entries)"
             " AND conv_id NOT IN (SELECT conv_id FROM kb_dismissed)"
             " ORDER BY ts DESC").fetchall()
     return [r["conv_id"] for r in rows]
+
+
+def conv_has_audit(conv_id: str, action: str) -> bool:
+    """会话是否存在某类审计记录（用于区分用户明确要求的沉淀与知识库自动命中）。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT 1 FROM audit_logs WHERE conv_id=? AND action=? LIMIT 1",
+                           (conv_id, action)).fetchone()
+    return row is not None
+
+
+def save_kb_sediment_status(conv_id: str, status: str, note: str = "", saved: int = 0) -> None:
+    """记录会话知识沉淀进度（待沉淀列表展示用）。"""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO kb_sediment_status (conv_id,status,note,saved,updated_at)"
+            " VALUES (:conv_id,:status,:note,:saved,:updated_at)"
+            " ON CONFLICT(conv_id) DO UPDATE SET status=:status, note=:note, saved=:saved,"
+            " updated_at=:updated_at",
+            {"conv_id": conv_id, "status": status, "note": note, "saved": saved,
+             "updated_at": now()})
+
+
+def get_kb_sediment_status(conv_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM kb_sediment_status WHERE conv_id=?",
+                           (conv_id,)).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 def dismiss_kb_conv(conv_id: str) -> None:

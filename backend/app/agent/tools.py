@@ -29,8 +29,10 @@ def _rule_brief(r: dict) -> str:
 class Tool:
     def __init__(self, name: str, description: str, parameters: dict, handler: ToolHandler,
                  write: bool = False, prepare: ToolHandler | None = None,
-                 device_type: str | None = None):
-        """device_type: None=通用, 'af'=仅AF, 'ac'=仅AC"""
+                 device_type: str | None = None, needs_device: bool = True):
+        """device_type: None=通用, 'af'=仅AF, 'ac'=仅AC；
+        needs_device: False=执行/生成计划不需要连接设备（知识库沉淀、添加设备等），
+        编排器将跳过设备登录——绑定设备不在线也不影响执行。"""
         self.name = name
         self.description = description
         self.parameters = parameters
@@ -38,6 +40,7 @@ class Tool:
         self.write = write
         self.prepare = prepare
         self.device_type = device_type
+        self.needs_device = needs_device
         guardrails.register_meta(name, {"write": write})
 
     def schema(self) -> dict:
@@ -200,6 +203,57 @@ _RESOURCE_FIELDS = {"nat": NAT_FIELDS, "acl": ACL_FIELDS, "binding": BIND_FIELDS
                     "whiteblacklist": WHITEBLACKLIST_FIELDS}
 
 
+async def _acl_missing_refs_note(client, data: dict) -> str:
+    """预检 ACL 引用的地址组/服务：缺失项提示确认后自动创建（或需人工调整的项）。
+
+    地址：裸 IP/网段不存在 → 将自动创建同名网络对象；服务：按 自定义 → 预定义
+    顺序检查，端口形态（如 TCP5211）不存在 → 将自动创建自定义服务，纯名称均
+    不存在 → 提示改用已有服务名或指定端口。仅 AF 设备调用；查询失败不阻断计划。
+    """
+    from app.adapters.af_rest import AfRestClient
+    notes = []
+    if str(data.get("src_addr") or "").strip() or str(data.get("dst_addr") or "").strip():
+        try:
+            objects = {o.name for o in await client.get_network_objects()}
+        except Exception:   # noqa: BLE001 —— 查询失败不影响计划生成
+            objects = None
+        if objects is not None:
+            missing = []
+            for key in ("src_addr", "dst_addr"):
+                for part in (p.strip() for p in str(data.get(key) or "").replace("，", ",").split(",")):
+                    if (part and part not in objects and part not in missing
+                            and AfRestClient._ip_like(part)):
+                        missing.append(part)
+            if missing:
+                notes.append("引用的 IP组 " + "、".join(missing)
+                             + " 在设备上不存在，确认执行时将自动创建同名网络对象（成员为对应 IP/网段）")
+    if str(data.get("service") or "").strip():
+        try:
+            custom = {s.name for s in await client.get_services()}
+        except Exception:   # noqa: BLE001
+            custom = None
+        try:
+            predefined = {s.name for s in await client.get_predefined_services()}
+        except Exception:   # noqa: BLE001
+            predefined = None
+        if custom is not None:
+            to_create, not_found = [], []
+            for part in (p.strip() for p in str(data.get("service") or "").replace("，", ",").split(",")):
+                if not part or part in custom or part in predefined or part in to_create:
+                    continue
+                if AfRestClient._parse_port_spec(part):
+                    to_create.append(part)
+                else:
+                    not_found.append(part)
+            if to_create:
+                notes.append("引用的服务 " + "、".join(to_create)
+                             + " 不存在，确认执行时将按端口自动创建自定义服务后再下发")
+            if not_found:
+                notes.append("引用的服务 " + "、".join(not_found)
+                             + " 在自定义/预定义服务中均不存在，请改用已有服务名或指定端口（如 TCP5211）自动创建")
+    return "\n".join(notes)
+
+
 async def _prepare_rule_change(client: DeviceClient, args: dict, device: dict) -> dict:
     """通用变更计划生成：返回含变更前后对照的确认卡片数据。"""
     resource = args["_resource"]
@@ -213,6 +267,14 @@ async def _prepare_rule_change(client: DeviceClient, args: dict, device: dict) -
             before = r
             break
     data = {k: v for k, v in (args.get("data") or {}).items() if k in _RESOURCE_FIELDS[resource]}
+    if resource == "acl" and device.get("type", "") == "af":
+        # 地址字段约定：任意地址 = 内置网络对象「全部」，禁止字面量 any（设备会报对象不存在）；
+        # 在计划展示与下发数据（含待确认动作落库的 args）两侧同时规范化
+        for key in ("src_addr", "dst_addr"):
+            if str(data.get(key, "")).strip().lower() in ("any", "any4", "任意", "所有"):
+                data[key] = "全部"
+                if isinstance(args.get("data"), dict) and key in args["data"]:
+                    args["data"][key] = "全部"
     after = dict(before or {})
     after.update(data)
     title = {"create": f"新建{resource_cn}", "update": f"修改{resource_cn}「{before.get('name', target_id) if before else target_id}」",
@@ -222,13 +284,19 @@ async def _prepare_rule_change(client: DeviceClient, args: dict, device: dict) -
     if op in ("create", "update") and resource in ("nat", "acl") and after:
         section = _RESOURCE_SECTION[resource][0]
         conflicts = check_rule_conflicts(resource, after, snapshot.get(section) or [])
+    warning = _change_warning(resource, op, before, after)
+    if (resource == "acl" and op in ("create", "update")
+            and device.get("type", "") == "af"):
+        note = await _acl_missing_refs_note(client, after)
+        if note:
+            warning = f"{warning}\n\n{note}" if warning else note
     return {
         "title": title,
         "resource": resource, "resource_cn": resource_cn, "op": op, "target_id": target_id,
         "before": before, "after": after if op != "delete" else None,
         "fields": sorted(data.keys()),
         "conflicts": conflicts,
-        "warning": _change_warning(resource, op, before, after),
+        "warning": warning,
     }
 
 
@@ -456,9 +524,20 @@ async def _h_ingest_url(client: DeviceClient, args: dict, device: dict) -> dict:
     note = str(args.get("note") or "").strip()
     result = await personal_kb_service.ingest_url(url, note)
     if result.get("status") == "ok":
-        result["_llm_summary"] = (
-            f"已从链接「{result['title']}」提炼知识：新增 {result['saved']} 条词条（更新 {result['updated']} 条），"
-            f"来源链接已附在词条引用中。请告知用户可在『个人知识库』页面查看。")
+        if not result.get("saved") and result.get("updated"):
+            # 全部被合并进已有词条：明确告知去向，避免"提示完成但界面没有新词条"的困惑
+            topics = "、".join(f"《{t}》" for t in result.get("updated_topics", [])[:5])
+            result["_llm_summary"] = (
+                f"链接内容提炼完成，但与知识库已有词条主题相同，未新建词条，"
+                f"已合并更新 {result['updated']} 条：{topics}。"
+                f"请明确告知用户：本次没有新增词条，更新内容已并入上述词条"
+                f"（来源链接附在词条引用中），可在『个人知识库』搜索这些主题查看，"
+                f"或按「最近更新」排序查看。")
+        else:
+            result["_llm_summary"] = (
+                f"已从链接「{result['title']}」提炼知识：新增 {result['saved']} 条词条"
+                f"（更新 {result['updated']} 条），来源链接已附在词条引用中。"
+                f"请告知用户可在『个人知识库』页面查看。")
     elif result.get("status") == "skipped":
         result["_llm_summary"] = f"链接沉淀未完成：{result.get('reason')}。请如实告知用户。"
     else:
@@ -568,9 +647,9 @@ async def _h_switch_device(client: DeviceClient, args: dict, device: dict) -> di
 
 def _write_tool(name: str, desc: str, params: dict, handler: ToolHandler,
                 prepare: ToolHandler | None = None,
-                device_type: str | None = None) -> Tool:
+                device_type: str | None = None, needs_device: bool = True) -> Tool:
     return Tool(name, desc, params, handler, write=True, prepare=prepare,
-                device_type=device_type)
+                device_type=device_type, needs_device=needs_device)
 
 
 def rule_tool(name: str, desc: str, params: dict, handler: ToolHandler,
@@ -666,14 +745,14 @@ TOOLS: list[Tool] = [
                 {"type": "object",
                  "properties": {"note": {"type": "string",
                                          "description": "可选：用户希望重点记录的内容或备注"}},
-                 }, _h_record_kb, prepare=_p_record_kb),
+                 }, _h_record_kb, prepare=_p_record_kb, needs_device=False),
     _write_tool("ingest_url_to_kb",
                 "抓取用户提供的网页链接，把页面内容提炼沉淀到个人知识库（用户给出 URL 并要求『把这个链接录入/沉淀到知识库』时使用）。深信服官方案例库链接（support.sangfor.com.cn/cases/...）走社区爬虫认证读取，效果最佳。生成确认卡片供用户确认后执行。",
                 {"type": "object",
                  "properties": {"url": {"type": "string", "description": "要沉淀的网页链接（http/https）"},
                                 "note": {"type": "string", "description": "可选：用户希望重点关注的方向"}},
                  "required": ["url"],
-                 }, _h_ingest_url, prepare=_p_ingest_url),
+                 }, _h_ingest_url, prepare=_p_ingest_url, needs_device=False),
     Tool("search_personal_kb",
          "检索本地个人知识库（此前沉淀的词条与官方案例知识）。设备功能作用、故障排查类问题优先检索本地；keyword 传 2~3 个空格分隔的核心词（如：HA 主备 / 内存 虚高 / 445 端口），不要传整句",
          {"type": "object",
@@ -727,7 +806,7 @@ TOOLS: list[Tool] = [
                      "readonly": {"type": "boolean", "description": "是否只读模式，默认 false"},
                  },
                  "required": ["name"],
-                 }, _h_add_device, prepare=_p_add_device),
+                 }, _h_add_device, prepare=_p_add_device, needs_device=False),
 ]
 
 

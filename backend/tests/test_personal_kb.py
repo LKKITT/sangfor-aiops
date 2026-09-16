@@ -1,6 +1,8 @@
 """个人知识库测试：词条 CRUD/去重/待沉淀定位/统计 + WIKI 解析 + 无 LLM 降级。"""
 import asyncio
 
+import pytest
+
 from app import db
 from app.services import personal_kb_service as pks
 
@@ -24,14 +26,54 @@ def test_entry_crud_and_topic_dedup():
     assert db.get_kb_entry(rec["id"]) is None
 
 
-def test_pending_convs_requires_kb_audit():
+def test_pending_convs_requires_kb_hit():
+    """待沉淀只收官方知识库实际命中（agent.kb.hit）/明确沉淀；调用未命中不入队。"""
     assert db.list_pending_kb_convs() == []
     conv_id = db.create_conversation("测试对话")["id"]
+    # 仅调用过知识库（agent.tool.search_official_knowledge 审计）但未命中：不入队
     db.audit("agent.tool.search_official_knowledge", {"args": {}}, conv_id=conv_id)
+    assert conv_id not in db.list_pending_kb_convs()
+    # 实际命中（agent.kb.hit）：入队
+    db.audit("agent.kb.hit", {"args": {"question": "AF怎么开API"}}, conv_id=conv_id)
     assert conv_id in db.list_pending_kb_convs()
     # 沉淀后不再出现在待沉淀列表
     db.save_kb_entry(_entry("某主题", conv=conv_id))
     assert conv_id not in db.list_pending_kb_convs()
+
+
+def test_kb_turn_messages_keeps_only_kb_turns():
+    """沉淀材料只保留知识库相关轮次：设备查询/寒暄轮次被过滤。"""
+    kb_tool = {"role": "tool", "content": {"tool_call_id": "c2", "name": "search_official_knowledge",
+                                           "content": '{"source": "zhuge_official_kb", "answer": "步骤", "references": []}'}}
+    dev_tool = {"role": "tool", "content": {"tool_call_id": "c1", "name": "get_status",
+                                            "content": '{"source": "device", "cpu": 12}'}}
+    messages = [
+        {"role": "user", "content": {"text": "看下CPU"}},                     # 普通轮次 → 过滤
+        {"role": "assistant", "content": {"text": "", "tool_calls": [{"id": "c1"}]}},
+        dev_tool,
+        {"role": "assistant", "content": {"text": "CPU 12%，正常", "tool_calls": []}},
+        {"role": "user", "content": {"text": "AF怎么开WEB API？"}},           # 知识库轮次 → 保留
+        {"role": "assistant", "content": {"text": "", "tool_calls": [{"id": "c2"}]}},
+        kb_tool,
+        {"role": "assistant", "content": {"text": "开启步骤如下…", "tool_calls": []}},
+    ]
+    kept = pks._kb_turn_messages(messages)
+    texts = [m["content"].get("text", "") for m in kept if m["role"] in ("user", "assistant")]
+    assert "AF怎么开WEB API？" in texts and "开启步骤如下…" in texts
+    assert "看下CPU" not in texts and "CPU 12%，正常" not in texts
+    material = pks._conversation_text(kept)
+    assert "知识库回答" in material and "知识库引用" in material   # 官方返回内容进入材料
+    assert '"source"' not in material and "cpu" not in material    # 设备工具结果不进入材料
+    # 引用收集同样只来自筛选后的材料（无 url 引用 → 空）
+    assert pks._official_refs(kept) == []
+
+
+def test_conv_has_audit_distinguishes_explicit_record():
+    conv_id = db.create_conversation("显式沉淀判断")["id"]
+    assert not db.conv_has_audit(conv_id, pks.KB_RECORD_ACTION)
+    db.audit(pks.KB_RECORD_ACTION, {"args": {"note": "沉淀一下"}}, conv_id=conv_id)
+    assert db.conv_has_audit(conv_id, pks.KB_RECORD_ACTION)
+    assert not db.conv_has_audit(conv_id, pks.KB_HIT_ACTION)
 
 
 def test_parse_entries_variants():
@@ -133,7 +175,7 @@ def test_filter_entries_by_range():
 def test_pending_dismiss_and_items():
     """待沉淀明细可查看提问；忽略后移出队列且沉淀跳过。"""
     conv_id = db.create_conversation("沉淀管理测试")["id"]
-    db.audit("agent.tool.search_official_knowledge",
+    db.audit("agent.kb.hit",
              {"args": {"question": "AF怎么开API"}}, conv_id=conv_id)
     item = next((i for i in pks.pending_items() if i["conv_id"] == conv_id), None)
     assert item is not None
@@ -152,7 +194,7 @@ def test_process_pending_selected_convs():
     c1 = db.create_conversation("选择沉淀A")["id"]
     c2 = db.create_conversation("选择沉淀B")["id"]
     for c in (c1, c2):
-        db.audit("agent.tool.search_official_knowledge", {"args": {}}, conv_id=c)
+        db.audit("agent.kb.hit", {"args": {}}, conv_id=c)
     r = asyncio.run(pks.process_pending(convs=[c1]))
     assert r["processed"] == 1 and r["results"][0]["conv_id"] == c1
 
@@ -233,3 +275,142 @@ def test_stats_and_reflections():
     assert stats["timeline"]
     rec = db.save_kb_reflection("# 报告", {"total": stats["total"]}, period="测试期")
     assert db.list_kb_reflections()[0]["id"] == rec["id"]
+
+
+# ---------- 沉淀进度 ----------
+
+@pytest.mark.asyncio
+async def test_sediment_status_progress_done(device_id, monkeypatch):
+    """自动沉淀在待沉淀队列留下进度：完成时记录新增/更新条数。"""
+    conv_id = db.create_conversation("进度完成测试")["id"]
+    done = asyncio.Event()
+
+    async def fake_generate(c, force=False, since_id=None):
+        done.set()
+        return {"status": "ok", "conv_id": c, "generated": 2, "saved": 2, "updated": 1}
+
+    monkeypatch.setattr(pks, "generate_entries_for_conv", fake_generate)
+    pks.schedule_sediment(conv_id)
+    await asyncio.wait_for(done.wait(), timeout=2)
+    await asyncio.sleep(0.05)   # 等状态落库
+    st = db.get_kb_sediment_status(conv_id)
+    assert st["status"] == "done" and st["saved"] == 2 and "更新 1" in st["note"]
+
+
+@pytest.mark.asyncio
+async def test_sediment_status_progress_skipped(device_id, monkeypatch):
+    """跳过/失败路径同样可见原因，便于在待沉淀列表排查。"""
+    conv_id = db.create_conversation("进度跳过测试")["id"]
+
+    async def fake_skip(c, force=False, since_id=None):
+        return {"status": "skipped", "conv_id": c, "reason": "对话内容过少，无沉淀价值"}
+
+    monkeypatch.setattr(pks, "generate_entries_for_conv", fake_skip)
+    pks.schedule_sediment(conv_id)
+    await asyncio.wait_for(asyncio.gather(*asyncio.all_tasks() - {asyncio.current_task()},
+                                           return_exceptions=True), timeout=2)
+    st = db.get_kb_sediment_status(conv_id)
+    assert st["status"] == "skipped" and "内容过少" in st["note"]
+
+
+def test_pending_items_include_sediment_progress():
+    """待沉淀明细携带沉淀进度字段（未调度时为 waiting）。"""
+    conv_id = db.create_conversation("进度字段测试")["id"]
+    db.audit("agent.kb.hit", {"args": {"question": "怎么配HA"}}, conv_id=conv_id)
+    item = next((i for i in pks.pending_items() if i["conv_id"] == conv_id), None)
+    assert item is not None
+    assert item["sediment_status"] == "waiting" and item["sediment_note"] == ""
+    db.save_kb_sediment_status(conv_id, "running", "正在提炼知识词条")
+    item2 = next((i for i in pks.pending_items() if i["conv_id"] == conv_id), None)
+    assert item2["sediment_status"] == "running" and "提炼" in item2["sediment_note"]
+
+
+# ---------- 录入结果明细 / 排序 / 无设备依赖 ----------
+
+def test_persist_entries_detail_reports_actions():
+    """detail 逐条记录新建/合并更新的词条主题，供录入结果向用户说明去向。"""
+    entries = [
+        {"topic": "NAT64地址转换原理", "category": "最佳实践", "summary": "s", "content_md": "c",
+         "key_points": [], "tags": [], "references": []},
+        {"topic": "链路探测健康检查配置", "category": "最佳实践", "summary": "s", "content_md": "c",
+         "key_points": [], "tags": [], "references": []},
+    ]
+    detail: list[dict] = []
+    saved, updated = pks._persist_entries(entries, conv_id="", detail=detail)
+    assert (saved, updated) == (2, 0)
+    assert [d["action"] for d in detail] == ["created", "created"]
+    # 同主题再次录入：合并更新，明细如实标注
+    detail2: list[dict] = []
+    saved2, updated2 = pks._persist_entries(entries, conv_id="", detail=detail2)
+    assert (saved2, updated2) == (0, 2)
+    assert all(d["action"] == "updated" for d in detail2)
+    assert {d["topic"] for d in detail2} == {"NAT64地址转换原理", "链路探测健康检查配置"}
+
+
+def test_list_kb_entries_order_by_updated():
+    e1 = db.save_kb_entry(_entry("排序词条A"))
+    db.save_kb_entry(_entry("排序词条B"))
+    # A 后来被合并更新：updated 排序应置顶，created 排序仍在 B 之后
+    with db._connect() as conn:
+        conn.execute("UPDATE kb_entries SET updated_at='2030-01-01T00:00:00' WHERE id=?",
+                     (e1["id"],))
+        conn.execute("UPDATE kb_entries SET created_at='2020-01-01T00:00:00' WHERE id=?",
+                     (e1["id"],))
+    created = [e["topic"] for e in db.list_kb_entries(order="created", limit=50)]
+    updated = [e["topic"] for e in db.list_kb_entries(order="updated", limit=50)]
+    assert created.index("排序词条B") < created.index("排序词条A")
+    assert updated.index("排序词条A") < updated.index("排序词条B")
+
+
+@pytest.mark.asyncio
+async def test_ingest_summary_names_merged_topics(monkeypatch):
+    """录入全部被合并时，结果说明明确列出被更新的词条主题。"""
+    from app.agent import tools
+
+    async def fake_ingest(url, note=""):
+        return {"status": "ok", "title": "T", "url": url, "generated": 2,
+                "saved": 0, "updated": 2,
+                "saved_topics": [], "updated_topics": ["AF路由优先级顺序", "AF链路探测"]}
+
+    monkeypatch.setattr(tools.personal_kb_service, "ingest_url", fake_ingest)
+    r = await tools._h_ingest_url(None, {"url": "https://a.b/c"}, {})
+    assert "未新建词条" in r["_llm_summary"]
+    assert "《AF路由优先级顺序》" in r["_llm_summary"] and "《AF链路探测》" in r["_llm_summary"]
+
+
+def test_compact_result_ingest_preview():
+    from app.agent.orchestrator import _compact_result
+    preview = _compact_result("ingest_url_to_kb",
+                              {"status": "ok", "generated": 2, "saved": 0, "updated": 2})
+    assert "新增 0" in preview and "更新 2" in preview
+
+
+def test_kb_tools_do_not_need_device():
+    from app.agent.tools import TOOLS_BY_NAME
+    assert TOOLS_BY_NAME["record_to_kb"].needs_device is False
+    assert TOOLS_BY_NAME["ingest_url_to_kb"].needs_device is False
+    assert TOOLS_BY_NAME["add_device"].needs_device is False
+    assert TOOLS_BY_NAME["update_acl_rule"].needs_device is True
+
+
+@pytest.mark.asyncio
+async def test_resume_confirm_kb_tool_skips_device_login(device_id, monkeypatch):
+    """知识库沉淀工具执行不依赖设备连接：绑定设备登录失败也不影响录入。"""
+    import json as _json
+    from app.agent import orchestrator as orch_mod
+
+    async def _boom(dev_id):
+        raise RuntimeError("设备登录超时")
+
+    monkeypatch.setattr(orch_mod, "get_client", _boom)
+    conv = db.create_conversation("无设备录入测试", device_id=device_id)
+    action = db.create_pending_action({
+        "id": db.new_id("act_"), "conv_id": conv["id"], "tool_name": "record_to_kb",
+        "args_json": _json.dumps({"tool_call_id": "call_1", "args": {"note": "沉淀本次对话"}}),
+        "summary": "沉淀本次对话", "status": "pending", "created_at": db.now()})
+
+    events = [ev async for ev in orch_mod.AgentOrchestrator().resume_confirm(
+        conv["id"], action["id"], True, device_id)]
+    types = [e["type"] for e in events]
+    assert "confirm_result" in types and "error" not in types
+    assert db.get_pending_action(action["id"])["status"] == "executed"

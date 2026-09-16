@@ -36,6 +36,9 @@ HELP_TEXT = (
 
 _confirm_re = re.compile(r"^(确认|取消|approve|reject)\s*[:：#\s]*([A-Za-z0-9_\-]+)\s*$",
                          re.IGNORECASE)
+# 裸「确认/取消」（不带动作单号）：自动定位当前会话最近一个待确认动作。
+# 用户在企微回复时通常只发「确认」两个字，带不上单号；不带单号不落到 LLM 重新生成变更。
+_bare_confirm_re = re.compile(r"^(确认|确定|同意|取消|拒绝|放弃|approve|reject)$", re.IGNORECASE)
 # 自然语言意图（短文本、非疑问句才视为指令，避免误伤正常提问）：
 # 开新会话：新会话/新开会话/新的对话/重新开始/重置会话/清空上下文 等
 _new_session_re = re.compile(
@@ -75,6 +78,23 @@ def parse_confirm_command(text: str) -> Optional[tuple[bool, str]]:
     if not m:
         return None
     return (m.group(1).lower() in ("确认", "approve"), m.group(2))
+
+
+def _bare_confirm_command(text: str, binding: dict) -> Optional[tuple[bool, str]]:
+    """裸「确认/取消」（不带单号）：定位当前会话最近一个待确认动作。
+
+    仅在发送方绑定会话内查找，不跨会话猜测——跨渠道确认请带单号（确认 <id>）。
+    无待确认动作时返回 None，交由后续流程（管理指令/编排器）处理。
+    """
+    m = _bare_confirm_re.match((text or "").strip())
+    if not m:
+        return None
+    conv_id = binding.get("conv_id", "")
+    pending = db.get_pending_action_by_conv(conv_id) if conv_id else None
+    if not pending:
+        return None
+    approved = m.group(1).lower() in ("确认", "确定", "同意", "approve")
+    return (approved, pending["id"])
 
 
 def _is_question_like(t: str) -> bool:
@@ -188,8 +208,9 @@ def _fmt_devices(current_id: str) -> str:
     for i, d in enumerate(db.list_devices(), 1):
         mark = "▶" if d["id"] == current_id else " "
         mode = "模拟器" if d.get("mode") == "simulator" else "真实"
+        ro = "·只读" if d.get("readonly") else ""   # 标注可写状态：只读设备的变更操作会被拒绝
         lines.append(f"{mark} {i}. {d['name']}（{type_names.get(d.get('type', ''), d.get('type', ''))}"
-                     f"·{mode}）")
+                     f"·{mode}{ro}）")
     return "\n".join(lines)
 
 
@@ -218,14 +239,18 @@ def _handle_manage_command(text: str, channel: str, sender_id: str,
     keyword = _parse_switch_keyword(t)
     if keyword:
         devices = db.list_devices()
-        hit = next((d for d in devices if keyword.lower() in (d["name"] or "").lower()
-                    or keyword.lower() in d["id"].lower()), None)
+        kw = keyword.lower()
+        # 匹配设备名 / 设备 id / 管理地址（支持只给 IP 切换，如「切换到10.20.33.20」）
+        hit = next((d for d in devices if kw in (d["name"] or "").lower()
+                    or kw in d["id"].lower()
+                    or kw in (d.get("base_url") or "").lower()), None)
         if hit is None:
             return [f"未找到匹配「{keyword}」的设备。\n**设备列表**\n"
                     f"{_fmt_devices(binding.get('device_id', ''))}"]
         # 切换同时重置会话：旧会话日志保持原设备归属，新对话在新设备下开启
         db.upsert_channel_binding(channel, sender_id, conv_id="", device_id=hit["id"])
-        return [f"已切换到设备 **{hit['name']}** 并开启新会话，后续对话将针对该设备进行。"]
+        ro = "（该设备为只读模式，变更类操作会被拒绝）" if hit.get("readonly") else ""
+        return [f"已切换到设备 **{hit['name']}** 并开启新会话，后续对话将针对该设备进行。{ro}"]
     return None
 
 
@@ -252,8 +277,8 @@ async def _run_message_locked(channel: str, sender_id: str, text: str) -> dict:
     binding = db.get_channel_binding(channel, sender_id) or \
         db.upsert_channel_binding(channel, sender_id)
 
-    # 确认指令：非只读模式开放「确认/取消 <id>」文本入口
-    confirm = parse_confirm_command(text)
+    # 确认指令：非只读模式开放「确认/取消 <id>」文本入口；裸「确认/取消」定位本会话最近待确认动作
+    confirm = parse_confirm_command(text) or _bare_confirm_command(text, binding)
     if confirm:
         if settings.channel_readonly:
             return {"ok": True, "replies": ["当前渠道为只读模式，请在 Web 控制台的确认卡片中执行变更"],
@@ -302,7 +327,7 @@ async def _run_message_locked(channel: str, sender_id: str, text: str) -> dict:
                       f"或在配置中将 CHANNEL_READONLY_MODE 设为 false 后回复「确认 {p['action_id']}」。")
         else:
             reply += (f"\n\n⚠️ **待确认变更**：{p['summary']}\n"
-                      f"回复「确认 {p['action_id']}」执行，「取消 {p['action_id']}」放弃。")
+                      f"回复「确认」执行，「取消」放弃（或带单号：确认 {p['action_id']}）。")
     if not reply.strip():
         reply = "（无回复内容）"
     return {"ok": True, "replies": _split_reply(new_session_note + reply), "conv_id": conv_id,
@@ -311,14 +336,18 @@ async def _run_message_locked(channel: str, sender_id: str, text: str) -> dict:
 
 async def run_channel_confirm(channel: str, sender_id: str, action_id: str,
                               approved: bool) -> dict:
-    """渠道内确认/拒绝变更：校验动作归属后走编排器 resume_confirm。"""
-    binding = db.get_channel_binding(channel, sender_id)
+    """渠道内确认/拒绝变更：按 action_id 定位动作后走编排器 resume_confirm。
+
+    跨渠道兼容：不要求动作属于当前渠道会话——Web 端生成的确认卡片同样可在
+    企微侧回复「确认 <id>」执行；执行设备以动作所属会话绑定的设备为准。
+    """
     action = db.get_pending_action(action_id)
-    if not action or not binding or action["conv_id"] != binding.get("conv_id"):
-        return {"ok": False, "replies": ["确认任务不存在，或不属于当前会话，无法操作。"],
+    if not action:
+        return {"ok": False, "replies": ["确认任务不存在，或已被处理。"],
                 "conv_id": "", "device_id": "", "pending": None}
+    binding = db.get_channel_binding(channel, sender_id)
     conv = db.get_conversation(action["conv_id"]) or {}
-    device_id = binding.get("device_id") or conv.get("device_id", "")
+    device_id = conv.get("device_id") or (binding or {}).get("device_id", "")
 
     async def _run() -> dict:
         return await _consume_events(orchestrator.resume_confirm(

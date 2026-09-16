@@ -13,7 +13,9 @@
 新增功能 / 安全修复 / 已知问题修复 / 优化 四类归类（关键词规则，确定性）。
 """
 import html as htmllib
+import asyncio
 import json
+import logging
 import re
 from datetime import datetime
 
@@ -22,6 +24,8 @@ import httpx
 from app import db
 from app.config import settings
 from app.services.knowledge import versions as kb
+
+log = logging.getLogger("sangfor-agent")
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SangforSupportAgent/1.0"
 
@@ -443,6 +447,33 @@ async def get_software_list(product: str, force: bool = False) -> dict:
             "fetched_at": db.now(), "from_cache": False}
 
 
+_refresh_tasks: dict[str, asyncio.Task] = {}
+
+
+def _schedule_official_refresh(product: str) -> None:
+    """后台刷新过期的发布说明缓存（按产品线去重）：对话路径先返回旧缓存立即响应，
+    不再同步等待官网抓取（12~15s）。无旧缓存时的首次抓取仍走同步路径（见 get_update_overview）。
+    """
+    task = _refresh_tasks.get(product)
+    if task and not task.done():
+        return
+
+    async def _run() -> None:
+        try:
+            live = await fetch_official_release_notes(product)
+            if live["status"] == "ok":
+                db.save_update_cache(product, "release_notes", live["payload"],
+                                     f"official_platform@{datetime.now():%Y-%m-%d}")
+                log.info("更新信息后台刷新完成 product=%s", product)
+        except Exception:   # noqa: BLE001 —— 刷新失败保持旧缓存，下次过期时再试
+            log.warning("更新信息后台刷新失败 product=%s", product, exc_info=True)
+
+    try:
+        _refresh_tasks[product] = asyncio.create_task(_run())
+    except RuntimeError:   # 无事件循环（如同步上下文）时跳过，保持旧行为
+        pass
+
+
 async def get_update_overview(sw_version: str, product: str = "") -> dict:
     """给定设备当前版本，汇总：最新版本、跨越版本的发布说明（四类归类）、命中的安全公告、来源标注。
 
@@ -464,21 +495,18 @@ async def get_update_overview(sw_version: str, product: str = "") -> dict:
 
     sources_tried = []
     cached = db.get_update_cache(product, "release_notes")
+    stale_refreshing = False
     if cached and not _cache_fresh(cached, ttl_hours=24):
-        # 缓存超过 24h：自动重抓一次（避免长期重复使用过期数据，也不阻塞响应）
-        try:
-            live = await fetch_official_release_notes(product)
-            if live["status"] == "ok":
-                db.save_update_cache(product, "release_notes", live["payload"],
-                                     f"official_platform@{datetime.now():%Y-%m-%d}")
-                cached = db.get_update_cache(product, "release_notes") or cached
-                sources_tried.append({"source": "official_platform", "auto_refreshed": True,
-                                      "fetched_at": db.now()})
-        except Exception:   # noqa: BLE001 —— 刷新失败继续用旧缓存
-            pass
+        # 缓存超过 24h：触发后台静默刷新（去重），本次先用旧缓存立即响应，
+        # 不在对话路径内同步等官网抓取（stale-while-revalidate）
+        _schedule_official_refresh(product)
+        stale_refreshing = True
     if cached:
         scraped_map = _scraped_version_map(cached["payload"])
-        sources_tried.append({"source": cached["source"], "fetched_at": cached["fetched_at"]})
+        entry = {"source": cached["source"], "fetched_at": cached["fetched_at"]}
+        if stale_refreshing:
+            entry["stale_refreshing"] = True
+        sources_tried.append(entry)
     else:
         live = await fetch_official_release_notes(product)
         sources_tried.append({"source": "official_platform", "status": live["status"],

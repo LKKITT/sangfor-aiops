@@ -18,14 +18,16 @@ import threading
 import time
 from pathlib import Path
 
-from app.config import PROJECT_DIR
+from app.config import PROJECT_DIR, settings
 from app.services import app_settings
 
 log = logging.getLogger("sangfor-agent")
 
 SKILL_SCRIPT = PROJECT_DIR / "skills" / "zhuge-ai-assistant" / "scripts" / "zhuge_ai_client.py"
 KB_SOURCE = "zhuge_official_kb"
-ASK_TIMEOUT = 75.0          # 外层总超时（内层 ask_full 默认 60s 先行超时）
+# 外层总超时（默认 45s，KB_ASK_TIMEOUT 可调）：超时后编排 LLM 基于本地知识库/设备数据降级作答；
+# 内层轮询先行超时（见 _ZhugeSession.ask），给外层留出降级处理时间
+ASK_TIMEOUT = settings.kb_ask_timeout
 MAX_REFS = 8
 
 # 官方回答 HTML 中的超链接（引用文档/下载地址），以及引用条目可能携带的 URL 字段
@@ -144,7 +146,7 @@ class _ZhugeSession:
     版本范围等），技能的 ask_full 不处理该事件会白等到超时，这里检测到反问
     后快速返回，交由编排 LLM 结合设备信息作答或换具体问法重查。
     """
-    CLARIFY_GRACE = 8.0     # 反问出现后再等几秒，确认没有正式回答尾随
+    CLARIFY_GRACE = settings.kb_clarify_grace     # 反问出现后再等几秒，确认没有正式回答尾随
 
     def __init__(self, product: str):
         self.product = product
@@ -224,18 +226,20 @@ class _ZhugeSession:
                 if clar:
                     return {"answer": clar, "references": refs,
                             "clarification": True, "complete": True}
-            time.sleep(0.5)
+            time.sleep(max(0.05, settings.kb_poll_interval))
         return {"answer": "", "references": refs, "complete": False}
 
     def ask(self, question: str) -> dict:
+        # 内层先行超时：赶在外层 wait_for 之前返回，给上层留出降级处理时间
+        inner_timeout = max(10.0, settings.kb_ask_timeout - 10.0)
         with self.lock:
             self._ensure_ready()   # 登录失败直接抛（不重试，避免账号错误时双倍等待）
             try:
-                result = self._ask_via_buffer(question)
+                result = self._ask_via_buffer(question, timeout=inner_timeout)
             except Exception:   # noqa: BLE001 —— 连接可能失效：重建会话后重试一次
                 self._reset()
                 self._ensure_ready()
-                result = self._ask_via_buffer(question)
+                result = self._ask_via_buffer(question, timeout=inner_timeout)
             if not (result or {}).get("answer"):
                 raise RuntimeError("诸葛知识库连接未就绪")
             return result
@@ -254,6 +258,33 @@ def reset_sessions() -> None:
         for s in _sessions.values():
             s._reset()
         _sessions.clear()
+
+
+_prewarm_task: asyncio.Task | None = None
+
+
+def prewarm() -> None:
+    """后台预热官方知识库会话：凭据可用时提前完成 SSO 登录与 WS 建连，
+    首次知识库提问不再支付登录等待（数秒~15s）。失败静默，不影响启动与使用。
+    """
+    global _prewarm_task
+
+    async def _run() -> None:
+        try:
+            user, pwd = _credentials()
+            if not (user and pwd):
+                return
+            for product in ("AF", "AC"):
+                session = _get_session(product)
+                await asyncio.to_thread(session._ensure_ready)
+            log.info("诸葛知识库会话预热完成（AF/AC）")
+        except Exception:   # noqa: BLE001 —— 预热失败仅记录，首次提问时按原有链路登录
+            log.info("诸葛知识库会话预热未完成（首次提问时将按需登录）")
+
+    try:
+        _prewarm_task = asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:   # 无事件循环（如导入期）时跳过
+        pass
 
 
 async def ask_official_kb(question: str, product: str = "AF", timeout: float = ASK_TIMEOUT) -> dict:

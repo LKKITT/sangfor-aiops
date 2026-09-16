@@ -13,7 +13,7 @@ from app.adapters.simulator.state import STATE
 from app.api import backups, chat, devices, updates
 from app.api import channel, knowledge, settings as settings_api
 from app.config import settings
-from app.services import config_service, update_service, wecom_bot_service
+from app.services import config_service, update_service, wecom_bot_service, zhuge_kb_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("sangfor-agent")
@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     start_keepalive()
     await wecom_bot_service.start()
+    zhuge_kb_service.prewarm()   # 后台预热官方知识库 SSO 会话，首问免登录等待
     log.info("定时任务已启动：每日 %02d:00 自动备份；每日 %02d:30 刷新更新信息；每 3 分钟设备会话保活",
              settings.auto_backup_hour, settings.update_refresh_hour)
     yield

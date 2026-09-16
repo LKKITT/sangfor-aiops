@@ -117,6 +117,23 @@ def is_kb_intent(message: str) -> bool:
     return bool(KB_INTENT_PATTERN.search(message))
 
 
+# 写操作意图词：技能 LLM 兜底路由仅对疑似写操作的消息触发（收窄写工具集 + 注入技能指引）；
+# 纯查询/问答直接走全量工具模式，省去一次串行前置 LLM 调用（关键词路由未命中时）。
+# 误伤方向安全：漏判 → 全量模式（现状兜底行为）；误判 → 仅多一次快速路由调用。
+WRITE_INTENT_PATTERN = re.compile(
+    r"新建|创建|添加|新增|加一条|加个|删除|删掉|删了|去掉|移除|清除|清空|"
+    r"修改|改成|改为|改一下|改下|编辑|更新|调整|停用|启用|禁用|开启|关闭|"
+    r"放行|封禁|阻断|封锁|收紧|放开|还原|恢复|回滚|回退|重置|变更|下发|执行",
+    re.I)
+
+
+def looks_like_write_intent(message: str) -> bool:
+    """疑似配置写操作提问：命中才值得做 LLM 技能兜底路由。"""
+    if not message:
+        return False
+    return bool(WRITE_INTENT_PATTERN.search(message))
+
+
 def _skills_for(device_type: str) -> list[Skill]:
     return [s for s in SKILLS if s.device_type is None or s.device_type == device_type]
 

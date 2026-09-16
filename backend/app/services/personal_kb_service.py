@@ -1,6 +1,9 @@
-"""个人知识库服务（LLM WIKI）：把勾选知识库的对话沉淀为结构化词条，并生成反思报告。
+"""个人知识库服务（LLM WIKI）：把官方知识库问答与用户明确要求的对话沉淀为结构化词条，并生成反思报告。
 
-- 数据来源：audit_logs 中有 search_official_knowledge 调用记录的对话（即勾选过「查询知识库」）；
+- 数据来源：对话中官方知识库（search_official_knowledge）实际命中返回内容的轮次，
+  以及用户明确要求沉淀（record_to_kb）的对话；
+- 沉淀范围：知识库路径只取知识库相关轮次（提问 + 知识库返回 + 同轮回答），
+  不把之前/无关的会话一并沉淀；record_to_kb 显式沉淀保留完整会话材料；
 - LLM WIKI：用 LLM 把对话提炼为结构化知识词条（主题/分类/摘要/要点/步骤/官方引用/标签），
   按主题去重后落库，随对话积累形成个性化知识网络；
 - 反思报告：定期基于词条与统计生成「阶段总结 / 知识盲区 / 待验证结论 / 学习建议」；
@@ -75,21 +78,70 @@ REFLECTION_SYSTEM_PROMPT = """你是个人知识库的复盘助手。基于工�
 只基于给出的材料，不要编造；全文 500 字以内。"""
 
 
+_llm_client: AsyncOpenAI | None = None
+_llm_client_key: tuple[str, str, str] | None = None
+
+
 def _llm() -> AsyncOpenAI | None:
+    """返回 LLM 客户端（模块级复用连接池，配置变化时自动重建），避免每次调用重建客户端。"""
+    global _llm_client, _llm_client_key
     cfg = get_llm_config()
     if not cfg["api_key"] or cfg["api_key"].startswith("your-"):
         return None
-    return AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=120)
+    key = (cfg["base_url"], cfg["api_key"], cfg["model"])
+    if _llm_client is None or _llm_client_key != key:
+        _llm_client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=120)
+        _llm_client_key = key
+    return _llm_client
 
 
-def _conversation_text(conv_id: str, since_id: int | None = None) -> str:
-    """取对话的用户/助手文本与知识库引用（含官方链接），截断保护。
+def _is_kb_tool_result(m: dict) -> bool:
+    """消息是否为官方知识库工具返回（source == zhuge_official_kb）。"""
+    if m.get("role") != "tool":
+        return False
+    try:
+        d = json.loads(m.get("content", {}).get("content") or "")
+    except (ValueError, TypeError):
+        return False
+    return isinstance(d, dict) and d.get("source") == "zhuge_official_kb"
 
-    since_id 给定时只取该消息 id 之后的内容（增量沉淀，不引入之前的会话内容）。
+
+def _kb_turn_messages(messages: list[dict]) -> list[dict]:
+    """只保留知识库相关轮次：含官方知识库返回的轮次（用户提问 + 知识库返回 + 同轮回答）。
+
+    设备查询、寒暄等普通轮次不进入沉淀材料，避免把之前/无关的会话一并沉淀。
     """
+    turns: list[list[dict]] = []
+    for m in messages:
+        if m["role"] == "user" or not turns:
+            turns.append([m])
+        else:
+            turns[-1].append(m)
+    out: list[dict] = []
+    for turn in turns:
+        if any(_is_kb_tool_result(m) for m in turn):
+            out.extend(turn)
+    return out
+
+
+def _conversation_text(messages: list[dict]) -> str:
+    """从（筛选后的）消息中取用户/助手文本与知识库返回内容（回答+官方链接），截断保护。"""
     parts = []
-    for m in db.get_messages(conv_id, since_id=since_id):
+    for m in messages:
         c = m.get("content", {})
+        if m["role"] == "tool":
+            # 知识库工具结果：返回的回答与引用（含官方超链接）进入材料，供词条沉淀
+            try:
+                d = json.loads(c.get("content") or "")
+            except (ValueError, TypeError):
+                continue
+            if isinstance(d, dict) and d.get("source") == "zhuge_official_kb":
+                answer = str(d.get("answer") or "").strip()
+                if answer:
+                    parts.append(f"知识库回答：{answer[:2000]}")
+                parts.append("知识库引用：" +
+                             json.dumps(d.get("references") or [], ensure_ascii=False)[:2000])
+            continue
         text = (c.get("text") or "").strip()
         if not text:
             continue
@@ -97,15 +149,6 @@ def _conversation_text(conv_id: str, since_id: int | None = None) -> str:
             parts.append(f"用户：{text}")
         elif m["role"] == "assistant" and not c.get("tool_calls"):
             parts.append(f"助手：{text[:1500]}")
-        elif m["role"] == "tool":
-            # 知识库工具结果：引用条目（含官方超链接）需进入材料，供词条沉淀引用
-            try:
-                d = json.loads(c.get("content") or "")
-            except (ValueError, TypeError):
-                continue
-            if isinstance(d, dict) and d.get("source") == "zhuge_official_kb":
-                parts.append("知识库引用：" +
-                             json.dumps(d.get("references") or [], ensure_ascii=False)[:2000])
     return "\n".join(parts)[:8000]
 
 
@@ -183,17 +226,15 @@ def _norm_entry_refs(raw_refs) -> list[dict]:
     return out
 
 
-def _conv_official_refs(conv_id: str) -> list[dict]:
-    """从对话的知识库工具结果中收集带 url 的官方引用（代码级保底，不依赖 LLM 搬运链接）。"""
+def _official_refs(messages: list[dict]) -> list[dict]:
+    """从（筛选后的）知识库工具结果中收集带 url 的官方引用（代码级保底，不依赖 LLM 搬运链接）。"""
     out, seen = [], set()
-    for m in db.get_messages(conv_id):
-        if m["role"] != "tool":
+    for m in messages:
+        if not _is_kb_tool_result(m):
             continue
         try:
             d = json.loads(m.get("content", {}).get("content") or "")
         except (ValueError, TypeError):
-            continue
-        if not isinstance(d, dict) or d.get("source") != "zhuge_official_kb":
             continue
         for r in _norm_entry_refs(d.get("references")):
             if r.get("url") and r["url"] not in seen:
@@ -217,8 +258,10 @@ async def generate_entries_for_conv(conv_id: str, force: bool = False,
                                     since_id: int | None = None) -> dict:
     """把对话沉淀为知识词条（按主题去重）。
 
-    since_id 给定时为增量沉淀（只取该消息 id 之后的对话，供勾选后逐次沉淀），
+    since_id 给定时为增量沉淀（只取该消息 id 之后的对话，供对话结束后自动沉淀），
     不受“已沉淀过”跳过限制；全量路径（手动沉淀）仍按会话幂等。
+    沉淀材料：知识库路径只取知识库相关轮次（提问 + 知识库返回 + 同轮回答），
+    用户明确要求沉淀（record_to_kb）的对话保留完整会话材料。
     """
     if db.kb_conv_dismissed(conv_id):
         return {"status": "skipped", "conv_id": conv_id, "reason": "该对话已被移出沉淀队列"}
@@ -227,7 +270,10 @@ async def generate_entries_for_conv(conv_id: str, force: bool = False,
     llm = _llm()
     if llm is None:
         return {"status": "skipped", "conv_id": conv_id, "reason": "未配置 LLM，无法自动提炼词条"}
-    text = _conversation_text(conv_id, since_id)
+    messages = db.get_messages(conv_id, since_id=since_id)
+    if not db.conv_has_audit(conv_id, KB_RECORD_ACTION):
+        messages = _kb_turn_messages(messages)   # 只沉淀知识库相关轮次，不带上之前的会话
+    text = _conversation_text(messages)
     if len(text) < 50:
         return {"status": "skipped", "conv_id": conv_id, "reason": "对话内容过少，无沉淀价值"}
     resp = await llm.chat.completions.create(
@@ -240,7 +286,7 @@ async def generate_entries_for_conv(conv_id: str, force: bool = False,
     if finish == "length":
         log.warning("知识库提炼输出被截断(conv=%s)，使用截断修复解析", conv_id)
     entries = _parse_entries(raw)
-    saved, updated = _persist_entries(entries, conv_id)
+    saved, updated = _persist_entries(entries, conv_id, official_refs=_official_refs(messages))
     log.info("知识库沉淀完成 conv=%s 生成=%s 新增=%s 更新=%s", conv_id, len(entries), saved, updated)
     return {"status": "ok", "conv_id": conv_id,
             "generated": len(entries), "saved": saved, "updated": updated}
@@ -253,19 +299,26 @@ def _similar_entry(topic: str) -> tuple[dict | None, float]:
 
 
 def _persist_entries(entries: list[dict], conv_id: str = "",
-                     extra_refs: list[dict] | None = None) -> tuple[int, int]:
+                     extra_refs: list[dict] | None = None,
+                     official_refs: list[dict] | None = None,
+                     detail: list[dict] | None = None) -> tuple[int, int]:
     """词条入库（LLM-Wiki 合并式记忆）。返回 (新增数, 更新数)。
+
+    detail 给定时逐条记录 {"topic", "action": "created"/"updated"}，供录入结果
+    向用户说明"哪些词条是新建、哪些被合并更新"（更新不产生新卡片，界面无感）。
 
     去重合并三级：①精确同主题 → 刷新；②相似主题（检索高分且词元重合）→ 合并入库；
     ③全新主题 → 新建。引用合并顺序：LLM 提炼 → 对话官方链接 → extra_refs。
     """
+    conv_refs = official_refs if official_refs is not None else _official_refs(
+        db.get_messages(conv_id))
     saved, updated = 0, 0
     for e in entries:
         topic = (e.get("topic") or "").strip()
         if not topic:
             continue
         refs = _merge_refs(_norm_entry_refs(e.get("references")),
-                           _conv_official_refs(conv_id) if conv_id else [])
+                           conv_refs if conv_id else [])
         refs = _merge_refs(refs, list(extra_refs or []))
         aliases = [str(x)[:20] for x in (e.get("aliases") or [])][:8]
         related = [str(x)[:60] for x in (e.get("related") or [])][:5]
@@ -303,6 +356,8 @@ def _persist_entries(entries: list[dict], conv_id: str = "",
                                        entry_fields["references"], entry_fields["tags"],
                                        aliases=entry_fields.get("aliases"))
             updated += 1
+            if detail is not None:
+                detail.append({"topic": existing.get("topic") or topic, "action": "updated"})
             continue
         db.save_kb_entry({
             "conv_id": conv_id, "topic": topic[:80],
@@ -310,6 +365,8 @@ def _persist_entries(entries: list[dict], conv_id: str = "",
             **entry_fields,
         })
         saved += 1
+        if detail is not None:
+            detail.append({"topic": topic, "action": "created"})
     return saved, updated
 
 
@@ -409,10 +466,13 @@ async def _ingest_via_crawler(url: str, note: str = "") -> dict | None:
     if not entries:
         return {"status": "error", "reason": "未能从案例内容提炼出知识词条，请换一个案例链接"}
     case_ref = [{"title": f"官方案例：{case.title}", "url": case.url or url}]
-    saved, updated = _persist_entries(entries, conv_id="", extra_refs=case_ref)
+    detail: list[dict] = []
+    saved, updated = _persist_entries(entries, conv_id="", extra_refs=case_ref, detail=detail)
     log.info("案例沉淀完成 url=%s 新增=%s 更新=%s", url, saved, updated)
-    return {"status": "ok", "title": case.title, "url": case.url or url,
-            "generated": len(entries), "saved": saved, "updated": updated, "via": "crawler"}
+    return {"status": "ok", "title": case.title, "url": case.url or url, "via": "crawler",
+            "generated": len(entries), "saved": saved, "updated": updated,
+            "saved_topics": [d["topic"] for d in detail if d["action"] == "created"],
+            "updated_topics": [d["topic"] for d in detail if d["action"] == "updated"]}
 
 
 async def ingest_url(url: str, note: str = "") -> dict:
@@ -465,13 +525,19 @@ async def ingest_url(url: str, note: str = "") -> dict:
                 "reason": "页面内容未提炼出有价值的知识词条（可能是导航/列表类页面），"
                           "请改用内容更具体的详情页链接"}
     src_ref = [{"title": f"来源：{title}", "url": url}]
-    saved, updated = _persist_entries(entries, conv_id="", extra_refs=src_ref)
+    detail = []
+    saved, updated = _persist_entries(entries, conv_id="", extra_refs=src_ref, detail=detail)
     log.info("链接沉淀完成 url=%s 新增=%s 更新=%s", url, saved, updated)
     return {"status": "ok", "title": title, "url": url,
-            "generated": len(entries), "saved": saved, "updated": updated}
+            "generated": len(entries), "saved": saved, "updated": updated,
+            "saved_topics": [d["topic"] for d in detail if d["action"] == "created"],
+            "updated_topics": [d["topic"] for d in detail if d["action"] == "updated"]}
 
 
-KB_AUDIT_ACTIONS = ("agent.tool.search_official_knowledge", "agent.tool.record_to_kb")
+# 待沉淀口径：官方知识库实际命中（编排器在命中时写入）或用户明确要求沉淀
+KB_HIT_ACTION = "agent.kb.hit"
+KB_RECORD_ACTION = "agent.tool.record_to_kb"
+KB_AUDIT_ACTIONS = (KB_HIT_ACTION, KB_RECORD_ACTION)
 
 
 def pending_items() -> list[dict]:
@@ -494,12 +560,17 @@ def pending_items() -> list[dict]:
     items = []
     for conv_id in conv_ids:
         conv = db.get_conversation(conv_id) or {}
+        st = db.get_kb_sediment_status(conv_id) or {}
         items.append({
             "conv_id": conv_id,
             "title": (conv.get("title") or "(无标题)")[:60],
             "updated_at": conv.get("updated_at", ""),
             "msg_count": len(db.get_messages(conv_id)),
             "kb_questions": qa.get(conv_id, []),
+            # 沉淀进度：waiting=尚未调度 pending/running=排队/提炼中 done/skipped/failed=结果
+            "sediment_status": st.get("status", "waiting"),
+            "sediment_note": st.get("note", ""),
+            "sediment_at": st.get("updated_at", ""),
         })
     return items
 
@@ -513,7 +584,7 @@ async def process_pending(limit: int = 5, convs: list[str] | None = None) -> dic
     results = []
     for conv_id in targets:
         try:
-            results.append(await generate_entries_for_conv(conv_id))
+            results.append(await _sediment_with_status(conv_id))
         except Exception as e:   # noqa: BLE001 —— 单个对话失败不阻塞批次
             results.append({"status": "error", "conv_id": conv_id, "reason": str(e)})
     return {"processed": len(results),
@@ -576,11 +647,31 @@ async def generate_reflection(start: str = "", end: str = "") -> dict:
     return {"status": "ok", "reflection": rec}
 
 
+async def _sediment_with_status(conv_id: str, since_id: int | None = None) -> dict:
+    """执行一次沉淀并记录进度（自动/手动路径共用，供待沉淀列表展示）。"""
+    db.save_kb_sediment_status(conv_id, "running", "正在提炼知识词条")
+    try:
+        r = await generate_entries_for_conv(conv_id, since_id=since_id)
+    except Exception as e:
+        db.save_kb_sediment_status(conv_id, "failed", f"沉淀失败：{e}")
+        raise
+    if r.get("status") == "ok":
+        db.save_kb_sediment_status(
+            conv_id, "done",
+            f"完成：新增 {r.get('saved', 0)} 条 / 更新 {r.get('updated', 0)} 条",
+            saved=r.get("saved", 0))
+    else:
+        db.save_kb_sediment_status(conv_id, "skipped", r.get("reason", "已跳过"))
+    return r
+
+
 def schedule_sediment(conv_id: str, since_id: int | None = None) -> None:
-    """对话结束后台静默沉淀（不阻塞、不影响对话主流程）。"""
+    """对话结束后台静默沉淀（不阻塞、不影响对话主流程），并在待沉淀队列标记沉淀进度。"""
+    db.save_kb_sediment_status(conv_id, "pending", "排队等待自动沉淀")
+
     async def _run():
         try:
-            await generate_entries_for_conv(conv_id, since_id=since_id)
+            await _sediment_with_status(conv_id, since_id)
         except Exception:   # noqa: BLE001
             log.warning("个人知识库后台沉淀失败 conv=%s", conv_id, exc_info=True)
 

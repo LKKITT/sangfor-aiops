@@ -54,10 +54,17 @@ class Settings:
     wecom_aibot_secret: str = os.getenv("WECOM_AIBOT_SECRET", "")
     # 发送方白名单（逗号分隔 userid，空=允许全部企微成员）
     wecom_allowed_users: str = os.getenv("WECOM_ALLOWED_USERS", "")
-    # 渠道端只读模式：true 时微信端不开放写操作确认入口，引导回 Web 界面
-    channel_readonly: bool = _bool("CHANNEL_READONLY_MODE", "true")
+    # 渠道端只读模式：false 时企微侧开放写操作确认（文本指令 + 确认卡片），与 Web 端一致；
+    # 置 true 可整体关闭渠道端写入口（引导回 Web 界面）
+    channel_readonly: bool = _bool("CHANNEL_READONLY_MODE", "false")
     # 渠道会话超时（分钟）：超过该时长未对话，下次消息自动开启新会话（0=关闭该行为）
     channel_session_timeout_min: int = int(os.getenv("CHANNEL_SESSION_TIMEOUT_MINUTES", "30"))
+
+    # 诸葛官方知识库（可选）问答链路：总超时/反问宽限/缓冲轮询间隔（秒）。
+    # 收敛长尾等待：超时后编排 LLM 仍会基于本地知识库与设备数据降级作答
+    kb_ask_timeout: float = float(os.getenv("KB_ASK_TIMEOUT", "45"))
+    kb_clarify_grace: float = float(os.getenv("KB_CLARIFY_GRACE", "3"))
+    kb_poll_interval: float = float(os.getenv("KB_POLL_INTERVAL", "0.2"))
 
 
 settings = Settings()

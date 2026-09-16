@@ -40,8 +40,10 @@ def _build_graph(entries: list[dict]) -> dict:
 
 
 @router.get("/entries")
-def list_entries(category: str = "", keyword: str = "", limit: int = 200) -> list[dict]:
-    return db.list_kb_entries(category=category, keyword=keyword, limit=min(limit, 500))
+def list_entries(category: str = "", keyword: str = "", limit: int = 200,
+                 order: str = "created") -> list[dict]:
+    return db.list_kb_entries(category=category, keyword=keyword, limit=min(limit, 500),
+                              order=order)
 
 
 @router.get("/entries/{entry_id}")

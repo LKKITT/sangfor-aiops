@@ -143,8 +143,8 @@ export const Audit = { list: () => apiGet('/api/chat/audit') }
 
 export const KB = {
   stats: () => apiGet('/api/kb/stats'),
-  entries: (category = '', keyword = '') =>
-    apiGet(`/api/kb/entries?category=${encodeURIComponent(category)}&keyword=${encodeURIComponent(keyword)}`),
+  entries: (category = '', keyword = '', order = 'created') =>
+    apiGet(`/api/kb/entries?category=${encodeURIComponent(category)}&keyword=${encodeURIComponent(keyword)}&order=${encodeURIComponent(order)}`),
   entry: (id) => apiGet(`/api/kb/entries/${id}`),
   removeEntry: (id) => apiDelete(`/api/kb/entries/${id}`),
   pending: () => apiGet('/api/kb/pending'),

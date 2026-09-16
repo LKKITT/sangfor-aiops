@@ -52,6 +52,18 @@
             <span v-if="!row.kb_questions?.length" class="kb-sub">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="沉淀进度" width="130">
+          <template #default="{ row }">
+            <el-tag size="small" :type="sedimentTag(row).type" effect="light">
+              {{ sedimentTag(row).label }}
+            </el-tag>
+            <el-tooltip v-if="row.sediment_note"
+                        :content="`${row.sediment_note}（${(row.sediment_at || '').slice(0, 16)}）`"
+                        placement="top">
+              <span class="kb-sub" style="margin-left: 4px; cursor: help">ⓘ</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column prop="msg_count" label="消息" width="60" align="center" />
         <el-table-column label="最后活跃" width="140">
           <template #default="{ row }">{{ (row.updated_at || '').slice(0, 16) }}</template>
@@ -125,6 +137,10 @@
       <div class="page-card" style="margin-top: 12px">
         <div class="col-title" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
           <el-icon><Notebook /></el-icon> 知识词条（{{ entries.length }}）
+          <el-select v-model="entryOrder" size="small" style="width: 120px" @change="loadEntries">
+            <el-option label="最近创建" value="created" />
+            <el-option label="最近更新" value="updated" />
+          </el-select>
           <el-select v-model="filterCategory" size="small" clearable placeholder="全部分类" style="width: 140px" @change="loadEntries">
             <el-option v-for="c in stats.categories" :key="c.name" :label="`${c.name}（${c.value}）`" :value="c.name" />
           </el-select>
@@ -223,13 +239,25 @@ const reflections = ref([])
 const pendingCount = ref(0)
 const filterCategory = ref('')
 const keyword = ref('')
+const entryOrder = ref('created')   // 排序：created=最近创建 / updated=最近更新（合并更新可见）
 const detail = ref(null)
 const showDetail = computed({ get: () => !!detail.value, set: v => { if (!v) detail.value = null } })
 const processing = ref(false)
 const reflecting = ref(false)
 const reflRange = ref(null)   // 反思报告自定义时间节点 [start, end]
-const pendingItems = ref([])  // 待沉淀对话明细（标题/提问/消息数）
+const pendingItems = ref([])  // 待沉淀对话明细（标题/提问/消息数/沉淀进度）
 const selPending = ref([])    // 勾选的待沉淀对话
+
+// 沉淀进度展示：waiting=尚未调度 pending=排队 running=提炼中 done/skipped/failed=结果
+const SEDIMENT_TAGS = {
+  waiting: { label: '等待沉淀', type: 'info' },
+  pending: { label: '排队中', type: 'warning' },
+  running: { label: '沉淀中', type: 'primary' },
+  done: { label: '已完成', type: 'success' },
+  skipped: { label: '已跳过', type: 'info' },
+  failed: { label: '失败', type: 'danger' },
+}
+const sedimentTag = (row) => SEDIMENT_TAGS[row.sediment_status] || SEDIMENT_TAGS.waiting
 
 const latestReflection = computed(() => reflections.value[0] || null)
 const viewingReflId = ref('')
@@ -322,17 +350,22 @@ async function loadStats() {
   try { stats.value = await KB.stats() } catch (e) { ElMessage.error(String(e.message || e)) }
 }
 async function loadEntries() {
-  try { entries.value = await KB.entries(filterCategory.value, keyword.value) } catch (e) { ElMessage.error(String(e.message || e)) }
+  try { entries.value = await KB.entries(filterCategory.value, keyword.value, entryOrder.value) } catch (e) { ElMessage.error(String(e.message || e)) }
 }
 async function loadReflections() {
   try { reflections.value = await KB.reflections() } catch { /* 静默 */ }
 }
+let pendingTimer = null
 async function loadPending() {
   try {
     const p = await KB.pending()
     pendingCount.value = p.count
     pendingItems.value = p.items || []
     selPending.value = []
+    // 有排队/提炼中的对话时定时刷新，实时展示自动沉淀进度
+    const busy = (p.items || []).some(x => ['pending', 'running'].includes(x.sediment_status))
+    clearTimeout(pendingTimer)
+    if (busy) pendingTimer = setTimeout(loadPending, 3000)
   } catch { /* 静默 */ }
 }
 

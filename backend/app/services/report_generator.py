@@ -33,6 +33,9 @@ def _bool_icon(v) -> str:
 def _render_status(status: dict) -> str:
     if not status:
         return "<p>无设备状态数据</p>"
+    cap = status.get("session_capacity", 0)
+    sess_text = (f"{status.get('session_count', 0)} / {cap}" if cap
+                 else f"{status.get('session_count', 0)}（容量未知）")
     rows = [
         ("软件版本", status.get("sw_version")),
         ("型号", status.get("model")),
@@ -40,7 +43,7 @@ def _render_status(status: dict) -> str:
         ("CPU 使用率", f"{status.get('cpu_usage', 0)}%"),
         ("内存使用率", f"{status.get('memory_usage', 0)}%"),
         ("磁盘使用率", f"{status.get('disk_usage', 0)}%"),
-        ("会话数", f"{status.get('session_count', 0)} / {status.get('session_capacity', 0)}"),
+        ("会话数", sess_text),
         ("HA 状态", status.get("ha_status", "standalone")),
     ]
     return "<table class=\"kv\">" + "".join(
@@ -350,13 +353,28 @@ def render_config_section(snapshot: dict, status: dict) -> str:
 # 配置体检 → HTML
 # ============================================================
 
-def render_checkup_section(checkup: dict) -> str:
+def render_checkup_section(checkup: dict, snapshot: dict | None = None) -> str:
     if not checkup:
         return "<p>未执行配置体检</p>"
     score = checkup.get("score", 0)
     grade = checkup.get("grade", "N/A")
     counts = checkup.get("counts", {})
     items = checkup.get("items", [])
+    # 规则 ID → 名称索引（按快照各配置节构建，"涉及策略"列展示可读名称）
+    name_by_id: dict = {}
+    for section in ("acl_rules", "nat_rules", "objects", "services",
+                    "user_bindings", "static_routes"):
+        for r in (snapshot or {}).get(section) or []:
+            if isinstance(r, dict) and r.get("id"):
+                name_by_id[str(r["id"])] = str(r.get("name") or r["id"])
+
+    def _rule_names(rule_ids) -> str:
+        names = []
+        for rid in rule_ids or []:
+            name = name_by_id.get(str(rid))
+            names.append(f"{name} ({str(rid)[:12]}…)" if name and len(str(rid)) > 12
+                         else (name or str(rid)))
+        return "、".join(_h(n) for n in names) or "—"
 
     html = [f"""
     <div class="score-box">
@@ -376,13 +394,19 @@ def render_checkup_section(checkup: dict) -> str:
     """]
 
     if items:
-        html.append("<table><thead><tr><th>级别</th><th>类别</th><th>描述</th><th>建议</th></tr></thead><tbody>")
+        html.append("<table><thead><tr><th>级别</th><th>类别</th><th>风险说明</th>"
+                    "<th>涉及策略</th><th>修复建议</th></tr></thead><tbody>")
         for item in items:
             sev = item.get("severity", "low")
+            title = _h(item.get("title", ""))
+            evidence = _h(item.get("evidence", ""))
+            detail_html = f"<b>{title}</b>" + (f"<br><span class=\"sub\">{evidence}</span>"
+                                               if evidence and evidence != title else "")
             html.append(f"""<tr>
                 <td><span class="badge" style="background:{_severity_color(sev)}">{sev}</span></td>
                 <td>{_h(item.get('category', ''))}</td>
-                <td>{_h(item.get('detail', ''))}</td>
+                <td>{detail_html}</td>
+                <td>{_rule_names(item.get('rule_ids'))}</td>
                 <td>{_h(item.get('suggestion', ''))}</td>
             </tr>""")
         html.append("</tbody></table>")
@@ -488,6 +512,7 @@ body { font-family: -apple-system, "Microsoft YaHei", "Segoe UI", sans-serif; ba
 .section h4 { font-size: 13px; color: #777; margin: 10px 0 4px; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
 th, td { border: 1px solid #e8edf3; padding: 6px 8px; text-align: left; }
+.sub { color: #7a869a; font-size: 11px; }
 th { background: #f0f4f9; font-weight: 600; white-space: nowrap; }
 td { word-break: break-all; }
 tr:hover td { background: #f8fafc; }
@@ -519,7 +544,7 @@ def generate_report(device_name: str, backup_label: str, backup_time: str,
         config_html = render_scp_section(snapshot, status, backup_time)
     else:
         config_html = render_config_section(snapshot, status)
-    checkup_html = render_checkup_section(checkup)
+    checkup_html = render_checkup_section(checkup, snapshot)
     update_html = render_update_section(update_advice)
 
     return f"""<!DOCTYPE html>

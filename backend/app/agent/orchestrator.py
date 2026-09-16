@@ -30,7 +30,7 @@ from app.agent.prompts import (
     SYSTEM_PROMPT,
     device_context_message,
     memory_injection_message,
-    conv_summary_prompt,
+    memory_extract_prompt,
 )
 from app.agent.tools import TOOLS_BY_NAME, get_tools
 from app.config import settings
@@ -40,6 +40,10 @@ from app.services.app_settings import get_llm_config
 MAX_TOOL_ROUNDS = 8
 TOOL_RESULT_LIMIT = 8000
 HISTORY_LIMIT = 24
+# 历史工具结果瘦身：仅最近 N 条工具结果保留全文，更早的截断为开头摘要，
+# 避免多轮工具对话后每轮 prompt 膨胀到数万字符拖慢 LLM 推理（上下文由摘要/记忆机制兜底）
+RECENT_TOOL_FULL = 3
+TOOL_RESULT_KEEP = 200
 # 记忆提取间隔：至少积累 N 条消息才提取记忆
 MEMORY_EXTRACT_INTERVAL = 6
 
@@ -48,6 +52,8 @@ class AgentOrchestrator:
     def __init__(self) -> None:
         self._client = None
         self._client_cfg = None
+        # 会话 → 上次记忆提取时的消息数（增量节流，避免每轮都跑后台提取）
+        self._mem_extracted_at: dict[str, int] = {}
 
     def _llm(self) -> AsyncOpenAI | None:
         """按当前配置（界面平台设置 > .env）返回 LLM 客户端；配置变化时自动重建。"""
@@ -66,12 +72,12 @@ class AgentOrchestrator:
                           use_knowledge: bool = False) -> AsyncGenerator[dict, None]:
         guardrails.check_user_request(user_message)   # 黑名单先于 LLM 拦截
         device = db.get_device(device_id) or {}
-        # 本轮消息起点：勾选知识库时，沉淀只取本轮新增对话，不引入之前会话内容
+        # 本轮消息起点：知识沉淀（命中官方知识库时）只取本轮新增对话，不引入之前会话内容
         since_id = db.max_message_id(conv_id)
         db.add_message(conv_id, "user", {"text": user_message})
         # 写入设备归属：供前端切换菜单后按设备恢复最近会话
         db.touch_conversation(conv_id, title=user_message, device_id=device_id)
-        kb_since = since_id if use_knowledge else None
+        kb_since = since_id
         # 知识问答意图：未勾选时对功能/故障类提问自动启用分层检索（本地个人知识库优先 → 官方兜底）
         kb_auto = (not use_knowledge) and bool(user_message) and skills.is_kb_intent(user_message)
         yield {"type": "meta", "conv_id": conv_id, "device_id": device_id}
@@ -118,9 +124,11 @@ class AgentOrchestrator:
                                              "content": "用户在界面上审阅变更计划后拒绝执行。"})
             yield {"type": "confirm_result", "action_id": action_id, "approved": False}
         else:
-            guardrails.check_tool_call(action["tool_name"], tool_args, device)   # 执行前复核
+            guardrails.check_tool_call(action["tool_name"], tool_args, device)
             try:
-                client = await get_client(device_id)
+                # 知识库沉淀/添加设备等工具不依赖设备连接（needs_device=False）：
+                # 绑定设备不在线也不影响执行
+                client = await get_client(device_id) if tool.needs_device else None
                 result = await tool.handler(client, tool_args, device)
             except guardrails.GuardrailError as e:
                 db.update_pending_action(action_id, status="blocked")
@@ -179,10 +187,17 @@ class AgentOrchestrator:
         return memory_injection_message(items)
 
     async def _extract_memory(self, conv_id: str, device_id: str) -> None:
-        """对话结束后提取记忆：生成摘要 + 提取重要事实。"""
+        """对话结束后提取记忆：一次 LLM 调用同时生成会话摘要与重要事实。
+
+        增量节流：距上次提取新增消息不足 MEMORY_EXTRACT_INTERVAL 条时跳过，
+        避免每轮对话都追加后台 LLM 调用、与下一轮主对话争抢供应商并发。
+        """
         messages = db.get_messages(conv_id)
         if len(messages) < MEMORY_EXTRACT_INTERVAL:
             return
+        if len(messages) - self._mem_extracted_at.get(conv_id, 0) < MEMORY_EXTRACT_INTERVAL:
+            return
+        self._mem_extracted_at[conv_id] = len(messages)   # 先占位：连续快速对话不重复提取
         # 获取对话文本
         user_texts = []
         assistant_texts = []
@@ -203,55 +218,35 @@ class AgentOrchestrator:
             return
 
         try:
-            # 1. 生成会话摘要
-            summary_resp = await llm.chat.completions.create(
+            resp = await llm.chat.completions.create(
                 model=get_llm_config()["model"],
                 messages=[
-                    {"role": "system", "content": conv_summary_prompt()},
+                    {"role": "system", "content": memory_extract_prompt()},
                     {"role": "user", "content": conversation_text[:3000]},
                 ],
-                temperature=0.3, max_tokens=300,
+                temperature=0.3, max_tokens=800,
             )
-            summary = summary_resp.choices[0].message.content or ""
+            summary, fact_text = _parse_memory_extract(resp.choices[0].message.content or "")
             if summary:
-                db.save_conv_summary(conv_id, summary.strip(), device_id)
+                db.save_conv_summary(conv_id, summary, device_id)
 
-            # 2. 提取重要事实（用户偏好、关键决策等）
-            fact_prompt = """从对话中提取重要的事实信息，适合保存到长期记忆中以便后续对话参考。
-提取以下类型的信息（如果存在）：
-1. 用户偏好或习惯（如：用户喜欢先检查再操作、用户关注安全策略等）
-2. 设备的重要配置决策或发现
-3. 用户明确表达的观点或要求
-
-如果没有重要信息，回复"无"。
-每条信息一行，格式：[类型] 内容"""
-            fact_resp = await llm.chat.completions.create(
-                model=get_llm_config()["model"],
-                messages=[
-                    {"role": "system", "content": fact_prompt},
-                    {"role": "user", "content": conversation_text[:3000]},
-                ],
-                temperature=0.3, max_tokens=500,
-            )
-            fact_text = (fact_resp.choices[0].message.content or "").strip()
-            if fact_text and fact_text != "无":
-                for line in fact_text.split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # 解析类型
-                    category = "fact"
-                    if "偏好" in line or "习惯" in line:
-                        category = "preference"
-                    elif "操作" in line or "配置" in line or "变更" in line:
-                        category = "action_history"
-                    elif "设备" in line:
-                        category = "device_context"
-                    # 去重：内容相似的不重复保存
-                    existing = db.get_memory_items(device_id, limit=30)
-                    if any(line[:30] in item["content"] for item in existing):
-                        continue
-                    db.save_memory_item(device_id, category, line[:300], conv_id)
+            for line in fact_text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                # 解析类型
+                category = "fact"
+                if "偏好" in line or "习惯" in line:
+                    category = "preference"
+                elif "操作" in line or "配置" in line or "变更" in line:
+                    category = "action_history"
+                elif "设备" in line:
+                    category = "device_context"
+                # 去重：内容相似的不重复保存
+                existing = db.get_memory_items(device_id, limit=30)
+                if any(line[:30] in item["content"] for item in existing):
+                    continue
+                db.save_memory_item(device_id, category, line[:300], conv_id)
             # 清理旧记忆
             db.delete_old_memory(device_id, keep=50)
         except Exception:   # noqa: BLE001 —— 记忆提取失败不影响主流程
@@ -262,6 +257,9 @@ class AgentOrchestrator:
 
     def _build_messages(self, conv_id: str, device: dict) -> list[dict]:
         history = db.get_messages(conv_id, limit=HISTORY_LIMIT)
+        # 仅最近 N 条工具结果保留全文，更早的截断，控制每轮 prompt 体积（首字延迟随轮次衰减的主因）
+        tool_positions = [i for i, m in enumerate(history) if m["role"] == "tool"]
+        full_tool_pos = set(tool_positions[-RECENT_TOOL_FULL:])
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
         # 注入设备上下文
         ctx = device_context_message(device, None)
@@ -280,7 +278,7 @@ class AgentOrchestrator:
         pending_actions = self._get_pending_actions_context(conv_id)
         if pending_actions:
             messages.append({"role": "system", "content": pending_actions})
-        for m in history:
+        for i, m in enumerate(history):
             content = m["content"]
             if m["role"] == "user":
                 messages.append({"role": "user", "content": content.get("text", "")})
@@ -294,8 +292,12 @@ class AgentOrchestrator:
                 if entry["content"] or entry.get("tool_calls"):
                     messages.append(entry)
             elif m["role"] == "tool":
+                tool_content = content.get("content", "")
+                if i not in full_tool_pos and len(tool_content) > TOOL_RESULT_KEEP:
+                    tool_content = (tool_content[:TOOL_RESULT_KEEP]
+                                    + "…（历史工具结果已省略，需要时请重新调用工具获取）")
                 messages.append({"role": "tool", "tool_call_id": content.get("tool_call_id", ""),
-                                 "content": content.get("content", "")})
+                                 "content": tool_content})
         return messages
 
     def _get_pending_actions_context(self, conv_id: str) -> str | None:
@@ -320,7 +322,11 @@ class AgentOrchestrator:
     # ================= 技能路由 =================
 
     async def _llm_select_skill(self, user_message: str, dtype: str):
-        """LLM 兜底技能选择：一次非流式小调用；带独立超时（不拖慢首 token），失败回退全量模式。"""
+        """LLM 兜底技能选择：一次非流式小调用；带独立超时（不拖慢首 token），失败回退全量模式。
+
+        仅在关键词路由未命中且消息疑似写操作时触发（见 _run_llm_loop）：
+        技能的价值在收窄写工具集与注入流程指引，纯查询直接走全量模式即可。
+        """
         try:
             resp = await asyncio.wait_for(self._llm().chat.completions.create(
                 model=get_llm_config()["model"],
@@ -329,7 +335,7 @@ class AgentOrchestrator:
                     {"role": "user", "content": user_message[:500]},
                 ],
                 temperature=0.0, max_tokens=16,
-            ), timeout=2.5)
+            ), timeout=1.5)
             return skills.parse_skill_choice(resp.choices[0].message.content or "", dtype)
         except (asyncio.TimeoutError, Exception):   # noqa: BLE001 —— 选择失败/超时不影响主流程
             return None
@@ -352,9 +358,10 @@ class AgentOrchestrator:
                             kb_auto: bool = False) -> AsyncGenerator[dict, None]:
         messages = self._build_messages(conv_id, device)
         dtype = device.get("type", "")
-        # 技能路由：关键词优先（离线可用）→ LLM 按目录兜底 → 未命中回退全量工具模式
+        # 技能路由：关键词优先（零延迟、离线可用）→ 疑似写操作时 LLM 按目录兜底 → 回退全量工具模式
         skill = skills.select_skill(user_message, dtype)
-        if skill is None and user_message and self._llm() is not None:
+        if (skill is None and user_message and self._llm() is not None
+                and skills.looks_like_write_intent(user_message)):
             skill = await self._llm_select_skill(user_message, dtype)
         if skill:
             messages.append({"role": "system", "content": skills.skill_guide_message(skill)})
@@ -372,6 +379,7 @@ class AgentOrchestrator:
                                                        use_knowledge=use_knowledge or kb_auto)
         executed_results: dict = {}   # (工具名, 参数) -> 结果：同一提问内重复调用直接合并
         failed_write_tools: set = set()   # 写工具失败后终止同工具重试
+        kb_hit = False   # 本轮是否实际命中官方知识库（返回了答案）：决定是否后台沉淀
         for _ in range(MAX_TOOL_ROUNDS):
             text_parts: list[str] = []
             tool_calls: dict[int, dict] = {}
@@ -405,7 +413,7 @@ class AgentOrchestrator:
                 db.add_message(conv_id, "assistant", {"text": final_text, "tool_calls": []})
                 # 记忆提取与知识库沉淀均后台执行：SSE 立即结束，不产生"答完卡尾"
                 self._schedule_memory_extraction(conv_id, device_id)
-                if use_knowledge:
+                if kb_hit:   # 命中官方知识库才自动沉淀，且只沉淀本轮问答（不含之前的会话）
                     personal_kb_service.schedule_sediment(conv_id, since_id=kb_since_id)
                 yield {"type": "done"}
                 return
@@ -463,7 +471,8 @@ class AgentOrchestrator:
                         continue
                     try:
                         guardrails.check_tool_call(name, args, device)
-                        client = await get_client(device_id)
+                        # needs_device=False 的工具（知识库沉淀/添加设备）跳过设备登录
+                        client = await get_client(device_id) if tool.needs_device else None
                         plan = await tool.prepare(client, args, device)
                     except guardrails.GuardrailError as e:
                         db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
@@ -510,6 +519,12 @@ class AgentOrchestrator:
                                                      "content": content})
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
                     guardrails.audit_tool(name, args, "ok", conv_id, device_id)
+                    if name == skills.KB_TOOL_NAME and _kb_hit_result(result):
+                        kb_hit = True
+                        # 标记官方知识库实际命中：待沉淀队列与自动沉淀均以此为准（未命中不入队）
+                        db.audit("agent.kb.hit",
+                                 {"args": {"question": str(args.get("question", ""))[:200]}},
+                                 conv_id=conv_id, device_id=device_id)
                     yield {"type": "tool_result", "name": name,
                            "preview": _compact_result(name, result)}
                 except Exception as e:   # noqa: BLE001
@@ -621,11 +636,35 @@ class AgentOrchestrator:
                     "配置 backend/.env 或『平台设置』中的 LLM_API_KEY 后即可使用完整自然语言对话（含配置变更与恢复）。")
 
 
+def _kb_hit_result(result) -> bool:
+    """是否已路由到官方知识库并取得返回：答案或澄清反问均算（澄清时助手会结合设备信息作答，
+    同样有沉淀价值）；查询失败（status != ok 或无内容）不算。"""
+    return (isinstance(result, dict) and result.get("status") == "ok"
+            and bool((result.get("answer") or "").strip()))
+
+
+def _parse_memory_extract(text: str) -> tuple[str, str]:
+    """解析合并的记忆提取输出（[摘要]/[事实] 两节），返回 (摘要, 事实文本)。
+
+    格式完全不符时返回空串（本轮放弃提取），与提取失败同等对待，不影响主流程。
+    """
+    s = text or ""
+    summary_m = re.search(r"\[摘要\]\s*(.*?)(?:\[事实\]|\Z)", s, re.S)
+    facts_m = re.search(r"\[事实\]\s*(.*)\Z", s, re.S)
+    if not (summary_m or facts_m):
+        return "", ""
+    return (summary_m.group(1).strip() if summary_m else "",
+            facts_m.group(1).strip() if facts_m else "")
+
+
 def _compact_result(name: str, result) -> str:
     """工具结果的紧凑预览（前端事件展示用）。"""
     if isinstance(result, dict):
         if "plan" in result and isinstance(result.get("plan"), dict):
             return f"恢复计划：共 {result['plan'].get('total', 0)} 项变更"
+        if "saved" in result and "updated" in result:
+            return (f"提炼 {result.get('generated', '?')} 条词条："
+                    f"新增 {result['saved']} / 更新 {result['updated']}")
         if "summary_text" in result:
             return str(result["summary_text"])
         if "_llm_summary" in result:
