@@ -39,6 +39,7 @@
         <el-menu-item index="checkup"><el-icon><Odometer /></el-icon>配置体检</el-menu-item>
         <el-menu-item index="updates"><el-icon><Download /></el-icon>软件更新建议</el-menu-item>
         <el-menu-item index="knowledge"><el-icon><Collection /></el-icon>个人知识库</el-menu-item>
+        <el-menu-item index="netdev"><el-icon><Cpu /></el-icon>网络设备管理</el-menu-item>
         <el-menu-item index="chatlog"><el-icon><Notebook /></el-icon>对话日志</el-menu-item>
       </el-menu>
 
@@ -252,6 +253,7 @@ import CheckupView from './views/CheckupView.vue'
 import UpdatesView from './views/UpdatesView.vue'
 import KnowledgeView from './views/KnowledgeView.vue'
 import ChatLogView from './views/ChatLogView.vue'
+import NetDevView from './views/NetDevView.vue'
 
 const views = {
   chat: markRaw(ChatView),
@@ -260,6 +262,7 @@ const views = {
   checkup: markRaw(CheckupView),
   updates: markRaw(UpdatesView),
   knowledge: markRaw(KnowledgeView),
+  netdev: markRaw(NetDevView),
   chatlog: markRaw(ChatLogView)
 }
 

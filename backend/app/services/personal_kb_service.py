@@ -23,6 +23,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from app import db
+from app.config import settings
 from app.config import PROJECT_DIR
 from app.services.app_settings import get_llm_config
 from app.services.update_service import UA, _embedded_content_lines, _strip_html_to_lines
@@ -81,18 +82,68 @@ REFLECTION_SYSTEM_PROMPT = """你是个人知识库的复盘助手。基于工�
 _llm_client: AsyncOpenAI | None = None
 _llm_client_key: tuple[str, str, str] | None = None
 
+# 沉淀失败自动重试前的退避秒数（仅异常类失败重试一次，跳过类结果不重试）
+SEDIMENT_RETRY_DELAY = 20.0
+
+_bg_llm_lock: asyncio.Lock | None = None
+
+
+def background_llm_lock() -> asyncio.Lock:
+    """后台长 LLM 调用（记忆提取/知识沉淀）共用的串行锁。
+
+    同一 API Key 并发多笔非流式长调用会互相挤兑排队导致超时（实测：沉淀提炼
+    Request timed out），这里把后台长调用串行化；事件循环更换时重建（pytest
+    场景，与 channel_gateway._sender_lock 同策略）。
+    """
+    global _bg_llm_lock
+    loop = asyncio.get_running_loop()
+    if _bg_llm_lock is None or getattr(_bg_llm_lock, "_loop", None) not in (loop, None):
+        _bg_llm_lock = asyncio.Lock()
+    return _bg_llm_lock
+
 
 def _llm() -> AsyncOpenAI | None:
-    """返回 LLM 客户端（模块级复用连接池，配置变化时自动重建），避免每次调用重建客户端。"""
+    """返回 LLM 客户端（模块级复用连接池，配置变化时自动重建）。
+
+    timeout=240 + max_retries=0：提炼为长输出调用，给足单次窗口、不在 SDK 层
+    盲目重试——超时场景由沉淀层延迟退避后自动重试一次（见 _sediment_with_status）。
+    """
     global _llm_client, _llm_client_key
     cfg = get_llm_config()
     if not cfg["api_key"] or cfg["api_key"].startswith("your-"):
         return None
     key = (cfg["base_url"], cfg["api_key"], cfg["model"])
     if _llm_client is None or _llm_client_key != key:
-        _llm_client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=120)
+        _llm_client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"],
+                                  timeout=240, max_retries=0)
         _llm_client_key = key
     return _llm_client
+
+
+async def _chat_stream_text(llm: AsyncOpenAI, *, model: str, messages: list[dict],
+                            temperature: float, max_tokens: int) -> tuple[str, str]:
+    """流式调用并聚合全文，返回 (文本, finish_reason)。
+
+    长输出提炼改用流式：只要持续有 token 就不会触发读超时（非流式长请求易被
+    代理/网关按静默超时掐断，实测沉淀提炼 Request timed out）。
+    按模型官方要求附带 top_p 与思考参数（reasoning_effort/thinking）。
+    """
+    parts: list[str] = []
+    finish = ""
+    stream = await llm.chat.completions.create(
+        model=model, messages=messages, temperature=temperature,
+        top_p=settings.llm_top_p, max_tokens=max_tokens, stream=True,
+        extra_body=settings.llm_extra_body())
+    async for chunk in stream:
+        if not getattr(chunk, "choices", None):
+            continue
+        choice = chunk.choices[0]
+        delta = choice.delta
+        if delta is not None and delta.content:
+            parts.append(delta.content)
+        if choice.finish_reason:
+            finish = choice.finish_reason
+    return "".join(parts), finish
 
 
 def _is_kb_tool_result(m: dict) -> bool:
@@ -276,16 +327,23 @@ async def generate_entries_for_conv(conv_id: str, force: bool = False,
     text = _conversation_text(messages)
     if len(text) < 50:
         return {"status": "skipped", "conv_id": conv_id, "reason": "对话内容过少，无沉淀价值"}
-    resp = await llm.chat.completions.create(
-        model=get_llm_config()["model"],
-        messages=[{"role": "system", "content": WIKI_SYSTEM_PROMPT},
-                  {"role": "user", "content": text}],
-        temperature=0.2, max_tokens=8000)
-    raw = resp.choices[0].message.content or ""
-    finish = (resp.choices[0].finish_reason or "")
+    async with background_llm_lock():
+        raw, finish = await _chat_stream_text(
+            llm, model=get_llm_config()["model"],
+            messages=[{"role": "system", "content": WIKI_SYSTEM_PROMPT},
+                      {"role": "user", "content": text}],
+            temperature=settings.llm_temperature, max_tokens=8000)
     if finish == "length":
         log.warning("知识库提炼输出被截断(conv=%s)，使用截断修复解析", conv_id)
     entries = _parse_entries(raw)
+    if not entries:
+        # 模型判断无沉淀价值（输出 []）或输出无法解析：如实标记并留痕，避免
+        # "完成：新增 0 条 / 更新 0 条" 的会话滞留待沉淀列表且无从诊断
+        excerpt = (raw or "").strip()[:200]
+        log.warning("知识库提炼未产出有效词条(conv=%s finish=%s)，原始输出片段：%r",
+                    conv_id, finish or "unknown", excerpt)
+        return {"status": "skipped", "conv_id": conv_id,
+                "reason": "本次对话无新增沉淀价值（官方内容与已有词条一致或无新知识）"}
     saved, updated = _persist_entries(entries, conv_id, official_refs=_official_refs(messages))
     log.info("知识库沉淀完成 conv=%s 生成=%s 新增=%s 更新=%s", conv_id, len(entries), saved, updated)
     return {"status": "ok", "conv_id": conv_id,
@@ -455,14 +513,14 @@ async def _ingest_via_crawler(url: str, note: str = "") -> dict | None:
                 f"{NL}{NL}案例正文：{NL}{(case.content_text or '')[:8000]}")
     if len(material) < 100:
         return {"status": "error", "reason": "案例内容过少，未能提炼有效知识"}
-    resp = await llm.chat.completions.create(
-        model=get_llm_config()["model"],
+    raw, _finish = await _chat_stream_text(
+        llm, model=get_llm_config()["model"],
         messages=[{"role": "system", "content": WIKI_SYSTEM_PROMPT},
                   {"role": "user",
                    "content": "来源标题：" + case.title + NL2 + "来源链接：" + (case.url or url)
                               + NL2 + NL2 + "以下是需要提炼的案例内容：" + NL2 + material}],
-        temperature=0.2, max_tokens=8000)
-    entries = _parse_entries(resp.choices[0].message.content or "")
+        temperature=settings.llm_temperature, max_tokens=8000)
+    entries = _parse_entries(raw)
     if not entries:
         return {"status": "error", "reason": "未能从案例内容提炼出知识词条，请换一个案例链接"}
     case_ref = [{"title": f"官方案例：{case.title}", "url": case.url or url}]
@@ -513,13 +571,13 @@ async def ingest_url(url: str, note: str = "") -> dict:
     llm = _llm()
     if llm is None:
         return {"status": "skipped", "reason": "未配置 LLM，无法提炼页面内容"}
-    resp2 = await llm.chat.completions.create(
-        model=get_llm_config()["model"],
+    raw2, _finish = await _chat_stream_text(
+        llm, model=get_llm_config()["model"],
         messages=[{"role": "system", "content": WIKI_SYSTEM_PROMPT},
                   {"role": "user",
-                   "content": f"来源标题：{title}\n来源链接：{url}\n\n以下是需要提炼的网页内容：\n{text}"}],
-        temperature=0.2, max_tokens=8000)
-    entries = _parse_entries(resp2.choices[0].message.content or "")
+                   "content": f"来源标题：{title}（来源链接：{url}）\n\n以下是需要提炼的网页内容：\n{text}"}],
+        temperature=settings.llm_temperature, max_tokens=8000)
+    entries = _parse_entries(raw2)
     if not entries:
         return {"status": "error",
                 "reason": "页面内容未提炼出有价值的知识词条（可能是导航/列表类页面），"
@@ -638,7 +696,8 @@ async def generate_reflection(start: str = "", end: str = "") -> dict:
         model=get_llm_config()["model"],
         messages=[{"role": "system", "content": REFLECTION_SYSTEM_PROMPT},
                   {"role": "user", "content": material[:6000]}],
-        temperature=0.3, max_tokens=2500)
+        temperature=settings.llm_temperature, top_p=settings.llm_top_p,
+        max_tokens=4096, extra_body=settings.llm_extra_body())
     content = (resp.choices[0].message.content or "").strip()
     if not content:
         return {"status": "skipped", "reason": "模型未返回内容，请重试"}
@@ -647,14 +706,24 @@ async def generate_reflection(start: str = "", end: str = "") -> dict:
     return {"status": "ok", "reflection": rec}
 
 
-async def _sediment_with_status(conv_id: str, since_id: int | None = None) -> dict:
-    """执行一次沉淀并记录进度（自动/手动路径共用，供待沉淀列表展示）。"""
+async def _sediment_with_status(conv_id: str, since_id: int | None = None,
+                                _retried: bool = False) -> dict:
+    """执行一次沉淀并记录进度（自动/手动路径共用，供待沉淀列表展示）。
+
+    异常类失败（如提炼调用超时）自动退避重试一次；仍失败标记 failed 并保留
+    在待沉淀列表供手动勾选重试。
+    """
     db.save_kb_sediment_status(conv_id, "running", "正在提炼知识词条")
     try:
         r = await generate_entries_for_conv(conv_id, since_id=since_id)
     except Exception as e:
-        db.save_kb_sediment_status(conv_id, "failed", f"沉淀失败：{e}")
-        raise
+        if _retried:
+            db.save_kb_sediment_status(conv_id, "failed", f"沉淀失败：{e}（可在列表勾选重试）")
+            raise
+        db.save_kb_sediment_status(conv_id, "pending",
+                                   f"提炼失败（{e}），{SEDIMENT_RETRY_DELAY:.0f}s 后自动重试")
+        await asyncio.sleep(SEDIMENT_RETRY_DELAY)
+        return await _sediment_with_status(conv_id, since_id=since_id, _retried=True)
     if r.get("status") == "ok":
         db.save_kb_sediment_status(
             conv_id, "done",

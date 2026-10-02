@@ -147,6 +147,42 @@ CREATE TABLE IF NOT EXISTS channel_bindings (
     updated_at TEXT NOT NULL,
     UNIQUE(channel, sender_id)
 );
+CREATE TABLE IF NOT EXISTS netdev_devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    vendor TEXT NOT NULL DEFAULT 'huawei',       -- huawei / h3c / cisco / ruijie / zte / other
+    model TEXT NOT NULL DEFAULT '',
+    host TEXT NOT NULL,                          -- 管理地址（IP/域名）
+    port INTEGER NOT NULL DEFAULT 22,
+    username TEXT NOT NULL DEFAULT '',
+    password TEXT NOT NULL DEFAULT '',
+    enable_password TEXT NOT NULL DEFAULT '',    -- enable/super 口令（可选）
+    group_name TEXT NOT NULL DEFAULT '',         -- 分组（如"总部核心"）
+    last_ok_at TEXT NOT NULL DEFAULT '',         -- 最近一次连接测试成功时间
+    created_at TEXT NOT NULL,
+    UNIQUE(host, port)
+);
+CREATE TABLE IF NOT EXISTS netdev_tasks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    commands TEXT NOT NULL,                      -- JSON 数组：待执行命令列表
+    device_ids TEXT NOT NULL,                    -- JSON 数组：目标设备 id
+    status TEXT NOT NULL DEFAULT 'running',      -- running / done / failed
+    timeout REAL NOT NULL DEFAULT 30,
+    created_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS netdev_task_items (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    device_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',      -- pending / running / ok / failed
+    output TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    duration REAL NOT NULL DEFAULT 0,
+    finished_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -780,7 +816,9 @@ def conv_kb_sedimented(conv_id: str) -> bool:
 
 def list_pending_kb_convs() -> list[str]:
     """待沉淀对话：官方知识库实际命中（agent.kb.hit）或用户明确要求沉淀（record_to_kb），
-    且尚未沉淀、未被忽略。仅调用过知识库但未命中（未返回内容）的会话不进入队列。
+    且尚未沉淀、未被忽略、最近一次沉淀不是"已完成但零产出/无沉淀价值"。
+
+    会话再次命中知识库时会重新进入沉淀流程（进度状态被重置），自动重新出现。
     """
     with _connect() as conn:
         rows = conn.execute(
@@ -789,6 +827,9 @@ def list_pending_kb_convs() -> list[str]:
             " AND conv_id != ''"
             " AND conv_id NOT IN (SELECT DISTINCT conv_id FROM kb_entries)"
             " AND conv_id NOT IN (SELECT conv_id FROM kb_dismissed)"
+            " AND conv_id NOT IN (SELECT conv_id FROM kb_sediment_status"
+            "                     WHERE status='skipped'"
+            "                        OR (status='done' AND saved=0))"
             " ORDER BY ts DESC").fetchall()
     return [r["conv_id"] for r in rows]
 
@@ -930,3 +971,121 @@ def kb_stats() -> dict:
     tags = group_tags(list_kb_entries(limit=1000))
     return {"total": total, "categories": categories, "tags": tags,
             "timeline": timeline, "reflections": len(list_kb_reflections(limit=1000))}
+
+
+# ---------------- 网络设备管理（SSH 交换机/路由器） ----------------
+
+def list_netdev_devices(group: str = "") -> list[dict]:
+    with _connect() as conn:
+        if group:
+            rows = conn.execute("SELECT * FROM netdev_devices WHERE group_name=? ORDER BY created_at",
+                                (group,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM netdev_devices ORDER BY created_at").fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_netdev_device(device_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM netdev_devices WHERE id=?", (device_id,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def save_netdev_device(data: dict) -> dict:
+    data = {"name": "", "vendor": "huawei", "model": "", "port": 22, "username": "",
+            "password": "", "enable_password": "", "group_name": "", "last_ok_at": "",
+            **data, "id": data.get("id") or new_id("nd_"),
+            "created_at": data.get("created_at") or now()}
+    with _connect() as conn:
+        # 显式 id（编辑已有设备）：直接按 id 更新（允许修改 host/port）
+        row = conn.execute("SELECT id FROM netdev_devices WHERE id=?",
+                           (data["id"],)).fetchone() if data.get("id") else None
+        if row:
+            conn.execute(
+                "UPDATE netdev_devices SET name=:name, vendor=:vendor, model=:model,"
+                " host=:host, port=:port, username=:username, password=:password,"
+                " enable_password=:enable_password, group_name=:group_name WHERE id=:id", data)
+            return get_netdev_device(data["id"])
+        # 同 host:port 幂等保存：已有记录沿用其 id（批量导入重复行=更新而非新建）
+        row = conn.execute("SELECT id FROM netdev_devices WHERE host=? AND port=?",
+                           (data["host"], data["port"])).fetchone()
+        if row:
+            data["id"] = row["id"]
+        conn.execute(
+            "INSERT INTO netdev_devices (id,name,vendor,model,host,port,username,password,"
+            "enable_password,group_name,last_ok_at,created_at)"
+            " VALUES (:id,:name,:vendor,:model,:host,:port,:username,:password,"
+            ":enable_password,:group_name,:last_ok_at,:created_at)"
+            " ON CONFLICT(host, port) DO UPDATE SET name=:name, vendor=:vendor, model=:model,"
+            " username=:username, password=:password, enable_password=:enable_password,"
+            " group_name=:group_name",
+            data)
+    return get_netdev_device(data["id"])
+
+
+def delete_netdev_device(device_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM netdev_devices WHERE id=?", (device_id,))
+
+
+def update_netdev_last_ok(device_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE netdev_devices SET last_ok_at=? WHERE id=?", (now(), device_id))
+
+
+def create_netdev_task(task: dict) -> dict:
+    rec = {"id": new_id("ndt_"), "name": task.get("name", ""), "status": "running",
+           "timeout": float(task.get("timeout", 30)), "created_at": now(), "finished_at": "",
+           "commands": json.dumps(task.get("commands") or [], ensure_ascii=False),
+           "device_ids": json.dumps(task.get("device_ids") or [], ensure_ascii=False)}
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO netdev_tasks (id,name,commands,device_ids,status,timeout,created_at,finished_at)"
+            " VALUES (:id,:name,:commands,:device_ids,:status,:timeout,:created_at,:finished_at)", rec)
+    return rec
+
+
+def save_netdev_task_item(item: dict) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO netdev_task_items (id,task_id,device_id,device_name,status,output,error,duration,finished_at)"
+            " VALUES (:id,:task_id,:device_id,:device_name,:status,:output,:error,:duration,:finished_at)",
+            {"id": item.get("id") or new_id("ndi_"), "task_id": item["task_id"],
+             "device_id": item["device_id"], "device_name": item.get("device_name", ""),
+             "status": item.get("status", "pending"), "output": item.get("output", ""),
+             "error": item.get("error", ""), "duration": float(item.get("duration", 0)),
+             "finished_at": item.get("finished_at", "") or now()})
+
+
+def finish_netdev_task(task_id: str, status: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE netdev_tasks SET status=?, finished_at=? WHERE id=?",
+                     (status, now(), task_id))
+
+
+def list_netdev_tasks(limit: int = 20) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM netdev_tasks ORDER BY created_at DESC LIMIT ?",
+                            (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = _row_to_dict(r)
+        d["commands"] = json.loads(d.get("commands") or "[]")
+        d["device_ids"] = json.loads(d.get("device_ids") or "[]")
+        out.append(d)
+    return out
+
+
+def get_netdev_task(task_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM netdev_tasks WHERE id=?", (task_id,)).fetchone()
+    if not row:
+        return None
+    d = _row_to_dict(row)
+    d["commands"] = json.loads(d.get("commands") or "[]")
+    d["device_ids"] = json.loads(d.get("device_ids") or "[]")
+    d["items"] = []
+    for it in conn.execute("SELECT * FROM netdev_task_items WHERE task_id=? ORDER BY id",
+                           (task_id,)).fetchall():
+        d["items"].append(_row_to_dict(it))
+    return d

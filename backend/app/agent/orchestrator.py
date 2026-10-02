@@ -218,14 +218,17 @@ class AgentOrchestrator:
             return
 
         try:
-            resp = await llm.chat.completions.create(
-                model=get_llm_config()["model"],
-                messages=[
-                    {"role": "system", "content": memory_extract_prompt()},
-                    {"role": "user", "content": conversation_text[:3000]},
-                ],
-                temperature=0.3, max_tokens=800,
-            )
+            # 与知识沉淀共用后台串行锁：同一 API Key 并发长调用会互相挤兑超时
+            async with personal_kb_service.background_llm_lock():
+                resp = await llm.chat.completions.create(
+                    model=get_llm_config()["model"],
+                    messages=[
+                        {"role": "system", "content": memory_extract_prompt()},
+                        {"role": "user", "content": conversation_text[:3000]},
+                    ],
+                    temperature=settings.llm_temperature, top_p=settings.llm_top_p,
+                    max_tokens=2048, extra_body=settings.llm_extra_body(),
+                )
             summary, fact_text = _parse_memory_extract(resp.choices[0].message.content or "")
             if summary:
                 db.save_conv_summary(conv_id, summary, device_id)
@@ -334,8 +337,9 @@ class AgentOrchestrator:
                     {"role": "system", "content": skills.skill_catalog_message(dtype)},
                     {"role": "user", "content": user_message[:500]},
                 ],
-                temperature=0.0, max_tokens=16,
-            ), timeout=1.5)
+                temperature=settings.llm_temperature, top_p=settings.llm_top_p,
+                max_tokens=1024, extra_body=settings.llm_extra_body(),
+            ), timeout=4.0)
             return skills.parse_skill_choice(resp.choices[0].message.content or "", dtype)
         except (asyncio.TimeoutError, Exception):   # noqa: BLE001 —— 选择失败/超时不影响主流程
             return None
@@ -386,7 +390,8 @@ class AgentOrchestrator:
             try:
                 stream = await self._llm().chat.completions.create(
                     model=get_llm_config()["model"], messages=messages, tools=tool_schemas,
-                    temperature=settings.llm_temperature, stream=True)
+                    temperature=settings.llm_temperature, top_p=settings.llm_top_p,
+                    stream=True, extra_body=settings.llm_extra_body(stream=True))
                 async for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta is None:

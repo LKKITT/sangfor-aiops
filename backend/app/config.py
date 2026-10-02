@@ -25,7 +25,25 @@ class Settings:
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_model: str = os.getenv("LLM_MODEL", "glm-4-flash")
-    llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+    # 采样与思考参数按模型官方要求：temperature=1、top_p=0.95、reasoning_effort=max、
+    # thinking.type=enabled（该模型仅支持 enabled），流式工具调用开启 tool_stream
+    llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "1"))
+    llm_top_p: float = float(os.getenv("LLM_TOP_P", "0.95"))
+    llm_reasoning_effort: str = os.getenv("LLM_REASONING_EFFORT", "max")
+    llm_tool_stream: bool = _bool("LLM_TOOL_STREAM", "true")
+
+    def llm_extra_body(self, stream: bool = False) -> dict:
+        """推理型模型要求的额外请求参数（经 openai SDK extra_body 透传到请求体）。
+
+        stream=True 时附带 tool_stream（流式工具调用参数增量返回）；非流式调用不带。
+        """
+        extra: dict = {
+            "reasoning_effort": self.llm_reasoning_effort,
+            "thinking": {"type": "enabled", "clear_thinking": False},
+        }
+        if stream and self.llm_tool_stream:
+            extra["tool_stream"] = True
+        return extra
 
     # 运行模式
     readonly_mode: bool = _bool("READONLY_MODE")

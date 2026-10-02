@@ -4,6 +4,51 @@
 
 ---
 
+## 2026-09-19
+
+### feat: 网络设备管理扩充厂家至 12 个 + 设备筛选
+- 新增 6 个厂家档案：Juniper JunOS（set cli screen-length 0）、HPE Aruba（no paging）、Dell Networking、TP-Link（terminal length 0）、MikroTik RouterOS（无分页，/system resource print）、Nokia SR OS（environment no more）——连同既有华为/H3C/思科/锐捷/中兴/通用共 12 种，批量执行与 WS 控制台自动生效
+- 分页命令为空时跳过发送（MikroTik 无分页概念）；API 厂家白名单、前端配色标签、批量导入校验（动态取厂家接口+静态兜底）、CSV 模板示例同步扩展
+- 设备列表两个 Tab（设备管理/批量执行选择器）新增**筛选框**：单关键字模糊匹配名称/IP/分组/型号，前端即时过滤并显示命中数，两 Tab 共用筛选状态（勾选不受影响）
+- 新增 3 个测试（新厂家档案/接口白名单收录/下拉与保存联动），全量 195/195 通过
+
+### fix: 老设备 SSH 传统算法兼容 + 设备导出
+- 修复 H3C 老固件 SSH 连接失败（No matching encryption algorithm…aes128-cbc,3des-cbc）：asyncssh 默认提案不含 CBC/3DES 传统加密与 SHA1 DH 交换——新增共享连接参数 `ssh_connect_kwargs()`，以 "+" 前缀在默认算法基础上追加传统算法（encryption/kex/host-key 三类，与 AF 适配器放宽 SSL SECLEVEL 同理的存量设备兼容取舍），批量执行与 WS 控制台共用
+- 头部去掉「CSV 模板」按钮（保留在批量导入弹窗内），新增**设备导出**：`GET /api/netdev/devices/export` 输出与导入模板同格式的 CSV（含口令列，导出→导入可往返迁移），前端一键下载带 BOM
+- 新增 3 个测试：连接参数经 SSHClientConnectionOptions 真实构造校验（防再犯 encrypt_algs 类错误）、算法 "+" 追加格式断言、导出 CSV 往返；全量 196/196 通过（venv）
+
+### fix: 网络设备管理——控制台无反应修复 + 布局美化
+- 修复点击「控制台」无反应：① 组件内 `console` ref 遮蔽浏览器全局 console 且模板 v-model 对嵌套 ref 属性写入不解包——改名为独立布尔/对象状态；② xterm 的 `css/xterm.css` 此前未导入，终端渲染不可见——静态导入；③ 终端初始化套 try/catch + 消息提示不再静默；连接状态指示灯（连接中/已连接）
+- 修复 asyncssh 终端参数误用（第二次同类问题）：`create_process` 无 `term_width/term_height`，正确为 `term_size=(宽,高)`（批量执行与 WS 控制台两处）；新增签名回归测试——用真实 asyncssh 的 create_session 签名校验源码中所有 create_process 关键字参数，此类拼错今后在测试阶段即被拦截
+- 布局美化：顶部渐变标题条 + 统计卡片（设备总数/分组/连通正常/待测）；厂家彩色标签（华为红/H3C 橙/思科蓝等）+ 等宽字体地址列 + 连通性圆点徽标；批量执行改左右栅格（设备选择 1/3 + 命令与结果 2/3），结果改折叠面板（状态 tag/耗时/错误行内展示，终端风输出区）；控制台连接状态点、统一间距字号
+
+### fix: 网络设备管理四项修复（测试 500 / CSV 模板 / 控制台）
+- 修复连接测试 HTTP 500 与批量执行报错：run_commands 误传 asyncssh 不存在的 `encrypt_algs` 参数抛 TypeError 未捕获——移除该参数、补全异常兜底（未预期异常转友好失败不逃逸）；WebSocket 控制台端点与批量执行共用参数口径
+- 批量导入升级：支持**上传 CSV 文件**导入（带双引号字段解析，口令含逗号可用引号包裹，自动跳过表头行），并提供 **CSV 模板下载**（含表头与 3 行示例，带 BOM 防 Excel 乱码）
+- 新增**设备控制台**：每台设备一键打开浏览器内交互式 SSH 终端（xterm.js + 后端 WebSocket 双向透传，支持终端尺寸自适应与提权），关闭弹窗即断开会话
+- vite 代理开启 ws 转发；新增 3 个回归测试（异常兜底/连接参数白名单/真实 asyncssh 不可达降级，无 asyncssh 的解释器自动跳过），全量 192/192 通过
+
+### feat: 新增「网络设备管理」主菜单（SSH 交换机/路由器批量管理）
+- 新增主菜单「网络设备管理」：管理 AI 对话设备（AF/AC/SCP）之外的常见厂家交换机/路由器，SSH 远程管理
+- 设备管理：单台添加 / 批量添加（每行一台 CSV 格式，同 host:port 幂等更新）；厂家档案覆盖华为 VRP / H3C Comware / 思科 IOS / 锐捷 RGSOS / 中兴 ZXR10 / 通用（各自分页关闭命令、版本命令与提示符特征）；连接测试（SSH 建连 + 版本命令，回显关键信息）；可选 enable/super 提权口令
+- 批量执行子页：勾选任意多台设备（跨厂家混合），粘贴每行一条的命令清单，**并行执行**（asyncio.gather + 信号量限流，同批最多 10 台同时在线 SSH 会话），进度实时落库并 1.2s 轮询刷新（等待/执行中/成功/失败 + 耗时），结果终端风着色展示、支持导出 txt；单台失败不阻塞同批其他设备，全失败任务标 failed
+- 后端：`netdev_devices/netdev_tasks/netdev_task_items` 三表 + CRUD；`netdev_service`（asyncssh 交互式会话、提示符/空闲窗口双判定输出结束、输出口令脱敏）；API `/api/netdev/*`（设备 CRUD/批量导入/连接测试/执行/任务进度），出参不回传密码
+- 依赖新增 asyncssh（requirements.txt）；前端新增 NetDevView（设备管理/批量执行两 Tab）；新增 7 个后端测试（CRUD 幂等/厂商档案/假 SSH 批量编排/进度落库/API 冒烟），全量 189/189 通过
+
+### fix: AF NAT 策略真实设备写格式翻译（静默失败修复）
+- 修复真实 AF 设备上修改 NAT（如 DNAT 目的地址）返回"成功"但配置不变：PATCH /nats 要求原生嵌套结构（DNAT 目的地址在 dnat.dstIpobj.specifyIp），扁平字段被设备静默忽略。新增 NAT 写翻译层——update 以设备当前原生规则为基底仅覆盖变更字段（dst_addr→dstIpobj、translated_addr→transfer（IP/IP_RANGE/IPGROUP）、translated_port→transferPort、SNAT dst_zone→dstNetobj.zone），create 按文档构造完整载荷；BNAT 仅翻译通用字段
+- 顺带修复 NAT 读取缺口：转换地址 ipRange（地址池范围）与 transferPort 数组形态此前回读为空
+- 新增 9 个 NAT 翻译测试（复刻故障场景/引用形态/范围池往返/创建载荷），全量 184/184 通过
+
+## 2026-09-18
+
+### feat: 接入推理型模型官方要求参数（temperature/top_p/thinking/tool_stream）
+- 按模型官方要求全量调整 LLM 调用参数：`temperature=1`、`top_p=0.95`、`reasoning_effort=max`、`thinking.type=enabled`（仅支持 enabled）+ `clear_thinking=false`；流式工具调用开启 `tool_stream`（经 openai SDK `extra_body` 透传，标准参数直接传递）
+- 新增配置项（`LLM_TOP_P`/`LLM_REASONING_EFFORT`/`LLM_TOOL_STREAM`，`LLM_TEMPERATURE` 默认改 1），`.env`/`.env.example` 同步；`Settings.llm_extra_body(stream)` 统一生成附加参数
+- 适配思考模型的输出预算：主对话不设上限不变；技能路由 16→1024（超时 1.5s→4s，超时仍回退全量模式）、记忆提取 800→2048、知识沉淀提炼 3500→8000（流式调用不受长生成超时影响）、反思报告 2500→4096
+- 思考过程的 reasoning_content 增量默认不进入对话正文（编排器仅聚合 content），前端观感不变
+- 更新流式提炼测试断言（stream/max_tokens/top_p/thinking 参数透传），全量 175/175 通过
+
 ## 2026-09-17
 
 ### fix: AF 应用控制策略（ACL）真实设备写格式翻译与引用对象自动创建

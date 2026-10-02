@@ -1,5 +1,6 @@
 """个人知识库测试：词条 CRUD/去重/待沉淀定位/统计 + WIKI 解析 + 无 LLM 降级。"""
 import asyncio
+import json
 
 import pytest
 
@@ -414,3 +415,159 @@ async def test_resume_confirm_kb_tool_skips_device_login(device_id, monkeypatch)
     types = [e["type"] for e in events]
     assert "confirm_result" in types and "error" not in types
     assert db.get_pending_action(action["id"])["status"] == "executed"
+
+
+# ---------- 沉淀提炼稳定性：自动重试 / 流式调用 / 后台串行锁 ----------
+
+@pytest.mark.asyncio
+async def test_sediment_auto_retry_on_transient_failure(device_id, monkeypatch):
+    """提炼异常（如超时）自动退避重试一次：重试成功即 done，note 不再是 failed。"""
+    conv = db.create_conversation("沉淀重试测试")["id"]
+    db.audit("agent.kb.hit", {"args": {"question": "q"}}, conv_id=conv)
+    monkeypatch.setattr(pks, "SEDIMENT_RETRY_DELAY", 0.0)
+    calls = {"n": 0}
+
+    async def fake_generate(c, force=False, since_id=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("Request timed out.")
+        return {"status": "ok", "conv_id": c, "generated": 1, "saved": 1, "updated": 0}
+
+    monkeypatch.setattr(pks, "generate_entries_for_conv", fake_generate)
+    r = await pks._sediment_with_status(conv)
+    assert calls["n"] == 2 and r["saved"] == 1
+    st = db.get_kb_sediment_status(conv)
+    assert st["status"] == "done" and "重试" not in st["status"]
+
+
+def _chunk(content, finish=None):
+    import types
+    return types.SimpleNamespace(
+        choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content=content),
+                                       finish_reason=finish)])
+
+
+@pytest.mark.asyncio
+async def test_generate_entries_uses_streaming(device_id, monkeypatch):
+    """知识沉淀提炼改为流式调用（stream=True）且 max_tokens 收敛为 3500，词条正常落库。"""
+    import types
+    from types import SimpleNamespace as NS
+
+    topic = f"AF IPv6 支持与开启方式 {db.new_id()[-6:]}"
+    entry_json = json.dumps([{
+        "topic": topic, "category": "配置方法", "summary": "s", "content_md": "c",
+        "key_points": [], "tags": [], "references": [],
+        "aliases": [], "related": [],
+    }], ensure_ascii=False)
+
+    class _FakeCompletions:
+        def __init__(self):
+            self.calls = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+
+            async def _gen():
+                yield _chunk(entry_json[:20])
+                yield _chunk(entry_json[20:], "stop")
+            return _gen()
+
+    fake_completions = _FakeCompletions()
+
+    class _FakeLLM:
+        chat = NS(completions=fake_completions)
+
+    monkeypatch.setattr(pks, "_llm", lambda: _FakeLLM())
+
+    conv = db.create_conversation("流式提炼测试")["id"]
+    db.add_message(conv, "user", {"text": "这个设备是否支持IPv6，如何开启？"})
+    db.add_message(conv, "tool", {"tool_call_id": "c1", "name": "search_official_knowledge",
+                                  "content": json.dumps({
+                                      "source": "zhuge_official_kb", "status": "ok",
+                                      "answer": "支持 IPv6，请在 Web 界面开启 IPv6 功能并配置接口地址。",
+                                      "references": [{"title": "官方文档"}]}, ensure_ascii=False)})
+    db.add_message(conv, "assistant", {"text": "支持。开启方式如下：进入网络配置 → IPv6，启用后配置接口地址与路由。"})
+    r = await pks.generate_entries_for_conv(conv)
+    assert r["status"] == "ok" and r["saved"] == 1
+    assert fake_completions.calls[0]["stream"] is True
+    assert fake_completions.calls[0]["max_tokens"] == 8000
+    assert fake_completions.calls[0]["top_p"] == 0.95
+    assert fake_completions.calls[0]["extra_body"]["thinking"] == {
+        "type": "enabled", "clear_thinking": False}
+    assert db.get_kb_entry_by_topic(topic) is not None
+
+
+@pytest.mark.asyncio
+async def test_background_llm_lock_serialized():
+    """后台串行锁：同一事件循环内多次获取返回同一把锁，且互斥执行。"""
+    lock = pks.background_llm_lock()
+    assert lock is pks.background_llm_lock()
+    order = []
+
+    async def worker(tag):
+        async with pks.background_llm_lock():
+            order.append(f"{tag}-start")
+            await asyncio.sleep(0.01)
+            order.append(f"{tag}-end")
+
+    await asyncio.gather(worker("a"), worker("b"))
+    assert order == ["a-start", "a-end", "b-start", "b-end"] or \
+        order == ["b-start", "b-end", "a-start", "a-end"]
+
+
+# ---------- 零产出沉淀不滞留待沉淀列表（回归：done 0/0 一直显示） ----------
+
+def test_pending_excludes_zero_yield_and_skipped():
+    """最近一次沉淀为零产出（done 0/0）或已判定无沉淀价值（skipped）的会话不再显示；
+    失败/进行中的会话保留；会话再次命中（状态重置为排队）时重新出现。"""
+    def _mk(tag):
+        conv = db.create_conversation(f"零产出测试{tag}")["id"]
+        db.audit("agent.kb.hit", {"args": {"question": tag}}, conv_id=conv)
+        return conv
+
+    c_zero = _mk("zero")
+    db.save_kb_sediment_status(c_zero, "done", "完成：新增 0 条 / 更新 0 条", saved=0)
+    c_skip = _mk("skip")
+    db.save_kb_sediment_status(c_skip, "skipped", "本次对话无新增沉淀价值")
+    c_fail = _mk("fail")
+    db.save_kb_sediment_status(c_fail, "failed", "沉淀失败：Request timed out.")
+    c_run = _mk("run")
+    db.save_kb_sediment_status(c_run, "running", "正在提炼知识词条")
+
+    pending = db.list_pending_kb_convs()
+    assert c_zero not in pending and c_skip not in pending     # 零产出/无价值：不显示
+    assert c_fail in pending and c_run in pending              # 失败/进行中：保留可重试
+
+    # 再次命中知识库：进度重置为排队，重新出现在待沉淀列表
+    db.audit("agent.kb.hit", {"args": {"question": "再问一次"}}, conv_id=c_zero)
+    db.save_kb_sediment_status(c_zero, "pending", "排队等待自动沉淀")
+    assert c_zero in db.list_pending_kb_convs()
+
+
+@pytest.mark.asyncio
+async def test_generate_empty_entries_returns_skipped_with_log(device_id, monkeypatch, caplog):
+    """提炼输出为空（模型判定无价值/无法解析）：返回 skipped 并记录原始输出片段。"""
+    import types
+    from types import SimpleNamespace as NS
+
+    class _FakeCompletions:
+        async def create(self, **kwargs):
+            async def _gen():
+                yield _chunk("本次对话内容与已有知识一致，无需沉淀。", "stop")
+            return _gen()
+
+    class _FakeLLM:
+        chat = NS(completions=_FakeCompletions())
+
+    monkeypatch.setattr(pks, "_llm", lambda: _FakeLLM())
+
+    conv = db.create_conversation("空产出测试")["id"]
+    db.add_message(conv, "user", {"text": "这个设备是否支持IPv6？"})
+    db.add_message(conv, "tool", {"tool_call_id": "c1", "name": "search_official_knowledge",
+                                  "content": json.dumps({
+                                      "source": "zhuge_official_kb", "status": "ok",
+                                      "answer": "支持 IPv6，开启方式详见官方文档。",
+                                      "references": []}, ensure_ascii=False)})
+    db.add_message(conv, "assistant", {"text": "支持 IPv6。"})
+    r = await pks.generate_entries_for_conv(conv)
+    assert r["status"] == "skipped" and "无新增沉淀价值" in r["reason"]

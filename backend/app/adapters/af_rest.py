@@ -8,6 +8,7 @@
 - 设备 HTTPS 普遍使用旧密码套件（如 TLS1.2 + AES256-SHA）：关闭证书校验并放宽 SSL 安全等级。
 """
 import asyncio
+import re
 import ssl
 import time
 from typing import Any
@@ -611,9 +612,7 @@ class AfRestClient(DeviceClient):
                     transfer_dst = body.get("transferDst") or {}
                     transfer_src = body.get("transferSrc") or {}
                     dst_ip = self._first((body.get("dstIpobj") or {}).get("specifyIp"), "")
-                    translated = transfer_dst.get("specifyIp", "")
-                    if isinstance(translated, list):
-                        translated = ",".join(str(x) for x in translated)
+                    translated = self._transfer_addr_str(transfer_dst)
                     port = ""
                     tports = transfer_dst.get("transferPort") or []
                     if tports:
@@ -633,10 +632,8 @@ class AfRestClient(DeviceClient):
                 else:
                     body = r.get("dnat") or r.get("snat") or {}
                     transfer = body.get("transfer") or {}
-                    translated = transfer.get("specifyIp", "")
-                    if isinstance(translated, list):
-                        translated = ",".join(str(x) for x in translated)
-                    port = transfer.get("specifyPort") or transfer.get("port") or ""
+                    translated = self._transfer_addr_str(transfer)
+                    port = self._transfer_port_str(transfer)
                     dst_obj = body.get("dstIpobj") or {}
                     dst_ip = self._first(dst_obj.get("specifyIp"), "") if ntype == "DNAT" else ""
                     out.append(NatRule(
@@ -856,6 +853,13 @@ class AfRestClient(DeviceClient):
             raise DeviceError(f"不支持的资源类型：{change.resource}")
         base = f"/api/v1/namespaces/{self.namespace}{path}"
         data = self._translate_write(change) if self.real_shape else change.data
+        if self.real_shape and change.resource == "nat" and change.op == "update":
+            # NAT 要求原生嵌套结构（DNAT 目的地址在 dnat.dstIpobj.specifyIp 等），
+            # 扁平字段会被设备静默忽略——返回成功但配置不变
+            raw = await self._raw_native_rule(self._PATHS["nat"], change.target_id)
+            data = self._nat_native_payload(raw, change.data)
+        if self.real_shape and change.resource == "nat" and change.op == "create":
+            data = self._nat_create_payload(change.data)
         if self.real_shape and change.resource == "acl":
             if change.op in ("update", "create"):
                 # 引用的 IP组/服务 不存在时自动创建（裸 IP/网段 → 同名网络对象；
@@ -1175,6 +1179,198 @@ class AfRestClient(DeviceClient):
                     "applications": split_list(data.get("app")) or ["全部"]},
             "advanceOption": {"logEnable": bool(data.get("log", False))},
         }
+
+    # ---------- NAT 策略真实设备原生格式 ----------
+    async def _raw_native_rule(self, path: str, rule_id: str) -> dict:
+        """按 uuid/name 取设备上的原生 NAT 策略（更新时的基底）。"""
+        data = await self._request("GET", f"/api/v1/namespaces/{self.namespace}{path}",
+                                   {"_start": 0, "_length": MAX_PAGE_LENGTH})
+        for r in self._rows(data):
+            if r.get("uuid") == rule_id or r.get("id") == rule_id or r.get("name") == rule_id:
+                return r
+        raise DeviceError(f"未找到 NAT 策略 {rule_id}，可能已被删除，请刷新策略列表后重试")
+
+    @classmethod
+    @staticmethod
+    def _transfer_addr_str(transfer: dict) -> str:
+        """原生 transfer → 转换地址串（兼容 specifyIp 列表/单值与 ipRange 范围）。"""
+        translated = transfer.get("specifyIp", "")
+        if isinstance(translated, list):
+            translated = ",".join(str(x) for x in translated)
+        if not translated and isinstance(transfer.get("ipRange"), dict):
+            rg = transfer["ipRange"]
+            translated = f"{rg.get('start', '')}-{rg.get('end', '')}"
+        return str(translated or "")
+
+    @staticmethod
+    def _transfer_port_str(transfer: dict) -> str:
+        """原生 transfer → 端口串（兼容 specifyPort/port 旧形态与 transferPort 数组）。"""
+        port = transfer.get("specifyPort") or transfer.get("port") or ""
+        tports = transfer.get("transferPort") or []
+        if not port and tports:
+            parts = []
+            for tp in tports:
+                if isinstance(tp, dict):
+                    start, end = tp.get("start"), tp.get("end")
+                    parts.append(str(start) if start == end else f"{start}-{end}")
+                else:
+                    parts.append(str(tp))
+            port = ",".join(parts)
+        return str(port or "")
+
+    def _nat_flat_of_raw(self, raw: dict) -> dict:
+        """原生 NAT 策略 → 扁平字段（变更比对用，口径与 get_nat_rules 一致）。"""
+        ntype = str(raw.get("natType", "SNAT")).upper()
+        body = raw.get("bnat") if ntype == "BNAT" else (raw.get("dnat") or raw.get("snat"))
+        body = body if isinstance(body, dict) else {}
+        transfer = body.get("transfer") if isinstance(body.get("transfer"), dict) else {}
+        translated = self._transfer_addr_str(transfer)
+        port = self._transfer_port_str(transfer)
+        if ntype == "DNAT":
+            dst = self._first((body.get("dstIpobj") or {}).get("specifyIp"), "")
+        else:
+            dst = self._join(body.get("dstIpGroups"))
+        return {
+            "name": raw.get("name", ""),
+            "enabled": bool(raw.get("enable", True)),
+            "comment": raw.get("description", ""),
+            "src_zone": self._first(body.get("srcZones"), "any"),
+            "src_addr": self._join(body.get("srcIpGroups")),
+            "service": self._join(body.get("natService") or body.get("services")),
+            "dst_addr": dst or "any",
+            "translated_addr": str(translated or ""),
+            "translated_port": str(port or ""),
+        }
+
+    @staticmethod
+    def _split_refs(value) -> list[str]:
+        return [p.strip() for p in str(value or "").replace("，", ",").split(",") if p.strip()]
+
+    @classmethod
+    def _dst_ipobj(cls, value) -> dict:
+        """扁平 dst_addr → 原生 dstIpobj：全为 IP/网段 → IP 列表；否则按 IP组名引用。"""
+        parts = cls._split_refs(value)
+        if parts and all(cls._ip_like(x) for x in parts):
+            return {"dstIpobjType": "IP", "specifyIp": parts}
+        return {"dstIpobjType": "IPGROUP", "ipGroups": parts}
+
+    @staticmethod
+    def _parse_ports(value) -> list[dict]:
+        """'8080' / '8080-8090,9090' → transferPort [{start,end}]。"""
+        ports = []
+        for part in AfRestClient._split_refs(value):
+            m = re.fullmatch(r"(\d{1,5})(?:\s*-\s*(\d{1,5}))?", part)
+            if not m:
+                continue
+            start, end = int(m.group(1)), int(m.group(2) or m.group(1))
+            ports.append({"start": start, "end": end})
+        return ports
+
+    @classmethod
+    def _apply_transfer(cls, transfer: dict, data: dict, cur: dict) -> dict:
+        """把 translated_addr/translated_port 的变更合并进原生 transfer 结构。"""
+        transfer = transfer if isinstance(transfer, dict) else {}
+        if "translated_addr" in data and str(data["translated_addr"]) != str(cur.get("translated_addr")):
+            val = str(data["translated_addr"]).strip()
+            if "-" in val and not val.count(":"):
+                start, _, end = val.partition("-")
+                transfer.update({"transferType": "IP_RANGE",
+                                 "ipRange": {"start": start.strip(), "end": end.strip()}})
+                transfer.pop("specifyIp", None)
+                transfer.pop("ipGroups", None)
+            elif cls._ip_like(val):
+                transfer.update({"transferType": "IP", "specifyIp": val})
+                transfer.pop("ipRange", None)
+                transfer.pop("ipGroups", None)
+            elif val:
+                transfer.update({"transferType": "IPGROUP", "ipGroups": cls._split_refs(val)})
+                transfer.pop("specifyIp", None)
+                transfer.pop("ipRange", None)
+        if "translated_port" in data and str(data["translated_port"]) != str(cur.get("translated_port")):
+            transfer["transferPort"] = cls._parse_ports(data["translated_port"])
+        return transfer
+
+    def _nat_native_payload(self, raw: dict, data: dict) -> dict:
+        """把发生变化的扁平字段翻译后合并到设备原生 NAT 结构（update 用）。
+
+        以设备当前原生规则为基底，仅覆盖变更字段；未识别字段保持设备原样。
+        BNAT（双向 NAT）结构复杂，仅翻译名称/启停/备注等通用字段。
+        """
+        import copy as _copy
+        payload = _copy.deepcopy(raw)
+        cur = self._nat_flat_of_raw(raw)
+        ntype = str(raw.get("natType", "SNAT")).upper()
+
+        def changed(key) -> bool:
+            return key in data and str(data[key]) != str(cur.get(key))
+
+        if changed("name"):
+            payload["name"] = data["name"]
+        if changed("enabled"):
+            payload["enable"] = bool(data["enabled"])
+        if changed("comment"):
+            payload["description"] = data.get("comment", "")
+        if ntype == "BNAT":
+            return payload
+
+        body_key = "dnat" if ntype == "DNAT" else "snat"
+        body = payload.get(body_key) if isinstance(payload.get(body_key), dict) else {}
+        payload[body_key] = body
+
+        if changed("src_zone"):
+            body["srcZones"] = self._split_refs(data["src_zone"])
+        if changed("src_addr"):
+            body["srcIpGroups"] = self._split_refs(data["src_addr"])
+        if changed("service"):
+            body["natService"] = self._split_refs(data["service"])
+        if ntype == "DNAT":
+            if changed("dst_addr"):
+                body["dstIpobj"] = self._dst_ipobj(data["dst_addr"])
+        else:
+            if changed("dst_zone"):
+                netobj = body.get("dstNetobj") if isinstance(body.get("dstNetobj"), dict) else {}
+                netobj.setdefault("dstNetobjType", "ZONE")
+                netobj["zone"] = self._split_refs(data["dst_zone"])
+                body["dstNetobj"] = netobj
+            if changed("dst_addr"):
+                body["dstIpGroups"] = self._split_refs(data["dst_addr"])
+        if changed("translated_addr") or changed("translated_port"):
+            body["transfer"] = self._apply_transfer(body.get("transfer") or {}, data, cur)
+        return payload
+
+    @classmethod
+    def _nat_create_payload(cls, data: dict) -> dict:
+        """扁平字段 → 原生 NAT 完整载荷（create 用，结构按 API 文档 5.1）。"""
+        ntype = str(data.get("type", "SNAT") or "SNAT").upper()
+        payload = {
+            "name": str(data.get("name", "")),
+            "enable": bool(data.get("enabled", True)),
+            "natType": ntype,
+            "description": str(data.get("comment", "")),
+            "schedule": "全天",
+        }
+        transfer = cls._apply_transfer({}, {"translated_addr": data.get("translated_addr", ""),
+                                            "translated_port": data.get("translated_port", "")},
+                                       {"translated_addr": "", "translated_port": ""})
+        if ntype == "DNAT":
+            payload["dnat"] = {
+                "srcZones": cls._split_refs(data.get("src_zone")) or ["any"],
+                "srcIpGroups": cls._split_refs(data.get("src_addr")) or ["全部"],
+                "dstIpobj": cls._dst_ipobj(data.get("dst_addr", "any")),
+                "natService": cls._split_refs(data.get("service")) or ["any"],
+                "transfer": transfer or {"transferType": "NO_TRANS"},
+            }
+        else:
+            payload["snat"] = {
+                "srcZones": cls._split_refs(data.get("src_zone")) or ["any"],
+                "srcIpGroups": cls._split_refs(data.get("src_addr")) or ["全部"],
+                "dstNetobj": {"dstNetobjType": "ZONE",
+                              "zone": cls._split_refs(data.get("dst_zone")) or ["any"]},
+                "dstIpGroups": cls._split_refs(data.get("dst_addr")) or ["全部"],
+                "natService": cls._split_refs(data.get("service")) or ["any"],
+                "transfer": transfer or {"transferType": "OUTIF_IP"},
+            }
+        return payload
 
     # ---------- 安全区域（Zone） ----------
     async def get_zones(self) -> list[dict]:

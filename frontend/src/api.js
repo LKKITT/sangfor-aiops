@@ -155,3 +155,18 @@ export const KB = {
   deleteReflection: (id) => apiDelete(`/api/kb/reflections/${id}`),
   reflections: () => apiGet('/api/kb/reflections')
 }
+
+// 网络设备管理（SSH 交换机/路由器）
+export const NetDev = {
+  devices: (group = '') => apiGet(`/api/netdev/devices${group ? `?group=${encodeURIComponent(group)}` : ''}`),
+  vendors: () => apiGet('/api/netdev/vendors'),
+  add: (dev) => apiPost('/api/netdev/devices', dev, 30000),
+  addBatch: (devices) => apiPost('/api/netdev/devices/batch', { devices }, 60000),
+  remove: (id) => apiDelete(`/api/netdev/devices/${id}`),
+  exportDevices: () => apiGet('/api/netdev/devices/export', 30000),
+  test: (deviceId, timeout = 15) => apiPost('/api/netdev/devices/test', { device_id: deviceId, timeout }, 60000),
+  execute: (deviceIds, commands, name = '', timeout = 30) =>
+    apiPost('/api/netdev/execute', { device_ids: deviceIds, commands, name, timeout }, 30000),
+  tasks: (limit = 20) => apiGet(`/api/netdev/tasks?limit=${limit}`),
+  task: (id) => apiGet(`/api/netdev/tasks/${id}`)
+}

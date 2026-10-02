@@ -11,7 +11,7 @@ from app.adapters.factory import close_all_clients, start_keepalive
 from app.adapters.simulator.app import create_simulator_app
 from app.adapters.simulator.state import STATE
 from app.api import backups, chat, devices, updates
-from app.api import channel, knowledge, settings as settings_api
+from app.api import channel, knowledge, netdev, settings as settings_api
 from app.config import settings
 from app.services import config_service, update_service, wecom_bot_service, zhuge_kb_service
 
@@ -82,6 +82,7 @@ app.include_router(updates.router)
 app.include_router(knowledge.router)
 app.include_router(settings_api.router)
 app.include_router(channel.router)
+app.include_router(netdev.router)
 # 模拟器挂载到 /simulator 便于独立调试观察（演示时可展示设备端视角）
 app.mount("/simulator", create_simulator_app(STATE), name="simulator")
 
