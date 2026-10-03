@@ -1,33 +1,28 @@
 <template>
   <div class="nd-page">
     <!-- 顶部：标题 + 统计 + 操作 -->
-    <div class="page-card nd-header">
-      <div class="nd-header-top">
-        <div class="nd-title">
-          <div class="nd-title-icon"><el-icon :size="22"><Monitor /></el-icon></div>
-          <div>
-            <b>网络设备管理</b>
-            <div class="nd-sub">交换机 / 路由器 SSH 远程管理 · 支持华为 / H3C / 思科 / 锐捷 / 中兴</div>
-          </div>
-        </div>
-        <div style="display: flex; gap: 8px">
-          <el-button size="small" @click="showBatchAdd = true">
-            <el-icon><Upload /></el-icon>&nbsp;批量导入
-          </el-button>
-          <el-button size="small" :disabled="!devices.length" @click="exportDevices">
-            <el-icon><Download /></el-icon>&nbsp;导出设备
-          </el-button>
-          <el-button size="small" type="primary" @click="openAdd">
-            <el-icon><Plus /></el-icon>&nbsp;添加设备
-          </el-button>
-        </div>
+    <div class="page-head">
+      <div>
+        <h2 class="ph-title">网络设备管理</h2>
+        <p class="ph-desc">交换机 / 路由器 SSH 远程管理 · 支持华为 / H3C / 思科 / 锐捷 / 中兴等 12 家厂商</p>
       </div>
-      <div class="stat-cards">
-        <div class="stat-card"><div class="stat-num">{{ devices.length }}</div><div class="stat-label">设备总数</div></div>
-        <div class="stat-card"><div class="stat-num">{{ groupCount }}</div><div class="stat-label">分组</div></div>
-        <div class="stat-card"><div class="stat-num nd-ok">{{ okCount }}</div><div class="stat-label">连通正常</div></div>
-        <div class="stat-card"><div class="stat-num">{{ devices.length - okCount }}</div><div class="stat-label">待测试</div></div>
+      <div class="ph-actions">
+        <el-button @click="showBatchAdd = true">
+          <el-icon><Upload /></el-icon>&nbsp;批量导入
+        </el-button>
+        <el-button :disabled="!devices.length" @click="exportDevices">
+          <el-icon><Download /></el-icon>&nbsp;导出设备
+        </el-button>
+        <el-button type="primary" @click="openAdd">
+          <el-icon><Plus /></el-icon>&nbsp;添加设备
+        </el-button>
       </div>
+    </div>
+    <div class="nd-stats">
+      <div class="sfa-stat"><div class="num">{{ devices.length }}</div><div class="lbl">设备总数</div></div>
+      <div class="sfa-stat"><div class="num">{{ groupCount }}</div><div class="lbl">分组</div></div>
+      <div class="sfa-stat nd-ok"><div class="num">{{ okCount }}</div><div class="lbl">连通正常</div></div>
+      <div class="sfa-stat"><div class="num">{{ devices.length - okCount }}</div><div class="lbl">待测试</div></div>
     </div>
 
     <el-tabs v-model="tab" class="nd-tabs">
@@ -189,10 +184,15 @@
           </el-col>
         </el-row>
       </el-tab-pane>
+
+      <!-- ============ Tab 3：网络拓扑（激活时才渲染，保证 ECharts 容器可见） ============ -->
+      <el-tab-pane label="网络拓扑" name="topo">
+        <NetDevTopology v-if="tab === 'topo'" @edit="editById" @console="consoleById" />
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 单台添加 -->
-    <el-dialog v-model="showAdd" :title="editId ? '编辑网络设备' : '添加网络设备'" width="500px">
+    <el-dialog v-model="showAdd" :title="editId ? '编辑网络设备' : '添加网络设备'" width="500px" append-to-body>
       <el-form :model="form" label-width="92px" size="small">
         <el-form-item label="设备名称" required><el-input v-model="form.name" placeholder="如：核心交换机01" /></el-form-item>
         <el-form-item label="厂家" required>
@@ -221,7 +221,7 @@
     </el-dialog>
 
     <!-- 批量添加 -->
-    <el-dialog v-model="showBatchAdd" title="批量导入网络设备" width="660px">
+    <el-dialog v-model="showBatchAdd" title="批量导入网络设备" width="660px" append-to-body>
       <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: center">
         <el-button size="small" @click="downloadTemplate">
           <el-icon><Download /></el-icon>&nbsp;下载 CSV 模板
@@ -247,13 +247,14 @@
 
     <!-- 交互式控制台 -->
     <el-dialog v-model="consoleVisible" :title="`控制台 — ${consoleDevice?.name || ''}（${consoleDevice?.host}）`"
-               width="880px" top="6vh" destroy-on-close :close-on-click-modal="false"
+               width="880px" top="6vh" destroy-on-close :close-on-click-modal="false" append-to-body
                @opened="initConsole" @close="closeConsole">
       <div ref="termEl" class="nd-term"></div>
-      <div class="nd-sub" style="margin-top: 8px; display: flex; align-items: center; gap: 6px">
+      <div class="nd-sub" style="margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
         <span class="nd-dot" :class="consoleWsOk ? 'nd-dot-ok' : 'nd-dot-bad'"></span>
         {{ consoleWsOk ? '已连接设备 CLI（输入 help 或 ? 可查看命令）' : '连接中…' }}
         · 关闭弹窗即断开 SSH 会话
+        <span class="nd-copy-hint">鼠标选中即复制 · Ctrl+Shift+C 复制 · Ctrl+V 粘贴</span>
       </div>
     </el-dialog>
   </div>
@@ -265,6 +266,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Monitor, Plus, Promotion, CaretRight, DataLine, Download, Upload, Search } from '@element-plus/icons-vue'
 import { NetDev } from '../api.js'
+import NetDevTopology from './NetDevTopology.vue'
 
 const tab = ref('devices')
 const devices = ref([])
@@ -309,7 +311,7 @@ const filteredDevices = computed(() => {
     && (!filterGroup.value || (d.group_name || '') === filterGroup.value))
 })
 
-const maxConcurrency = 10
+const maxConcurrency = 20   // 与后端 BATCH_CONCURRENCY 保持一致（仅用于提示文案）
 const cmdCount = computed(() => commandText.value.split('\n').filter(l => l.trim()).length)
 const doneCount = computed(() =>
   (task.value?.items || []).filter(i => ['ok', 'failed'].includes(i.status)).length)
@@ -537,6 +539,19 @@ async function openConsole(row) {
   consoleVisible.value = true
 }
 
+// 拓扑节点回调：按设备 id 定位完整设备记录后走既有编辑/控制台入口
+function editById(deviceId) {
+  const row = devices.value.find(d => d.id === deviceId)
+  if (!row) return ElMessage.warning('设备不存在或已被删除')
+  openEdit(row)
+}
+
+function consoleById(deviceId) {
+  const row = devices.value.find(d => d.id === deviceId)
+  if (!row) return ElMessage.warning('设备不存在或已被删除')
+  openConsole(row)
+}
+
 async function initConsole() {
   try {
     await nextTick()
@@ -545,13 +560,43 @@ async function initConsole() {
       import('@xterm/xterm'), import('@xterm/addon-fit')])
     const term = new Terminal({
       fontSize: 13, fontFamily: 'Consolas, "Courier New", monospace',
-      theme: { background: '#101828', foreground: '#d6e2f0', cursor: '#4fc3f7' },
+      theme: { background: '#0D1424', foreground: '#d6e2f0', cursor: '#4fc3f7' },
       cursorBlink: true, scrollback: 5000,
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(termEl.value)
     fit.fit()
+
+    // 复制/粘贴支持：选中即复制（回退 execCommand 兼容非安全上下文）；Ctrl+Shift+C 显式复制；
+    // Ctrl+V 粘贴由 xterm 的 textarea paste 事件原生处理
+    const copySelection = (t) => {
+      const text = t.getSelection()
+      if (!text) return
+      const fallback = () => {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        try { document.execCommand('copy') } catch { /* 忽略 */ }
+        document.body.removeChild(ta)
+      }
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(fallback)
+      } else fallback()
+    }
+    term.attachCustomKeyEventHandler(ev => {
+      if (ev.type === 'keydown' && ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey
+          && (ev.key === 'C' || ev.key === 'c')) {
+        copySelection(term)
+        return false
+      }
+      return true
+    })
+    term.onSelectionChange(() => copySelection(term))
+
     term.onData(text => consoleWs?.send(JSON.stringify({ type: 'data', text })))
     term.onResize(({ cols, rows }) =>
       consoleWs?.send(JSON.stringify({ type: 'resize', cols, rows })))
@@ -598,51 +643,43 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.nd-page { display: flex; flex-direction: column; gap: 12px; height: 100%; overflow: auto; }
+.nd-page { display: flex; flex-direction: column; gap: 14px; height: 100%; overflow: auto; animation: sfa-fade-up .3s var(--ease-out); }
 
-/* 顶部 */
-.nd-header-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.nd-title { display: flex; align-items: center; gap: 12px; }
-.nd-title-icon { width: 42px; height: 42px; border-radius: 10px; display: flex;
-  align-items: center; justify-content: center; color: #fff;
-  background: linear-gradient(135deg, #1a73e8, #00b8a9); }
-.nd-title b { font-size: 16px; }
-.nd-title .nd-sub { margin-top: 2px; }
-.nd-sub { color: #8a94a6; font-size: 12px; }
-.stat-cards { display: flex; gap: 12px; margin-top: 14px; }
-.stat-card { flex: 1; background: #f7f9fc; border-radius: 8px; padding: 10px 14px; }
-.stat-num { font-size: 20px; font-weight: 600; color: #1f2d3d; }
-.stat-num.nd-ok { color: #27ae60; }
-.stat-label { font-size: 12px; color: #8a94a6; }
+/* 顶部统计 */
+.nd-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.sfa-stat.nd-ok .num { color: #0C8F7F; }
+.nd-sub { color: var(--sfa-text-3); font-size: 12px; }
 
 /* 筛选行 */
-.nd-filter { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.nd-filter { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 
 /* 设备表 */
 .nd-vendor-tag { border: none; color: #fff; }
-.nd-dev-name { font-weight: 600; color: #1f2d3d; }
-.nd-mono { font-family: Consolas, monospace; font-size: 12px; }
+.nd-dev-name { font-weight: 600; }
+.nd-mono { font-family: var(--sfa-mono); font-size: 12px; font-feature-settings: "tnum" 1; }
 
 /* 批量执行 */
 .nd-exec { align-items: stretch; }
 .nd-col-card { display: flex; flex-direction: column; }
-.nd-cmd-input :deep(textarea) { font-family: Consolas, monospace; font-size: 12px; }
+.nd-cmd-input :deep(textarea) { font-family: var(--sfa-mono); font-size: 12px; }
 .nd-results { border: none; }
 .nd-result-head { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; }
 .nd-result-head .nd-dev-name { flex-shrink: 0; }
-.nd-err { color: #f56c6c; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nd-output { margin: 0; padding: 10px 12px; background: #101828; color: #d6e2f0;
-  font-family: Consolas, 'Courier New', monospace; font-size: 12px; line-height: 1.55;
-  max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
-.nd-empty { padding: 28px 0; text-align: center; color: #8a94a6; font-size: 13px; line-height: 1.8; }
+.nd-err { color: var(--sfa-danger); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nd-output { margin: 0; padding: 12px 14px; background: #0D1424; color: #C6D2EC;
+  border: 1px solid #1C2742;
+  font-family: var(--sfa-mono); font-size: 12px; line-height: 1.6;
+  max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-all; border-radius: 10px; }
+.nd-empty { padding: 28px 0; text-align: center; color: var(--sfa-text-3); font-size: 13px; line-height: 1.8; }
 
 /* 操作列：2×2 网格对齐（每行两个操作） */
 .nd-ops { display: grid; grid-template-columns: 1fr 1fr; gap: 0 6px; }
 .nd-ops :deep(.el-button) { margin: 0; padding: 5px 0; justify-content: center; }
 
 /* 控制台 */
-.nd-term { height: 520px; background: #101828; border-radius: 8px; overflow: hidden; }
+.nd-term { height: 520px; background: #0D1424; border: 1px solid #1C2742; border-radius: var(--sfa-r-md); overflow: hidden; }
 .nd-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.nd-dot-ok { background: #27ae60; box-shadow: 0 0 4px #27ae60; }
-.nd-dot-bad { background: #e67e22; }
+.nd-dot-ok { background: #0FB9A4; box-shadow: 0 0 6px rgba(15, 185, 164, .8); }
+.nd-dot-bad { background: #F5A90B; }
+.nd-copy-hint { color: var(--sfa-text-4); font-size: 11px; margin-left: auto; }
 </style>

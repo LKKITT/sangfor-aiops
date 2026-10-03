@@ -1,37 +1,41 @@
 <template>
   <div class="chatlog-page">
-    <div class="page-card">
-      <div class="header">
-        <b>对话日志</b>
-        <span class="subtitle">记录所有对话内容及结果，用于审计与经验回顾</span>
-        <el-button size="small" style="margin-left: auto" @click="loadLogs" :loading="loading">
-          <el-icon><Refresh /></el-icon> 刷新
-        </el-button>
+    <div class="page-head">
+      <div>
+        <h2 class="ph-title">对话日志</h2>
+        <p class="ph-desc">记录所有对话内容及结果，用于审计与经验回顾</p>
       </div>
-
+      <div class="ph-actions">
+        <el-button @click="loadLogs" :loading="loading"><el-icon><Refresh /></el-icon>&nbsp;刷新</el-button>
+      </div>
+    </div>
+    <div class="page-card">
       <!-- 筛选栏 -->
       <div class="filter-bar">
-        <el-input v-model="filters.keyword" size="small" clearable placeholder="搜索标题/消息内容"
-                  style="width: 220px" @keyup.enter="applyFilters" @clear="applyFilters" />
-        <el-select v-model="filters.device_id" size="small" clearable placeholder="全部设备"
+        <el-input v-model="filters.keyword" clearable placeholder="搜索标题 / 消息内容"
+                  class="fb-input" :prefix-icon="Search" @keyup.enter="applyFilters" @clear="applyFilters" />
+        <el-select v-model="filters.device_id" clearable placeholder="全部设备"
                    style="width: 170px" @change="applyFilters">
           <el-option v-for="d in store.devices" :key="d.id" :label="d.name" :value="d.id" />
         </el-select>
-        <el-date-picker v-model="filters.range" type="daterange" value-format="YYYY-MM-DD" size="small"
+        <el-date-picker v-model="filters.range" type="daterange" value-format="YYYY-MM-DD"
                         start-placeholder="开始日期" end-placeholder="结束日期"
-                        style="width: 240px" @change="applyFilters" />
-        <el-button size="small" type="primary" @click="applyFilters">查询</el-button>
-        <el-button size="small" @click="resetFilters">重置</el-button>
+                        style="width: 250px" @change="applyFilters" />
+        <el-button type="primary" @click="applyFilters">查询</el-button>
+        <el-button text @click="resetFilters">重置</el-button>
       </div>
 
-      <div v-if="loading" style="text-align: center; padding: 40px; color: #909399">
-        <el-icon class="is-loading" style="font-size: 24px"><Loading /></el-icon>
-        <div style="margin-top: 8px">加载对话日志…</div>
+      <div v-if="loading" class="state-block">
+        <el-icon class="is-loading state-ico"><Loading /></el-icon>
+        <div>加载对话日志…</div>
       </div>
 
-      <div v-else-if="!conversations.length" style="text-align: center; padding: 40px; color: #909399">
-        <el-icon style="font-size: 48px; color: #c0c4cc"><ChatDotRound /></el-icon>
-        <p style="margin-top: 12px">没有符合条件的对话日志</p>
+      <div v-else-if="!conversations.length" class="state-block">
+        <svg viewBox="0 0 40 40" fill="none" class="state-mark" aria-hidden="true">
+          <path d="M20 3.5 34.3 11.8v16.4L20 36.5 5.7 28.2V11.8L20 3.5Z" stroke="#C6CEDD" stroke-width="2.5" stroke-linejoin="round" />
+          <circle cx="20" cy="20" r="3.4" fill="#C6CEDD" />
+        </svg>
+        <p>没有符合条件的对话日志</p>
       </div>
 
       <template v-else>
@@ -75,7 +79,7 @@
     </div>
 
     <!-- 对话详情弹窗 -->
-    <el-dialog v-model="showDetailDialog" :title="detailTitle" width="700px" top="5vh">
+    <el-dialog v-model="showDetailDialog" :title="detailTitle" width="700px" top="5vh" append-to-body>
       <div v-if="loadingDetail" style="text-align: center; padding: 20px">
         <el-icon class="is-loading" style="font-size: 24px"><Loading /></el-icon>
       </div>
@@ -102,6 +106,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { Search } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import { apiGet } from '../api.js'
 import { store } from '../store.js'
@@ -169,20 +174,24 @@ onMounted(loadLogs)
 </script>
 
 <style scoped>
-.chatlog-page { max-width: 1000px; margin: 0 auto; }
-.header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.subtitle { font-size: 12px; color: #909399; }
-.filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
-.conv-link { cursor: pointer; color: #409eff; }
+.chatlog-page { max-width: 1080px; margin: 0 auto; animation: sfa-fade-up .3s var(--ease-out); }
+.filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+.fb-input { width: 240px; }
+.conv-link { cursor: pointer; color: var(--sfa-primary); font-weight: 550; }
 .conv-link:hover { text-decoration: underline; }
-.muted { color: #909399; font-size: 12px; }
-.detail-messages { max-height: 65vh; overflow-y: auto; }
-.detail-row { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
-.detail-role-tag { flex-shrink: 0; width: 50px; }
-.detail-content { flex: 1; font-size: 13px; line-height: 1.6; }
+.muted { color: var(--sfa-text-4); font-size: 12px; }
+
+.state-block { text-align: center; padding: 48px 0; color: var(--sfa-text-3); font-size: 13px; }
+.state-ico { font-size: 26px; color: var(--sfa-primary); }
+.state-mark { width: 52px; height: 52px; margin-bottom: 12px; }
+
+.detail-messages { max-height: 65vh; overflow-y: auto; padding-right: 6px; }
+.detail-row { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--sfa-border-soft); }
+.detail-role-tag { flex-shrink: 0; width: 52px; }
+.detail-content { flex: 1; font-size: 13px; line-height: 1.7; }
 .tool-content { font-size: 12px; }
-.tool-content pre { background: #f5f7fa; padding: 6px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; margin-top: 4px; }
+.tool-content pre { background: #0D1424; color: #BFC9E4; padding: 10px 12px; border-radius: 9px; white-space: pre-wrap; word-break: break-all; margin-top: 6px; font-family: var(--sfa-mono); }
 .md-body { line-height: 1.7; }
 .md-body :deep(p) { margin: 4px 0; }
-.md-body :deep(code) { background: #f0f2f5; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.md-body :deep(code) { background: #EEF1FA; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 </style>

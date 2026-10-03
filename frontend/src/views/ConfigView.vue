@@ -1,10 +1,15 @@
 <template>
   <div class="config-page">
-    <div class="config-toolbar">
-      <span class="config-toolbar-title">配置数据缓存于页面，点击刷新重新获取</span>
-      <el-button size="small" :loading="refreshing" @click="load" icon="Refresh">刷新</el-button>
+    <div class="page-head">
+      <div>
+        <h2 class="ph-title">配置可视化</h2>
+        <p class="ph-desc">设备状态、接口、安全区域与策略全景视图 · 数据缓存于页面，点击刷新重新获取</p>
+      </div>
+      <div class="ph-actions">
+        <el-button :loading="refreshing" @click="load"><el-icon><Refresh /></el-icon>&nbsp;刷新数据</el-button>
+      </div>
     </div>
-    <el-tabs v-model="tab" class="page-card">
+    <el-tabs v-model="tab" class="page-card config-tabs">
       <!-- ========== 设备状态（AF / AC 通用） ========== -->
       <el-tab-pane label="设备状态" name="status">
         <div v-if="status" class="status-wrap">
@@ -450,7 +455,7 @@
     </el-tabs>
 
     <!-- SCP 虚拟机详情抽屉 -->
-    <el-drawer v-model="showVmDetail" :title="vmDetail?.name || '虚拟机详情'" size="520px">
+    <el-drawer v-model="showVmDetail" :title="vmDetail?.name || '虚拟机详情'" size="520px" append-to-body>
       <template v-if="vmDetail">
         <el-descriptions :column="2" size="small" border>
           <el-descriptions-item label="状态">{{ vmDetail.status }}</el-descriptions-item>
@@ -675,27 +680,52 @@ onMounted(() => { load() })
 </script>
 
 <style scoped>
-.config-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 8px; }
-.config-toolbar-title { flex: 1; font-size: 12px; color: #909399; }
-.status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
-.status-section { margin-bottom: 18px; }
-.status-section-title { font-size: 13px; font-weight: 600; color: #606266; margin-bottom: 10px; padding-left: 8px; border-left: 3px solid #409eff; }
-.stat { background: #f8f9fb; border-radius: 8px; padding: 12px 14px; }
-.stat-label { color: #909399; font-size: 12px; margin-bottom: 6px; }
-.stat-value { font-size: 18px; font-weight: 600; }
-.stat-value.sm { font-size: 13px; }
+.config-page { animation: sfa-fade-up .3s var(--ease-out); }
+.config-tabs :deep(.el-tabs__header) { margin-bottom: 14px; }
+.config-tabs :deep(.el-tabs__item) { font-weight: 550; }
+.config-tabs :deep(.el-tabs__item.is-active) { font-weight: 700; }
+
+.status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.status-section { margin-bottom: 20px; animation: sfa-fade-up .35s var(--ease-out) both; }
+.status-section-title {
+  font-size: 13px; font-weight: 650; color: var(--sfa-text-2);
+  margin-bottom: 10px; padding-left: 9px;
+  border-left: 3px solid transparent;
+  border-image: linear-gradient(180deg, var(--sfa-primary), #8FA9FF) 1;
+}
+.stat {
+  background: linear-gradient(180deg, #FBFCFE, #F5F7FC);
+  border: 1px solid var(--sfa-border-soft); border-radius: var(--sfa-r-md);
+  padding: 13px 15px; min-height: 92px;
+  transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2);
+}
+.stat:hover { transform: translateY(-2px); box-shadow: var(--sfa-shadow-2); }
+.stat-label { color: var(--sfa-text-3); font-size: 11.5px; margin-bottom: 7px; letter-spacing: .03em; }
+.stat-value { font-size: 19px; font-weight: 700; letter-spacing: -.01em; font-feature-settings: "tnum" 1; }
+.stat-value.sm { font-size: 12.5px; font-family: var(--sfa-mono); font-weight: 600; }
 
 /* AC 排行卡片 */
 .rank-grid { display: flex; flex-direction: column; gap: 10px; }
-.rank-card { display: flex; align-items: flex-start; gap: 12px; background: #f8f9fb; border-radius: 8px; padding: 12px 14px; }
-.rank-num { font-size: 20px; font-weight: 700; color: #409eff; min-width: 36px; line-height: 1.4; }
+.rank-card {
+  display: flex; align-items: flex-start; gap: 13px;
+  background: linear-gradient(180deg, #FBFCFE, #F5F7FC);
+  border: 1px solid var(--sfa-border-soft); border-radius: var(--sfa-r-md);
+  padding: 12px 15px; transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2);
+}
+.rank-card:hover { transform: translateX(2px); box-shadow: var(--sfa-shadow-2); }
+.rank-num {
+  font-size: 17px; font-weight: 800; min-width: 34px; line-height: 1.5;
+  color: var(--sfa-text-4); font-family: var(--sfa-mono); font-feature-settings: "tnum" 1;
+}
+.rank-card:first-child .rank-num { color: var(--sfa-primary); }
 .rank-body { flex: 1; min-width: 0; }
-.rank-name { font-weight: 600; font-size: 14px; }
-.rank-sub { color: #909399; font-size: 12px; margin-bottom: 4px; }
-.rank-bar-wrap { height: 8px; background: #e4e7ed; border-radius: 4px; margin: 6px 0; overflow: hidden; }
-.rank-bar { height: 100%; background: linear-gradient(90deg, #409eff, #79bbff); border-radius: 4px; transition: width 0.3s; }
-.rank-stat { display: flex; gap: 16px; font-size: 12px; color: #606266; }
-
-/* AC 吞吐量 */
-.throughput-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.rank-name { font-weight: 650; font-size: 13.5px; }
+.rank-sub { color: var(--sfa-text-4); font-size: 11.5px; margin-bottom: 4px; font-family: var(--sfa-mono); }
+.rank-bar-wrap { height: 7px; background: #E3E8F2; border-radius: 999px; margin: 7px 0; overflow: hidden; }
+.rank-bar {
+  height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, #3B63FF, #6A87FF 60%, #0FB9A4);
+  transition: width .8s var(--ease-out);
+}
+.rank-stat { display: flex; gap: 18px; font-size: 11.5px; color: var(--sfa-text-3); font-family: var(--sfa-mono); font-feature-settings: "tnum" 1; }
 </style>

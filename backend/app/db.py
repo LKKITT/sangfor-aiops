@@ -183,6 +183,22 @@ CREATE TABLE IF NOT EXISTS netdev_task_items (
     duration REAL NOT NULL DEFAULT 0,
     finished_at TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS netdev_topology_cache (
+    device_id TEXT PRIMARY KEY,                  -- 每设备一份 LLDP/ARP 采集快照
+    group_name TEXT NOT NULL DEFAULT '',
+    lldp_json TEXT NOT NULL DEFAULT '[]',        -- [{local_port, neighbor, neighbor_port}]
+    arp_json TEXT NOT NULL DEFAULT '[]',         -- [{ip, mac, port, vlan}]
+    mac_json TEXT NOT NULL DEFAULT '[]',         -- [{mac, port, vlan}] MAC 地址表（接入定位）
+    fetched_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS netdev_topology_pos (
+    group_name TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    x REAL NOT NULL DEFAULT 0,
+    y REAL NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (group_name, device_id)
+);
 """
 
 
@@ -210,6 +226,9 @@ def init_db() -> None:
         chn_cols = [r["name"] for r in conn.execute("PRAGMA table_info(channel_bindings)")]
         if chn_cols and "last_active_at" not in chn_cols:
             conn.execute("ALTER TABLE channel_bindings ADD COLUMN last_active_at TEXT NOT NULL DEFAULT ''")
+        topo_cols = [r["name"] for r in conn.execute("PRAGMA table_info(netdev_topology_cache)")]
+        if topo_cols and "mac_json" not in topo_cols:
+            conn.execute("ALTER TABLE netdev_topology_cache ADD COLUMN mac_json TEXT NOT NULL DEFAULT '[]'")
 
 
 def now() -> str:
@@ -1089,3 +1108,68 @@ def get_netdev_task(task_id: str) -> Optional[dict]:
                            (task_id,)).fetchall():
         d["items"].append(_row_to_dict(it))
     return d
+
+
+# ---------------- 网络拓扑（LLDP/ARP 快照与布局位置） ----------------
+
+def get_netdev_topology_cache(device_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM netdev_topology_cache WHERE device_id=?",
+                           (device_id,)).fetchone()
+    if not row:
+        return None
+    d = _row_to_dict(row)
+    d["lldp"] = json.loads(d.get("lldp_json") or "[]")
+    d["arp"] = json.loads(d.get("arp_json") or "[]")
+    d["mac"] = json.loads(d.get("mac_json") or "[]")
+    return d
+
+
+def save_netdev_topology_cache(device_id: str, group_name: str,
+                               lldp: list, arp: list, mac: list | None = None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO netdev_topology_cache (device_id, group_name, lldp_json, arp_json, mac_json, fetched_at)"
+            " VALUES (:device_id, :group_name, :lldp_json, :arp_json, :mac_json, :fetched_at)"
+            " ON CONFLICT(device_id) DO UPDATE SET group_name=:group_name, lldp_json=:lldp_json,"
+            " arp_json=:arp_json, mac_json=:mac_json, fetched_at=:fetched_at",
+            {"device_id": device_id, "group_name": group_name,
+             "lldp_json": json.dumps(lldp, ensure_ascii=False),
+             "arp_json": json.dumps(arp, ensure_ascii=False),
+             "mac_json": json.dumps(mac or [], ensure_ascii=False), "fetched_at": now()})
+
+
+def list_netdev_topology_cache(group: str = "") -> list[dict]:
+    with _connect() as conn:
+        if group:
+            rows = conn.execute("SELECT * FROM netdev_topology_cache WHERE group_name=?",
+                                (group,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM netdev_topology_cache").fetchall()
+    out = []
+    for r in rows:
+        d = _row_to_dict(r)
+        d["lldp"] = json.loads(d.get("lldp_json") or "[]")
+        d["arp"] = json.loads(d.get("arp_json") or "[]")
+        d["mac"] = json.loads(d.get("mac_json") or "[]")
+        out.append(d)
+    return out
+
+
+def get_netdev_topology_positions(group: str) -> dict:
+    """返回 {device_id: [x, y]}（手动布局坐标）。"""
+    with _connect() as conn:
+        rows = conn.execute("SELECT device_id, x, y FROM netdev_topology_pos WHERE group_name=?",
+                            (group,)).fetchall()
+    return {r["device_id"]: [r["x"], r["y"]] for r in rows}
+
+
+def save_netdev_topology_positions(group: str, positions: dict) -> None:
+    """positions: {device_id: [x, y]}，整组覆盖保存。"""
+    with _connect() as conn:
+        conn.execute("DELETE FROM netdev_topology_pos WHERE group_name=?", (group,))
+        conn.executemany(
+            "INSERT INTO netdev_topology_pos (group_name, device_id, x, y, updated_at)"
+            " VALUES (?,?,?,?,?)",
+            [(group, str(dev_id), float(pos[0]), float(pos[1]), now())
+             for dev_id, pos in (positions or {}).items()])

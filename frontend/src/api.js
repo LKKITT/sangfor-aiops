@@ -168,5 +168,12 @@ export const NetDev = {
   execute: (deviceIds, commands, name = '', timeout = 30) =>
     apiPost('/api/netdev/execute', { device_ids: deviceIds, commands, name, timeout }, 30000),
   tasks: (limit = 20) => apiGet(`/api/netdev/tasks?limit=${limit}`),
-  task: (id) => apiGet(`/api/netdev/tasks/${id}`)
+  task: (id) => apiGet(`/api/netdev/tasks/${id}`),
+  // 网络拓扑：LLDP/ARP 自动发现（force=1 强制重新采集，采集耗时较长）
+  topology: (group = '', force = false) =>
+    apiGet(`/api/netdev/topology?group=${encodeURIComponent(group)}&force=${force ? 1 : 0}`, 180000),
+  topologySearch: (group = '', q = '') =>
+    apiGet(`/api/netdev/topology/search?group=${encodeURIComponent(group)}&q=${encodeURIComponent(q)}`),
+  saveTopologyPositions: (group = '', positions = {}) =>
+    apiPost('/api/netdev/topology/positions', { group, positions }, 30000),
 }

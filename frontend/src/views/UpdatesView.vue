@@ -1,25 +1,28 @@
 <template>
   <div class="updates-page">
-    <div class="page-card" style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center">
-      <el-button @click="refresh" :loading="refreshing">
-        <el-icon><Refresh /></el-icon> 刷新官方更新信息
-      </el-button>
-      <span class="hint">
-        数据来源：深信服技术支持平台版本发布说明（免认证抓取）+ 官网 PSIRT 安全公告（公开）+ 内置版本知识库快照。
-      </span>
+    <div class="page-head">
+      <div>
+        <h2 class="ph-title">软件更新建议</h2>
+        <p class="ph-desc">数据来源：深信服技术支持平台版本发布说明（免认证抓取）+ 官网 PSIRT 安全公告（公开）+ 内置版本知识库快照</p>
+      </div>
+      <div class="ph-actions">
+        <el-button @click="refresh" :loading="refreshing">
+          <el-icon><Refresh /></el-icon>&nbsp;刷新官方更新信息
+        </el-button>
+      </div>
     </div>
 
     <div v-if="advice">
       <!-- 结论卡片 -->
-      <div class="page-card" style="margin-bottom: 12px">
+      <div class="page-card advice-card">
         <div class="advice-head">
-          <div>
+          <div class="advice-main">
             <div class="advice-title">
-              <el-tag :type="riskType" size="large">{{ advice.recommendation }}</el-tag>
-              <span style="margin-left: 10px" class="mono">
-                {{ advice.current_version }} → {{ advice.latest_version }}
+              <el-tag :type="riskType" size="large" effect="dark" round>{{ advice.recommendation }}</el-tag>
+              <span class="advice-ver mono">
+                {{ advice.current_version }} <span class="ver-arrow">→</span> {{ advice.latest_version }}
               </span>
-              <el-tag v-if="advice.up_to_date" type="success" size="small" style="margin-left: 8px">已是最新</el-tag>
+              <span v-if="advice.up_to_date" class="uptodate"><el-icon><CircleCheckFilled /></el-icon> 已是最新</span>
             </div>
             <div class="advice-sub">{{ advice.product_name }} · {{ advice.device_name }}</div>
           </div>
@@ -27,10 +30,10 @@
             <div class="path-label">升级路径</div>
             <div class="path-steps">
               <template v-for="(hop, i) in advice.upgrade_path.hops" :key="hop">
-                <el-tag v-if="i" size="small" type="info">→</el-tag>
-                <el-tag size="small" :type="hop === advice.latest_version ? 'success' : 'info'">{{ hop }}</el-tag>
+                <span v-if="i" class="path-sep">→</span>
+                <span class="path-hop" :class="{ latest: hop === advice.latest_version }">{{ hop }}</span>
               </template>
-              <el-tag v-if="!advice.upgrade_path.hops.length" size="small" type="success">无需升级</el-tag>
+              <span v-if="!advice.upgrade_path.hops.length" class="path-hop latest">无需升级</span>
             </div>
             <template v-if="advice.upgrade_path.notes?.length">
               <el-alert v-for="(n, ni) in advice.upgrade_path.notes" :key="ni"
@@ -39,12 +42,12 @@
           </div>
         </div>
         <!-- 升级理由 -->
-        <div class="reasons">
+        <div class="reasons" v-if="advice.reasons?.length">
           <div v-for="(r, i) in advice.reasons" :key="i" class="reason">
             <el-tag :type="r.level === 'high' ? 'danger' : r.level === 'medium' ? 'warning' : r.level === 'info' ? 'success' : 'info'" size="small">
               {{ r.type }}
             </el-tag>
-            <span style="margin-left: 8px; font-size: 13px">{{ r.text }}</span>
+            <span class="reason-text">{{ r.text }}</span>
           </div>
         </div>
       </div>
@@ -189,22 +192,46 @@ onMounted(() => { load(); loadSoftwareList(); loadCookieState() })
 </script>
 
 <style scoped>
-.cols { display: flex; gap: 12px; align-items: flex-start; }
+.updates-page { animation: sfa-fade-up .3s var(--ease-out); }
+
+.advice-card {
+  margin-bottom: 16px;
+  background:
+    radial-gradient(560px 200px at 8% 0%, rgba(59, 99, 255, .06), transparent 65%),
+    radial-gradient(420px 200px at 95% 10%, rgba(15, 185, 164, .05), transparent 65%),
+    var(--sfa-surface);
+}
+.advice-head { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.advice-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.advice-ver { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.ver-arrow { color: var(--sfa-text-4); margin: 0 2px; }
+.uptodate { display: inline-flex; align-items: center; gap: 4px; color: #0E9F6E; font-size: 12px; font-weight: 600; }
+.advice-sub { color: var(--sfa-text-3); font-size: 12px; margin-top: 8px; }
+
+.path-label { color: var(--sfa-text-3); font-size: 11px; letter-spacing: .1em; margin-bottom: 8px; font-weight: 650; }
+.path-steps { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; max-width: 480px; }
+.path-hop {
+  font-family: var(--sfa-mono); font-size: 12px; font-weight: 600;
+  background: var(--sfa-bg-deep); color: var(--sfa-text-2);
+  border: 1px solid var(--sfa-border); border-radius: 8px; padding: 3.5px 10px;
+}
+.path-hop.latest {
+  background: #EAF8F4; border-color: #BDEAE0; color: #0C8F7F;
+  box-shadow: 0 0 0 3px rgba(15, 185, 164, .1);
+}
+.path-sep { color: var(--sfa-text-4); font-size: 12px; }
+
+.reasons { margin-top: 16px; display: flex; flex-direction: column; gap: 7px; border-top: 1px dashed var(--sfa-border-soft); padding-top: 13px; }
+.reason { display: flex; align-items: baseline; gap: 9px; }
+.reason-text { font-size: 12.5px; color: var(--sfa-text-2); line-height: 1.65; }
+
+.cols { display: flex; gap: 16px; align-items: flex-start; }
 .col-changes { flex: 1.2; }
 .col-timing { flex: 1; }
-.col-title { font-weight: 600; margin-bottom: 10px; }
-.advice-head { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
-.advice-title { font-size: 16px; font-weight: 600; display: flex; align-items: center; }
-.advice-sub { color: #909399; font-size: 12px; margin-top: 6px; }
-.path-label { color: #909399; font-size: 12px; margin-bottom: 6px; }
-.path-steps { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; max-width: 460px; }
-.reasons { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
-.reason { display: flex; align-items: center; }
-.change-item { padding: 6px 0; font-size: 13px; display: flex; gap: 8px; align-items: baseline; border-bottom: 1px dashed #f0f2f5; }
-.c-green { color: #67c23a; }
-.c-red { color: #f56c6c; }
-.c-blue { color: #409eff; }
-.c-orange { color: #e6a23c; }
-.hint { color: #909399; font-size: 12px; }
-.mono { font-family: Consolas, monospace; }
+.change-item { padding: 7px 0; font-size: 12.5px; display: flex; gap: 8px; align-items: baseline; border-bottom: 1px dashed var(--sfa-border-soft); line-height: 1.6; }
+.change-item:last-child { border-bottom: none; }
+.c-green { color: #0E9F6E; }
+.c-red { color: #E5484D; }
+.c-blue { color: var(--sfa-primary); }
+.c-orange { color: #E8930C; }
 </style>

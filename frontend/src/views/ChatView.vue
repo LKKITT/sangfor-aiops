@@ -1,299 +1,301 @@
 <template>
   <div class="chat-page">
-    <div class="chat-header page-card">
-      <b>AI 对话</b>
-      <span class="hint" style="margin-left: 10px">支持自然语言查询/修改配置、配置体检、备份恢复、软件升级建议；修改类操作会先生成确认卡片。</span>
-    </div>
-
-    <!-- 添加设备卡片 -->
-    <div v-if="showAddCard" class="page-card add-device-card">
-      <div class="add-device-header">
-        <b>添加设备</b>
-        <el-button size="small" text @click="showAddCard = false"><el-icon><Close /></el-icon></el-button>
-      </div>
-      <el-form label-width="90px" size="small">
-        <el-form-item label="名称"><el-input v-model="addForm.name" placeholder="如：AF-办公网防火墙" /></el-form-item>
-        <el-form-item label="类型">
-          <el-radio-group v-model="addForm.type">
-            <el-radio value="af">下一代防火墙 AF</el-radio>
-            <el-radio value="ac">上网行为管理 AC</el-radio>
-            <el-radio value="scp">云计算平台 SCP</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="接入方式">
-          <el-radio-group v-model="addForm.mode">
-            <el-radio value="simulator">内置模拟器</el-radio>
-            <el-radio value="real">真实设备</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <template v-if="addForm.mode === 'real' && addForm.type === 'af'">
-          <el-form-item label="设备地址"><el-input v-model="addForm.base_url" placeholder="https://192.168.1.1" /></el-form-item>
-          <el-form-item label="API 账号"><el-input v-model="addForm.username" /></el-form-item>
-          <el-form-item label="API 密码"><el-input v-model="addForm.password" type="password" show-password /></el-form-item>
-        </template>
-        <template v-if="addForm.mode === 'real' && addForm.type === 'ac'">
-          <el-form-item label="设备 IP"><el-input v-model="addForm.device_ip" placeholder="192.168.1.1" /></el-form-item>
-          <el-form-item label="共享密钥"><el-input v-model="addForm.password" type="password" show-password /></el-form-item>
-        </template>
-        <el-form-item label="只读模式"><el-switch v-model="addForm.readonly" /></el-form-item>
-        <el-form-item v-if="addTestResult" label="测连接">
-          <span :style="{ color: addTestResult.ok ? '#67c23a' : '#f56c6c', fontSize: '12px' }">
-            {{ addTestResult.message || addTestResult.error }}
-          </span>
-        </el-form-item>
-      </el-form>
-      <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px">
-        <el-button size="small" :loading="addTesting" @click="testConnection">测试连接</el-button>
-        <el-button size="small" @click="showAddCard = false; addTestResult = null">取消</el-button>
-        <el-button size="small" type="primary" @click="addDevice">确定添加</el-button>
-      </div>
-    </div>
-
     <!-- 无设备时的引导 -->
-    <div v-if="!store.devices.length" class="page-card no-device-card">
-      <el-empty description="暂无设备">
-        <template #image>
-          <el-icon style="font-size: 64px; color: #c0c4cc"><Monitor /></el-icon>
-        </template>
-        <p>请先添加一台深信服设备（AF 防火墙 / AC 上网行为管理 / SCP 云计算平台），然后即可通过自然语言进行配置管理和查询。</p>
-        <el-button type="primary" @click="goToDevices">
-          <el-icon><Plus /></el-icon> 添加设备
-        </el-button>
-      </el-empty>
+    <div v-if="!store.devices.length" class="no-device-hero">
+      <div class="hero-orb orb-a"></div>
+      <div class="hero-orb orb-b"></div>
+      <div class="hero-grid"></div>
+      <svg class="hero-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="sfaChatGrad" x1="6" y1="4" x2="34" y2="36" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#4A70FF" /><stop offset="1" stop-color="#0FB9A4" />
+          </linearGradient>
+        </defs>
+        <path d="M20 3.5 34.3 11.8v16.4L20 36.5 5.7 28.2V11.8L20 3.5Z" stroke="url(#sfaChatGrad)" stroke-width="2.5" stroke-linejoin="round" />
+        <path d="M20 13.2v3.4M23 21.5l3.4 2M17 21.5l-3.4 2" stroke="#B9C4E4" stroke-width="1.4" stroke-linecap="round" />
+        <circle cx="20" cy="20" r="3.4" fill="url(#sfaChatGrad)" />
+        <circle cx="20" cy="10.6" r="2" fill="#4A70FF" />
+        <circle cx="28.6" cy="25" r="2" fill="#0FB9A4" />
+        <circle cx="11.4" cy="25" r="2" fill="#4A70FF" />
+      </svg>
+      <h2 class="hero-title">接入你的第一台设备</h2>
+      <p class="hero-desc">
+        添加一台深信服设备（AF 防火墙 / AC 上网行为管理 / SCP 云计算平台），<br />
+        即可通过自然语言完成配置管理、体检、备份与升级建议。
+      </p>
+      <el-button type="primary" size="large" round @click="goToDevices">
+        <el-icon><Plus /></el-icon>&nbsp;添加设备
+      </el-button>
     </div>
 
-    <div v-if="store.devices.length" class="chat-body page-card" ref="scrollRef">
-      <div v-for="(m, i) in messages" :key="i" class="chat-row" :class="m.role">
-        <div v-if="m.role === 'assistant'" class="bubble-ai">
-          <div v-if="m.trace?.length" class="trace">
-            <span v-for="(t, j) in m.trace" :key="j" class="tool-chip">
-              <el-icon><Cpu /></el-icon>{{ t }}
-            </span>
+    <template v-else>
+      <!-- 对话区 -->
+      <div class="chat-scroll" ref="scrollRef">
+        <div class="chat-col">
+          <div class="chat-hero" v-if="messages.length <= 1">
+            <h2 class="ch-title">与你的设备对话</h2>
+            <p class="ch-desc">支持自然语言查询 / 修改配置 · 配置体检 · 备份恢复 · 升级建议，修改类操作会先生成确认卡片。</p>
           </div>
-          <div class="md-body" v-html="render(m.text)"></div>
 
-          <!-- 变更确认卡片 -->
-          <div v-if="m.confirm" class="confirm-card">
-            <div style="font-weight: 600; margin-bottom: 6px">
-              <el-icon style="vertical-align: -2px"><WarningFilled /></el-icon>
-              {{ m.confirm.title }}
-            </div>
-            <div v-if="m.confirm.warning" style="color: #b88230; margin-bottom: 6px">⚠ {{ m.confirm.warning }}</div>
-
-            <!-- 高危操作标识 -->
-            <div v-if="isHighRisk(m.confirm)" style="margin-bottom: 8px; padding: 6px 10px; background: #fef0f0; border-radius: 4px; border: 1px solid #fde2e2; font-size: 12px; color: #f56c6c">
-              <el-icon><WarningFilled /></el-icon> <b>高危操作</b>：{{ highRiskReason(m.confirm) }}
+          <div v-for="(m, i) in messages" :key="i" class="chat-row" :class="m.role">
+            <div v-if="m.role === 'assistant'" class="chat-avatar ai" title="SFA Agent">
+              <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+                <path d="M20 5.5 32.6 12.8v14.4L20 34.5 7.4 27.2V12.8L20 5.5Z" stroke="#5F79E8" stroke-width="2.6" stroke-linejoin="round" />
+                <circle cx="20" cy="20" r="4" fill="#0FB9A4" />
+              </svg>
             </div>
 
-            <!-- 定向冲突核实（只针对本配置） -->
-            <div v-if="m.confirm.conflicts?.length" style="margin-bottom: 8px">
-              <div style="font-size: 12px; color: #909399; margin-bottom: 4px">
-                定向核实：本配置与现有配置的冲突/重叠（{{ m.confirm.conflicts.length }} 项，不含无关配置）
+            <div v-if="m.role === 'assistant'" class="bubble-ai">
+              <div v-if="m.text" class="bubble-actions">
+                <button class="ba-btn" title="复制全文" @click="copyText(m.text)">
+                  <el-icon><CopyDocument /></el-icon><span class="ba-tip">复制</span>
+                </button>
               </div>
-              <div v-for="(cf, ci) in m.confirm.conflicts" :key="ci"
-                   style="font-size: 12px; background: #fff; border-left: 3px solid #e6a23c; padding: 4px 8px; margin-bottom: 4px">
-                <el-tag :type="cf.level === 'high' ? 'danger' : cf.level === 'medium' ? 'warning' : 'info'" size="small">
-                  {{ cf.level === 'high' ? '冲突' : cf.level === 'medium' ? '重叠' : '冗余' }}
-                </el-tag>
-                {{ cf.text }}
-                <div style="color: #909399; margin-top: 2px">{{ cf.suggestion }}</div>
+              <div v-if="m.trace?.length" class="trace">
+                <span v-for="(t, j) in m.trace" :key="j" class="tool-chip">
+                  <el-icon v-if="t.endsWith('✓')" class="chip-ok"><CircleCheckFilled /></el-icon>
+                  <span v-else class="chip-dot"></span>
+                  {{ t.replace(' …', '').replace(' ✓', '') }}
+                </span>
               </div>
-            </div>
-            <div v-else-if="m.confirm.conflicts && m.confirm.op !== 'delete'" style="font-size: 12px; color: #67c23a; margin-bottom: 6px">
-              ✓ 定向核实：与现有配置无冲突、无重叠
-            </div>
+              <div class="md-body" v-html="render(m.text)"></div>
 
-            <!-- AC 绑定创建：交互式表单 -->
-            <div v-if="isBindingCreate(m.confirm)" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
-              <el-form label-width="92px" size="small" style="max-width: 460px">
-                <el-form-item label="用户名">
-                  <el-input v-model="bindForm.user" placeholder="用户名，如：张三" />
-                </el-form-item>
-                <el-form-item label="IP 地址">
-                  <el-input v-model="bindForm.ip" placeholder="如：192.168.1.1" />
-                </el-form-item>
-                <el-form-item label="MAC 地址">
-                  <el-input v-model="bindForm.mac" placeholder="如：11-22-33-44-55-66" />
-                </el-form-item>
-                <el-form-item label="免认证">
-                  <el-switch v-model="bindForm.noauth" />
-                  <span class="bind-note">开启后该用户流量不经认证直接放行</span>
-                </el-form-item>
-                <el-form-item label="限制登录">
-                  <el-switch v-model="bindForm.limitlogon" />
-                  <span class="bind-note">开启后限制该绑定登录</span>
-                </el-form-item>
-                <el-form-item label="有效期">
-                  <el-tag size="small" type="success">永久有效（noauth.expire_time=0）</el-tag>
-                </el-form-item>
-                <el-form-item label="描述">
-                  <el-input v-model="bindForm.comment" placeholder="选填" />
-                </el-form-item>
-              </el-form>
-            </div>
+              <!-- 变更确认卡片 -->
+              <div v-if="m.confirm" class="confirm-card">
+                <div class="cf-head">
+                  <el-icon class="cf-ico"><WarningFilled /></el-icon>
+                  <span class="cf-title">{{ m.confirm.title }}</span>
+                </div>
+                <div v-if="m.confirm.warning" class="cf-warning">⚠ {{ m.confirm.warning }}</div>
 
-            <!-- NAT/ACL 创建/修改：交互式表单 -->
-            <div v-if="isResourceEdit(m.confirm, 'nat')" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
-              <el-form label-width="100px" size="small" style="max-width: 480px">
-                <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                <el-form-item label="源区域"><el-input v-model="editForm.src_zone" placeholder="trust / untrust / dmz" /></el-form-item>
-                <el-form-item label="目的区域"><el-input v-model="editForm.dst_zone" placeholder="trust / untrust / dmz" /></el-form-item>
-                <el-form-item label="源地址"><el-input v-model="editForm.src_addr" /></el-form-item>
-                <el-form-item label="目的地址"><el-input v-model="editForm.dst_addr" /></el-form-item>
-                <el-form-item label="服务"><el-input v-model="editForm.service" /></el-form-item>
-                <el-form-item label="转换地址"><el-input v-model="editForm.translated_addr" /></el-form-item>
-                <el-form-item label="启用"><el-switch v-model="editForm.enabled" /></el-form-item>
-                <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
-              </el-form>
-            </div>
+                <!-- 高危操作标识 -->
+                <div v-if="isHighRisk(m.confirm)" class="cf-highrisk">
+                  <el-icon><WarningFilled /></el-icon> <b>高危操作</b>：{{ highRiskReason(m.confirm) }}
+                </div>
 
-            <!-- ACL 创建/修改：交互式表单 -->
-            <div v-if="isResourceEdit(m.confirm, 'acl')" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
-              <el-form label-width="100px" size="small" style="max-width: 480px">
-                <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                <el-form-item label="源区域"><el-input v-model="editForm.src_zone" placeholder="trust / untrust / dmz" /></el-form-item>
-                <el-form-item label="目的区域"><el-input v-model="editForm.dst_zone" placeholder="trust / untrust / dmz" /></el-form-item>
-                <el-form-item label="源地址"><el-input v-model="editForm.src_addr" /></el-form-item>
-                <el-form-item label="目的地址"><el-input v-model="editForm.dst_addr" /></el-form-item>
-                <el-form-item label="服务"><el-input v-model="editForm.service" /></el-form-item>
-                <el-form-item label="动作">
-                  <el-radio-group v-model="editForm.action">
-                    <el-radio value="allow">允许</el-radio>
-                    <el-radio value="deny">拒绝</el-radio>
-                  </el-radio-group>
-                </el-form-item>
-                <el-form-item label="启用"><el-switch v-model="editForm.enabled" /></el-form-item>
-                <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
-              </el-form>
-            </div>
-
-            <!-- 网络对象 创建/修改：交互式表单 -->
-            <div v-if="isResourceEdit(m.confirm, 'object')" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
-              <el-form label-width="100px" size="small" style="max-width: 480px">
-                <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                <el-form-item label="成员地址"><el-input v-model="editForm.members" placeholder="如：10.0.0.0/24, 192.168.1.5" /></el-form-item>
-                <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
-              </el-form>
-            </div>
-
-            <!-- 自定义服务 创建/修改：交互式表单 -->
-            <div v-if="isResourceEdit(m.confirm, 'service')" style="background:#fff; border-radius:6px; padding:10px; border:1px solid #f3d19e; margin-bottom: 6px">
-              <el-form label-width="100px" size="small" style="max-width: 480px">
-                <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                <el-form-item label="协议">
-                  <el-radio-group v-model="editForm.protocol">
-                    <el-radio value="TCP">TCP</el-radio>
-                    <el-radio value="UDP">UDP</el-radio>
-                    <el-radio value="TCP/UDP">TCP/UDP</el-radio>
-                  </el-radio-group>
-                </el-form-item>
-                <el-form-item label="端口"><el-input v-model="editForm.ports" placeholder="如：80,443 或 8000-9000" /></el-form-item>
-                <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
-              </el-form>
-            </div>
-
-            <!-- 规则变更 before/after -->
-            <div v-if="!isBindingCreate(m.confirm) && !isResourceEdit(m.confirm) && (m.confirm.before || m.confirm.after)" class="mono" style="font-size: 12px; background:#fff; border-radius:6px; padding:8px; border:1px solid #f3d19e;">
-              <div v-if="m.confirm.before" class="diff-removed">- {{ fmtRule(m.confirm.before) }}</div>
-              <div v-if="m.confirm.after" class="diff-added">+ {{ fmtRule(m.confirm.after) }}</div>
-            </div>
-
-            <!-- 恢复计划 -->
-            <div v-if="m.confirm.plan" style="font-size: 12px">
-              共 <b>{{ m.confirm.plan.total }}</b> 项变更：
-              <el-tag v-for="g in ['delete','update','create']" :key="g" size="small" style="margin: 2px"
-                      :type="g === 'delete' ? 'danger' : g === 'update' ? 'warning' : 'success'">
-                {{ { delete: '删除', update: '修改', create: '重建' }[g] }} {{ m.confirm.plan[g]?.length || 0 }} 项
-              </el-tag>
-              <el-collapse style="margin-top: 6px">
-                <el-collapse-item title="查看详细变更清单">
-                  <div v-for="(it, k) in allPlanItems(m.confirm.plan)" :key="k" class="mono" style="font-size:12px; padding:2px 0">
-                    {{ it }}
+                <!-- 定向冲突核实（只针对本配置） -->
+                <div v-if="m.confirm.conflicts?.length" class="cf-conflicts">
+                  <div class="cf-sec-label">
+                    定向核实：本配置与现有配置的冲突/重叠（{{ m.confirm.conflicts.length }} 项，不含无关配置）
                   </div>
-                </el-collapse-item>
-              </el-collapse>
+                  <div v-for="(cf, ci) in m.confirm.conflicts" :key="ci" class="cf-conflict-item">
+                    <el-tag :type="cf.level === 'high' ? 'danger' : cf.level === 'medium' ? 'warning' : 'info'" size="small">
+                      {{ cf.level === 'high' ? '冲突' : cf.level === 'medium' ? '重叠' : '冗余' }}
+                    </el-tag>
+                    <span class="cf-conflict-text">{{ cf.text }}</span>
+                    <div class="cf-conflict-sug">{{ cf.suggestion }}</div>
+                  </div>
+                </div>
+                <div v-else-if="m.confirm.conflicts && m.confirm.op !== 'delete'" class="cf-noconflict">
+                  ✓ 定向核实：与现有配置无冲突、无重叠
+                </div>
+
+                <!-- AC 绑定创建：交互式表单 -->
+                <div v-if="isBindingCreate(m.confirm)" class="cf-form">
+                  <el-form label-width="92px" size="small" style="max-width: 460px">
+                    <el-form-item label="用户名">
+                      <el-input v-model="bindForm.user" placeholder="用户名，如：张三" />
+                    </el-form-item>
+                    <el-form-item label="IP 地址">
+                      <el-input v-model="bindForm.ip" placeholder="如：192.168.1.1" />
+                    </el-form-item>
+                    <el-form-item label="MAC 地址">
+                      <el-input v-model="bindForm.mac" placeholder="如：11-22-33-44-55-66" />
+                    </el-form-item>
+                    <el-form-item label="免认证">
+                      <el-switch v-model="bindForm.noauth" />
+                      <span class="bind-note">开启后该用户流量不经认证直接放行</span>
+                    </el-form-item>
+                    <el-form-item label="限制登录">
+                      <el-switch v-model="bindForm.limitlogon" />
+                      <span class="bind-note">开启后限制该绑定登录</span>
+                    </el-form-item>
+                    <el-form-item label="有效期">
+                      <el-tag size="small" type="success">永久有效（noauth.expire_time=0）</el-tag>
+                    </el-form-item>
+                    <el-form-item label="描述">
+                      <el-input v-model="bindForm.comment" placeholder="选填" />
+                    </el-form-item>
+                  </el-form>
+                </div>
+
+                <!-- NAT 创建/修改：交互式表单 -->
+                <div v-if="isResourceEdit(m.confirm, 'nat')" class="cf-form">
+                  <el-form label-width="100px" size="small" style="max-width: 480px">
+                    <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+                    <el-form-item label="源区域"><el-input v-model="editForm.src_zone" placeholder="trust / untrust / dmz" /></el-form-item>
+                    <el-form-item label="目的区域"><el-input v-model="editForm.dst_zone" placeholder="trust / untrust / dmz" /></el-form-item>
+                    <el-form-item label="源地址"><el-input v-model="editForm.src_addr" /></el-form-item>
+                    <el-form-item label="目的地址"><el-input v-model="editForm.dst_addr" /></el-form-item>
+                    <el-form-item label="服务"><el-input v-model="editForm.service" /></el-form-item>
+                    <el-form-item label="转换地址"><el-input v-model="editForm.translated_addr" /></el-form-item>
+                    <el-form-item label="启用"><el-switch v-model="editForm.enabled" /></el-form-item>
+                    <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
+                  </el-form>
+                </div>
+
+                <!-- ACL 创建/修改：交互式表单 -->
+                <div v-if="isResourceEdit(m.confirm, 'acl')" class="cf-form">
+                  <el-form label-width="100px" size="small" style="max-width: 480px">
+                    <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+                    <el-form-item label="源区域"><el-input v-model="editForm.src_zone" placeholder="trust / untrust / dmz" /></el-form-item>
+                    <el-form-item label="目的区域"><el-input v-model="editForm.dst_zone" placeholder="trust / untrust / dmz" /></el-form-item>
+                    <el-form-item label="源地址"><el-input v-model="editForm.src_addr" /></el-form-item>
+                    <el-form-item label="目的地址"><el-input v-model="editForm.dst_addr" /></el-form-item>
+                    <el-form-item label="服务"><el-input v-model="editForm.service" /></el-form-item>
+                    <el-form-item label="动作">
+                      <el-radio-group v-model="editForm.action">
+                        <el-radio value="allow">允许</el-radio>
+                        <el-radio value="deny">拒绝</el-radio>
+                      </el-radio-group>
+                    </el-form-item>
+                    <el-form-item label="启用"><el-switch v-model="editForm.enabled" /></el-form-item>
+                    <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
+                  </el-form>
+                </div>
+
+                <!-- 网络对象 创建/修改：交互式表单 -->
+                <div v-if="isResourceEdit(m.confirm, 'object')" class="cf-form">
+                  <el-form label-width="100px" size="small" style="max-width: 480px">
+                    <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+                    <el-form-item label="成员地址"><el-input v-model="editForm.members" placeholder="如：10.0.0.0/24, 192.168.1.5" /></el-form-item>
+                    <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
+                  </el-form>
+                </div>
+
+                <!-- 自定义服务 创建/修改：交互式表单 -->
+                <div v-if="isResourceEdit(m.confirm, 'service')" class="cf-form">
+                  <el-form label-width="100px" size="small" style="max-width: 480px">
+                    <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+                    <el-form-item label="协议">
+                      <el-radio-group v-model="editForm.protocol">
+                        <el-radio value="TCP">TCP</el-radio>
+                        <el-radio value="UDP">UDP</el-radio>
+                        <el-radio value="TCP/UDP">TCP/UDP</el-radio>
+                      </el-radio-group>
+                    </el-form-item>
+                    <el-form-item label="端口"><el-input v-model="editForm.ports" placeholder="如：80,443 或 8000-9000" /></el-form-item>
+                    <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
+                  </el-form>
+                </div>
+
+                <!-- 规则变更 before/after -->
+                <div v-if="!isBindingCreate(m.confirm) && !isResourceEdit(m.confirm) && (m.confirm.before || m.confirm.after)"
+                     class="cf-diff mono">
+                  <div v-if="m.confirm.before" class="diff-removed">- {{ fmtRule(m.confirm.before) }}</div>
+                  <div v-if="m.confirm.after" class="diff-added">+ {{ fmtRule(m.confirm.after) }}</div>
+                </div>
+
+                <!-- 恢复计划 -->
+                <div v-if="m.confirm.plan" class="cf-plan">
+                  <div class="cf-plan-line">
+                    共 <b>{{ m.confirm.plan.total }}</b> 项变更：
+                    <el-tag v-for="g in ['delete','update','create']" :key="g" size="small" class="cf-plan-tag"
+                            :type="g === 'delete' ? 'danger' : g === 'update' ? 'warning' : 'success'">
+                      {{ { delete: '删除', update: '修改', create: '重建' }[g] }} {{ m.confirm.plan[g]?.length || 0 }} 项
+                    </el-tag>
+                  </div>
+                  <el-collapse class="cf-plan-detail">
+                    <el-collapse-item title="查看详细变更清单">
+                      <div v-for="(it, k) in allPlanItems(m.confirm.plan)" :key="k" class="mono cf-plan-item">
+                        {{ it }}
+                      </div>
+                    </el-collapse-item>
+                  </el-collapse>
+                </div>
+
+                <div v-if="m.confirm.status === 'pending'" class="cf-actions">
+                  <el-button type="primary" size="small" :loading="confirming" @click="confirmAction(m, true)">
+                    <el-icon><Check /></el-icon>&nbsp;确认执行
+                  </el-button>
+                  <el-button type="danger" plain size="small" :disabled="confirming" @click="confirmAction(m, false)">
+                    <el-icon><Close /></el-icon>&nbsp;拒绝
+                  </el-button>
+                </div>
+                <div v-else-if="m.confirm.status === 'executed'" class="cf-status ok">
+                  <el-icon><CircleCheckFilled /></el-icon> 已执行
+                </div>
+                <div v-else-if="m.confirm.status === 'rejected'" class="cf-status dim">已拒绝</div>
+                <div v-else class="cf-status dim">{{ m.confirm.status }}</div>
+              </div>
+
+              <!-- 高危操作二次确认弹窗 -->
+              <el-dialog v-model="showSecondConfirm" title="二次确认" width="420px" :close-on-click-modal="false" append-to-body>
+                <div class="second-confirm">
+                  <div class="sc-ico"><el-icon :size="30"><WarningFilled /></el-icon></div>
+                  <div class="sc-title">高危操作确认</div>
+                  <div class="sc-reason">{{ secondConfirmReason }}</div>
+                  <div class="sc-note">此操作可能影响业务，请确认已充分评估风险</div>
+                </div>
+                <template #footer>
+                  <el-button @click="showSecondConfirm = false; secondConfirmCallback = null">取消</el-button>
+                  <el-button type="danger" @click="doSecondConfirm">确认执行高危操作</el-button>
+                </template>
+              </el-dialog>
             </div>
 
-            <div v-if="m.confirm.status === 'pending'" style="margin-top: 10px; display: flex; gap: 8px">
-              <el-button type="primary" size="small" :loading="confirming" @click="confirmAction(m, true)">
-                <el-icon><Check /></el-icon> 确认执行
-              </el-button>
-              <el-button type="danger" plain size="small" :disabled="confirming" @click="confirmAction(m, false)">
-                <el-icon><Close /></el-icon> 拒绝
-              </el-button>
-            </div>
-            <el-tag v-else-if="m.confirm.status === 'executed'" type="success" size="small">已执行</el-tag>
-            <el-tag v-else-if="m.confirm.status === 'rejected'" type="info" size="small">已拒绝</el-tag>
-            <el-tag v-else size="small">{{ m.confirm.status }}</el-tag>
+            <div v-else class="bubble-user">{{ m.text }}</div>
           </div>
 
-          <!-- 高危操作二次确认弹窗 -->
-          <el-dialog v-model="showSecondConfirm" title="二次确认" width="420px" :close-on-click-modal="false">
-            <div style="padding: 10px 0">
-              <div style="font-size: 24px; text-align: center; color: #f56c6c; margin-bottom: 12px">
-                <el-icon style="font-size: 48px"><WarningFilled /></el-icon>
-              </div>
-              <div style="text-align: center; font-weight: 600; margin-bottom: 8px">高危操作确认</div>
-              <div style="color: #606266; font-size: 13px; text-align: center; margin-bottom: 16px">{{ secondConfirmReason }}</div>
-              <div style="color: #f56c6c; font-size: 12px; text-align: center; background: #fef0f0; padding: 8px; border-radius: 4px">
-                此操作可能影响业务，请确认已充分评估风险
-              </div>
+          <div v-if="streaming" class="chat-row assistant">
+            <div class="chat-avatar ai">
+              <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+                <path d="M20 5.5 32.6 12.8v14.4L20 34.5 7.4 27.2V12.8L20 5.5Z" stroke="#5F79E8" stroke-width="2.6" stroke-linejoin="round" />
+                <circle cx="20" cy="20" r="4" fill="#0FB9A4" />
+              </svg>
             </div>
-            <template #footer>
-              <el-button @click="showSecondConfirm = false; secondConfirmCallback = null">取消</el-button>
-              <el-button type="danger" @click="doSecondConfirm">确认执行高危操作</el-button>
-            </template>
-          </el-dialog>
-        </div>
-
-        <div v-else class="bubble-user">{{ m.text }}</div>
-      </div>
-
-      <div v-if="streaming" class="chat-row assistant">
-        <div class="bubble-ai"><span class="typing">AI 正在处理<span class="dots">…</span></span></div>
-      </div>
-    </div>
-
-    <div v-if="store.devices.length" class="chat-input page-card">
-      <div class="input-toolbar">
-        <div class="toolbar-left">
-          <el-checkbox v-model="useKnowledge" size="small"
-                       title="勾选后，对话可检索深信服官方知识库（诸葛小T），回答将附带官方引用来源；对话还会沉淀到个人知识库">
-            <span style="font-size: 13px"><el-icon style="vertical-align: -2px"><Search /></el-icon> 查询知识库</span>
-          </el-checkbox>
-          <el-button size="small" @click="newConversation"
-                     title="开启新会话：清空当前上下文，避免话题混淆与 token 浪费；设备信息与长期记忆会自动带入新会话">
-            <el-icon><CirclePlus /></el-icon> 新会话
-          </el-button>
-        </div>
-        <div class="device-selector">
-          <el-icon style="color: #909399"><Monitor /></el-icon>
-          <el-select v-model="store.currentDeviceId" size="small" style="width: 250px"
-                     @change="onDeviceChange" placeholder="选择目标设备">
-            <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
-                       :label="`${d.name}（${d.type === 'af' ? '防火墙' : d.type === 'scp' ? '云计算平台' : '上网行为管理'}）`">
-              <span>{{ d.name }}</span>
-              <span style="float: right; color: #909399; font-size: 12px">
-                {{ { af: 'AF', ac: 'AC', scp: 'SCP' }[d.type] || d.type }} | {{ d.mode === 'simulator' ? '模拟器' : '真实设备' }}
-              </span>
-            </el-option>
-          </el-select>
-          <el-button size="small" text @click="refreshDevices" title="刷新设备列表">
-            <el-icon><Refresh /></el-icon>
-          </el-button>
+            <div class="bubble-ai"><span class="typing-dots"><i></i><i></i><i></i></span></div>
+          </div>
         </div>
       </div>
-      <div class="quick">
-        <el-button v-for="q in quickPrompts" :key="q" size="small" round @click="send(q)" :disabled="streaming">{{ q }}</el-button>
+
+      <!-- 输入台 -->
+      <div class="composer-wrap">
+        <div class="chat-composer" :class="{ 'is-streaming': streaming }">
+          <div v-if="messages.length <= 1 && quickPrompts.length" class="quick">
+            <button v-for="q in quickPrompts" :key="q" class="quick-chip" :disabled="streaming" @click="send(q)">{{ q }}</button>
+          </div>
+          <div class="input-row">
+            <el-input v-model="input" :placeholder="inputPlaceholder" size="large" @keyup.enter="send()" :disabled="streaming" />
+            <button v-if="!streaming" class="send-btn" :class="{ ready: !!input.trim() }" @click="send()" title="发送（Enter）">
+              <el-icon :size="17"><Promotion /></el-icon>
+            </button>
+            <el-button v-else type="danger" size="large" @click="stopChat">
+              <el-icon><CircleCloseFilled /></el-icon>&nbsp;终止
+            </el-button>
+          </div>
+          <div class="composer-toolbar">
+            <div class="ct-left">
+              <button class="kb-toggle" :class="{ on: useKnowledge }" @click="useKnowledge = !useKnowledge"
+                      title="勾选后，对话可检索深信服官方知识库（诸葛小T），回答将附带官方引用来源；对话还会沉淀到个人知识库">
+                <el-icon><Search /></el-icon>查询知识库
+              </button>
+              <button class="ghost-act" @click="newConversation"
+                      title="开启新会话：清空当前上下文，避免话题混淆与 token 浪费；设备信息与长期记忆会自动带入新会话">
+                <el-icon><CirclePlus /></el-icon>新会话
+              </button>
+            </div>
+            <div class="device-selector">
+              <el-icon class="ds-ico"><Monitor /></el-icon>
+              <el-select v-model="store.currentDeviceId" size="small" class="ds-select"
+                         @change="onDeviceChange" placeholder="选择目标设备">
+                <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
+                           :label="`${d.name}（${d.type === 'af' ? '防火墙' : d.type === 'scp' ? '云计算平台' : '上网行为管理'}）`">
+                  <span>{{ d.name }}</span>
+                  <span class="ds-opt-meta">
+                    {{ { af: 'AF', ac: 'AC', scp: 'SCP' }[d.type] || d.type }} | {{ d.mode === 'simulator' ? '模拟器' : '真实设备' }}
+                  </span>
+                </el-option>
+              </el-select>
+              <button class="icon-mini" @click="refreshDevices" title="刷新设备列表">
+                <el-icon><Refresh /></el-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="composer-foot">修改类操作将生成确认卡片，确认后才会下发设备 · SFA Agent 由 LLM 驱动，结果请复核</div>
       </div>
-      <div style="display: flex; gap: 8px">
-        <el-input v-model="input" :placeholder="inputPlaceholder" @keyup.enter="send()" :disabled="streaming" />
-        <el-button type="primary" @click="send()" :loading="streaming" style="width: 90px">发送</el-button>
-        <el-button v-if="streaming" type="danger" @click="stopChat" style="margin-left: 6px">
-          <el-icon><CircleCloseFilled /></el-icon> 终止
-        </el-button>
-      </div>
-    </div>
+    </template>
   </div>
 </template>
 
@@ -365,12 +367,6 @@ const TOOL_NAMES = {
   create_whiteblacklist: '添加黑白名单', update_whiteblacklist: '修改黑白名单', delete_whiteblacklist: '删除黑白名单'
 }
 
-// 添加设备相关
-const showAddCard = ref(false)
-const addForm = ref({ name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false })
-const addTesting = ref(false)
-const addTestResult = ref(null)
-
 function cachePut(devId) {
   if (!devId) return
   convCache[devId] = { list: JSON.parse(JSON.stringify(messages.value)), convId: currentConvId }
@@ -441,7 +437,9 @@ async function restoreFromBackend(devId) {
 onMounted(async () => {
   await loadDevices()
   loadMessages(store.currentDeviceId)
+  consumeChatSeed()
 })
+watch(() => store.chatSeed?.tick, () => consumeChatSeed())
 watch(() => store.currentDeviceId, (newId, oldId) => {
   if (newId && newId !== oldId) {
     cachePut(oldId)
@@ -451,6 +449,21 @@ watch(() => store.currentDeviceId, (newId, oldId) => {
 
 function onDeviceChange() {
   // 设备切换由 watch 自动触发
+}
+
+// 空状态引导：触发 App 外壳的「添加设备」弹窗
+function goToDevices() {
+  store.uiAddDeviceTick++
+}
+
+// 消费跨视图种子（知识库引用「去问 Agent」）：勾选知识库、预填问题并自动发送
+function consumeChatSeed() {
+  const seed = store.chatSeed
+  if (!seed?.text) return
+  store.chatSeed = null
+  useKnowledge.value = seed.useKnowledge !== false
+  input.value = seed.text
+  nextTick(() => send())
 }
 
 function refreshDevices() {
@@ -508,48 +521,6 @@ const inputPlaceholder = computed(() => {
   if (dev.type === 'ac') return '例如：看看在线用户，再把 192.168.1.100 做个 IP-MAC 绑定'
   return '例如：帮我看一下外网接口流量，再把 3389 对公网暴露的策略收紧'
 })
-
-async function testConnection() {
-  if (addForm.value.mode === 'simulator') {
-    addTestResult.value = { ok: true, message: '模拟器设备，无需测试连接' }
-    return
-  }
-  // AC 设备：将 IP 转为 http://{ip}:9999
-  const payload = { ...addForm.value }
-  if (payload.type === 'ac' && payload.device_ip) {
-    payload.base_url = `http://${payload.device_ip}:9999`
-  }
-  if (!payload.base_url) return ElMessage.warning('请填写设备地址')
-  addTesting.value = true
-  addTestResult.value = null
-  try {
-    addTestResult.value = await Devices.testConnection(payload)
-  } catch (e) {
-    addTestResult.value = { ok: false, error: String(e.message || e) }
-  } finally {
-    addTesting.value = false
-  }
-}
-
-async function addDevice() {
-  if (!addForm.value.name) return ElMessage.warning('设备名称不能为空')
-  // AC 设备：将 IP 转为 http://{ip}:9999
-  const payload = { ...addForm.value }
-  if (payload.type === 'ac' && payload.device_ip) {
-    payload.base_url = `http://${payload.device_ip}:9999`
-  }
-  if (payload.mode === 'real' && !payload.base_url) return ElMessage.warning('请填写设备地址')
-  try {
-    await Devices.add(payload)
-    await loadDevices()
-    showAddCard.value = false
-    addTestResult.value = null
-    addForm.value = { name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false }
-    ElMessage.success('设备添加成功')
-  } catch (e) {
-    ElMessage.error(String(e.message || e))
-  }
-}
 
 async function scrollBottom() {
   await nextTick()
@@ -792,6 +763,24 @@ async function doConfirmAction(msg, approved) {
     })
 }
 
+// 复制 AI 回复全文（clipboard API 失败时回退 execCommand）
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy'); ElMessage.success('已复制到剪贴板') }
+    catch { ElMessage.error('复制失败，请手动选择复制') }
+    document.body.removeChild(ta)
+  }
+}
+
 function fmtRule(r) {
   if (!r) return ''
   return Object.entries(r).filter(([k]) => !['comment'].includes(k))
@@ -810,24 +799,193 @@ function allPlanItems(plan) {
 </script>
 
 <style scoped>
-.chat-page { display: flex; flex-direction: column; height: calc(100vh - 24px); gap: 10px; }
-.chat-header { padding: 12px 16px; }
-.chat-header-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-.chat-header .hint { color: #909399; font-size: 12px; margin-top: 8px; display: block; }
-.device-selector { display: flex; align-items: center; gap: 4px; }
-.no-device-card { padding: 40px 20px; text-align: center; }
-.no-device-card p { color: #909399; font-size: 13px; margin: 12px 0 16px; }
-.chat-body { flex: 1; overflow-y: auto; padding: 16px; }
-.chat-input { padding: 10px 14px; }
-.input-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; padding: 6px 10px; background: #f5f7fa; border-radius: 8px; }
-.device-selector { display: flex; align-items: center; gap: 4px; }
-.toolbar-left { display: flex; align-items: center; gap: 12px; }
-.quick { margin-bottom: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
-.trace { margin-bottom: 6px; }
-.bind-note { font-size: 12px; color: #909399; margin-left: 8px; }
-.typing { color: #909399; font-size: 13px; }
-.dots { animation: blink 1s infinite; }
-@keyframes blink { 50% { opacity: 0.2; } }
-.add-device-card { padding: 16px; margin-bottom: 10px; border: 1px solid #ebeef5; }
-.add-device-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.chat-page { display: flex; flex-direction: column; height: calc(100vh - 44px); }
+
+/* ===== 无设备引导 ===== */
+.no-device-hero {
+  position: relative; flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center; gap: 6px; padding: 40px 20px; overflow: hidden;
+}
+.hero-orb { position: absolute; border-radius: 50%; filter: blur(70px); opacity: .5; pointer-events: none; }
+.orb-a { width: 420px; height: 420px; background: rgba(59, 99, 255, .16); top: -6%; left: 6%; animation: hero-float 14s ease-in-out infinite alternate; }
+.orb-b { width: 380px; height: 380px; background: rgba(15, 185, 164, .13); bottom: -4%; right: 4%; animation: hero-float 17s ease-in-out infinite alternate-reverse; }
+.hero-grid {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(rgba(16, 24, 40, .06) 1px, transparent 1px);
+  background-size: 24px 24px;
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, rgba(0, 0, 0, .9), transparent 75%);
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, rgba(0, 0, 0, .9), transparent 75%);
+}
+@keyframes hero-float { from { transform: translate(0, 0) scale(1); } to { transform: translate(36px, 26px) scale(1.08); } }
+.hero-mark { width: 84px; height: 84px; margin-bottom: 20px; filter: drop-shadow(0 16px 32px rgba(59, 99, 255, .3)); animation: sfa-fade-up .5s var(--ease-out) both; }
+.hero-title { font-size: 24px; font-weight: 750; letter-spacing: -.02em; margin: 0 0 10px; animation: sfa-fade-up .5s .06s var(--ease-out) both; }
+.hero-desc { color: var(--sfa-text-3); font-size: 13.5px; line-height: 1.9; margin: 0 0 24px; animation: sfa-fade-up .5s .12s var(--ease-out) both; }
+.no-device-hero .el-button { animation: sfa-fade-up .5s .18s var(--ease-out) both; }
+
+/* ===== 对话滚动区 ===== */
+.chat-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+.chat-col { max-width: 920px; margin: 0 auto; padding: 10px 4px 18px; }
+
+.chat-hero { padding: 14px 2px 18px; }
+.ch-title { font-size: 22px; font-weight: 750; letter-spacing: -.02em; margin: 0 0 6px; }
+.ch-desc { color: var(--sfa-text-3); font-size: 13px; margin: 0; line-height: 1.7; }
+
+.chat-avatar.ai svg { width: 100%; height: 100%; padding: 5.5px; }
+
+/* AI 气泡悬浮操作（复制） */
+.bubble-ai { position: relative; }
+.bubble-actions {
+  position: absolute; top: 8px; right: 8px;
+  opacity: 0; transform: translateY(-2px);
+  transition: opacity var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+}
+.bubble-ai:hover .bubble-actions { opacity: 1; transform: none; }
+.ba-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--sfa-border); background: rgba(255, 255, 255, .92);
+  color: var(--sfa-text-3); font-size: 11px; font-family: var(--sfa-font);
+  border-radius: 7px; padding: 3px 8px; cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: all var(--dur-1) var(--ease-out);
+}
+.ba-btn .el-icon { font-size: 12px; }
+.ba-btn:hover { color: var(--sfa-primary); border-color: #B9C7FF; background: #fff; }
+.ba-btn:active { transform: scale(.95); }
+
+/* ===== 输入台 ===== */
+.composer-wrap {
+  position: relative; max-width: 920px; margin: 0 auto; width: 100%;
+  padding-bottom: 2px;
+}
+.composer-wrap::before {
+  content: ""; position: absolute; left: -30px; right: -30px; bottom: 100%; height: 34px;
+  background: linear-gradient(180deg, transparent, var(--sfa-bg));
+  pointer-events: none;
+}
+.chat-composer {
+  background: var(--sfa-surface);
+  border: 1px solid var(--sfa-border);
+  border-radius: 18px;
+  padding: 12px 14px 10px;
+  box-shadow: 0 4px 24px -8px rgba(16, 24, 40, .12);
+  transition: border-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2);
+}
+.chat-composer:focus-within {
+  border-color: #B9C7FF;
+  box-shadow: 0 0 0 4px rgba(59, 99, 255, .09), 0 8px 32px -8px rgba(16, 24, 40, .16);
+}
+
+.input-row { display: flex; gap: 10px; align-items: center; }
+.input-row .el-input :deep(.el-input__wrapper) { box-shadow: none; background: transparent; padding: 4px 4px; font-size: 14px; }
+.input-row .el-input :deep(.el-input__wrapper.is-focus) { box-shadow: none !important; }
+
+.send-btn {
+  width: 40px; height: 40px; border-radius: 12px; border: none; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--sfa-bg-deep); color: #A8B0C4; cursor: default;
+  transition: all var(--dur-2) var(--ease-spring);
+}
+.send-btn.ready {
+  background: linear-gradient(135deg, #4A70FF, var(--sfa-primary) 70%, #3355EE);
+  color: #fff;
+  box-shadow: 0 6px 16px -4px rgba(59, 99, 255, .5);
+}
+.send-btn.ready:hover { transform: translateY(-1px) scale(1.04); }
+.send-btn.ready:active { transform: scale(.94); }
+
+.quick { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 10px; }
+.quick-chip {
+  border: 1px solid var(--sfa-border); background: #FAFBFD; color: var(--sfa-text-2);
+  font-size: 12px; font-family: var(--sfa-font);
+  padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  transition: all var(--dur-1) var(--ease-out);
+}
+.quick-chip:hover:not(:disabled) { border-color: #B9C7FF; color: var(--sfa-primary); background: #F3F6FF; transform: translateY(-1px); }
+.quick-chip:active:not(:disabled) { transform: scale(.97); }
+.quick-chip:disabled { opacity: .5; cursor: not-allowed; }
+
+.composer-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 9px; padding-top: 10px; border-top: 1px solid var(--sfa-border-soft); }
+.ct-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.kb-toggle, .ghost-act {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-family: var(--sfa-font); cursor: pointer;
+  padding: 4.5px 11px; border-radius: 999px;
+  border: 1px solid var(--sfa-border); background: #fff; color: var(--sfa-text-3);
+  transition: all var(--dur-1) var(--ease-out);
+}
+.kb-toggle .el-icon, .ghost-act .el-icon { font-size: 12.5px; }
+.kb-toggle:hover, .ghost-act:hover { color: var(--sfa-primary); border-color: #B9C7FF; background: #F6F8FF; }
+.kb-toggle.on {
+  background: #EEF1FF; border-color: #B9C7FF; color: var(--sfa-primary); font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(59, 99, 255, .12);
+}
+
+.device-selector {
+  display: flex; align-items: center; gap: 5px;
+  padding-left: 14px; margin-left: auto;
+  border-left: 1px solid var(--sfa-border-soft);
+}
+.ds-ico { color: var(--sfa-text-4); font-size: 14px; }
+.ds-select { width: 250px; }
+.ds-select :deep(.el-select__wrapper) { background: #FAFBFD; }
+.ds-opt-meta { float: right; color: var(--sfa-text-4); font-size: 11.5px; font-family: var(--sfa-mono); }
+.icon-mini {
+  width: 26px; height: 26px; border-radius: 7px; border: none; cursor: pointer;
+  background: transparent; color: var(--sfa-text-4);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: all var(--dur-1) var(--ease-out);
+}
+.icon-mini:hover { background: #EEF1FA; color: var(--sfa-primary); }
+
+.composer-foot {
+  text-align: center; font-size: 10.5px; color: #A5ADC0;
+  letter-spacing: .04em; margin-top: 11px;
+}
+
+/* ===== 确认卡片内部 ===== */
+.cf-head { display: flex; align-items: center; gap: 7px; font-weight: 650; margin-bottom: 8px; font-size: 13.5px; }
+.cf-ico { color: #D08700; font-size: 16px; }
+.cf-warning { color: #B88230; margin-bottom: 8px; font-size: 12.5px; }
+.cf-highrisk {
+  margin-bottom: 10px; padding: 7px 11px; border-radius: 8px;
+  background: #FDEEEF; border: 1px solid #FBD8D9; font-size: 12px; color: #D33A40;
+  display: flex; align-items: center; gap: 4px;
+}
+.cf-conflicts { margin-bottom: 10px; }
+.cf-sec-label { font-size: 12px; color: var(--sfa-text-3); margin-bottom: 6px; }
+.cf-conflict-item {
+  font-size: 12px; background: #fff; border-left: 3px solid var(--sfa-warning);
+  padding: 5px 9px; margin-bottom: 5px; border-radius: 0 7px 7px 0;
+}
+.cf-conflict-text { margin-left: 4px; }
+.cf-conflict-sug { color: var(--sfa-text-3); margin-top: 3px; padding-left: 2px; }
+.cf-noconflict { font-size: 12px; color: #0E9F6E; margin-bottom: 8px; }
+.cf-form { background: #fff; border-radius: 9px; padding: 12px; border: 1px solid #F3DFB2; margin-bottom: 8px; }
+.cf-diff { font-size: 12px; background: #fff; border-radius: 9px; padding: 9px 11px; border: 1px solid #F3DFB2; }
+.cf-plan { font-size: 12.5px; }
+.cf-plan-tag { margin: 2px 3px; }
+.cf-plan-detail { margin-top: 6px; }
+.cf-plan-item { font-size: 12px; padding: 2.5px 0; }
+.cf-actions { margin-top: 12px; display: flex; gap: 8px; }
+.cf-status { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; font-size: 12.5px; font-weight: 600; }
+.cf-status.ok { color: #0E9F6E; }
+.cf-status.dim { color: var(--sfa-text-4); }
+.bind-note { font-size: 12px; color: var(--sfa-text-3); margin-left: 8px; }
+
+/* 二次确认弹窗 */
+.second-confirm { padding: 8px 0 4px; text-align: center; }
+.sc-ico { color: var(--sfa-danger); margin-bottom: 10px; }
+.sc-title { font-weight: 700; font-size: 15px; margin-bottom: 8px; }
+.sc-reason { color: var(--sfa-text-2); font-size: 13px; margin-bottom: 14px; }
+.sc-note { color: var(--sfa-danger); font-size: 12px; background: #FDEEEF; padding: 9px; border-radius: 8px; }
+
+@media (max-width: 1240px) { .chat-page { height: calc(100vh - 36px); } }
+@media (max-width: 820px) {
+  .chat-page { height: calc(100vh - 28px - 56px); }
+  .ds-select { width: 160px; }
+  .chat-col { padding: 6px 2px 14px; }
+  .bubble-user, .bubble-ai { max-width: 92%; }
+}
 </style>

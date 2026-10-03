@@ -260,3 +260,45 @@ def asyncssh_connect(device: dict):
     """独立封装便于测试替换；参数与批量执行保持一致（含老设备传统算法扩展）。"""
     import asyncssh
     return asyncssh.connect(**netdev_service.ssh_connect_kwargs(device))
+
+
+# ---------------- 网络拓扑（LLDP/ARP 自动发现 + 分组拓扑 + 资产定位） ----------------
+
+from app.services import netdev_topology_service as topo  # noqa: E402
+
+
+class TopologyPositionsIn(BaseModel):
+    group: str = ""
+    positions: dict = {}          # {device_id: [x, y]}
+
+
+@router.get("/topology")
+async def get_topology(group: str = "", force: int = 0) -> dict:
+    """分组拓扑：LLDP 链路（优先）+ ARP 资产索引。force=1 强制重新采集（TTL 外自动增量采集）。"""
+    if not netdev_service.SSH_AVAILABLE and force:
+        raise HTTPException(400, "asyncssh 未安装，无法采集拓扑")
+    devices = db.list_netdev_devices(group)
+    groups = sorted({d.get("group_name", "") for d in db.list_netdev_devices()})
+    if not devices and not group:
+        return {"group": "", "groups": groups, "nodes": [], "edges": [],
+                "arp_index": [], "positions": {}, "stats": {}, "collect_stats": {}}
+    return await topo.topology_payload(group, force=bool(force))
+
+
+@router.get("/topology/search")
+async def search_topology(group: str = "", q: str = "") -> dict:
+    """资产定位：IP / MAC / 设备名 → 所在设备与端口。"""
+    return topo.search_asset(group, q)
+
+
+@router.post("/topology/positions")
+async def save_topology_positions(payload: TopologyPositionsIn) -> dict:
+    """保存手动布局坐标（整组覆盖）。"""
+    db.save_netdev_topology_positions(payload.group, payload.positions)
+    return {"ok": True}
+
+
+@router.delete("/topology/positions")
+async def clear_topology_positions(group: str = "") -> dict:
+    db.save_netdev_topology_positions(group, {})
+    return {"ok": True}

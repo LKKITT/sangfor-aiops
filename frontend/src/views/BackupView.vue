@@ -1,10 +1,15 @@
 <template>
   <div class="backup-page">
-    <div class="page-card" style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center">
-      <el-button type="primary" @click="createBackup" :loading="creating">
-        <el-icon><Plus /></el-icon> 立即备份
-      </el-button>
-      <span class="hint">备份 = 结构化配置快照（可对比/可恢复） + 设备配置文件归档（.conf，SHA256 校验）。每日 {{ '02:00' }} 自动备份。</span>
+    <div class="page-head">
+      <div>
+        <h2 class="ph-title">备份与恢复</h2>
+        <p class="ph-desc">结构化配置快照（可对比 / 可恢复）+ 设备配置文件归档（.conf，SHA256 校验）· 每日 02:00 自动备份</p>
+      </div>
+      <div class="ph-actions">
+        <el-button type="primary" @click="createBackup" :loading="creating">
+          <el-icon><Plus /></el-icon>&nbsp;立即备份
+        </el-button>
+      </div>
     </div>
 
     <div class="cols">
@@ -67,7 +72,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="restoreDialog" title="恢复配置 — 变更计划预览" width="640px">
+    <el-dialog v-model="restoreDialog" title="恢复配置 — 变更计划预览" width="640px" append-to-body>
       <el-alert type="warning" :closable="false" style="margin-bottom: 10px"
                 title="执行前系统会自动生成安全备份；失败即停，可随时用安全备份回退" />
       <div v-if="restorePlan">
@@ -190,15 +195,27 @@ async function applyRestore() {
 </script>
 
 <style scoped>
-.cols { display: flex; gap: 12px; align-items: flex-start; }
+.backup-page { animation: sfa-fade-up .3s var(--ease-out); }
+.cols { display: flex; gap: 16px; align-items: flex-start; }
 .col-list { flex: 1; min-width: 380px; }
 .col-diff { flex: 1.2; min-height: 300px; }
-.col-title { font-weight: 600; margin-bottom: 12px; }
-.hint { color: #909399; font-size: 12px; }
-.bk-card { border: 1px solid #ebeef5; border-radius: 8px; padding: 8px 12px; }
-.bk-meta { margin: 6px 0; display: flex; gap: 6px; }
-.bk-actions { display: flex; }
-.diff-sec { margin-bottom: 12px; }
-.diff-sec-title { font-weight: 600; margin-bottom: 4px; font-size: 13px; }
-.diff-line { padding: 2px 0; font-size: 12px; }
+.col-title { font-weight: 650; margin-bottom: 12px; }
+
+.bk-card {
+  border: 1px solid var(--sfa-border); border-radius: var(--sfa-r-md);
+  padding: 10px 13px; background: #FBFCFE;
+  transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2), border-color var(--dur-2);
+}
+.bk-card:hover { transform: translateY(-1px); box-shadow: var(--sfa-shadow-2); border-color: #D6DDF0; }
+.bk-meta { margin: 7px 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.bk-actions { display: flex; flex-wrap: wrap; gap: 2px; }
+
+/* 时间线节点与连线令牌化 */
+.col-list :deep(.el-timeline-item__wrapper) { padding-left: 22px; }
+.col-list :deep(.el-timeline-item__timestamp) { color: var(--sfa-text-4); font-size: 11.5px; font-family: var(--sfa-mono); }
+.col-list :deep(.el-timeline-item__node) { box-shadow: 0 0 0 3px rgba(59, 99, 255, .12); }
+
+.diff-sec { margin-bottom: 14px; }
+.diff-sec-title { font-weight: 650; margin-bottom: 6px; font-size: 12.5px; color: var(--sfa-text-2); }
+.diff-line { padding: 2.5px 0; font-size: 12px; }
 </style>

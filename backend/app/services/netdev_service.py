@@ -25,9 +25,10 @@ try:
 except ImportError:   # 未安装 asyncssh 时设备管理功能不可用（其余功能不受影响）
     SSH_AVAILABLE = False
 
-BATCH_CONCURRENCY = 10        # 批量执行并发上限（同批同时在线 SSH 会话数）
-IDLE_WINDOW = 1.5             # 输出空闲窗口秒数：无新数据即认为本条命令输出结束
-LOGIN_IDLE_WINDOW = 3.0       # 登录横幅/提示符的空闲窗口
+BATCH_CONCURRENCY = 20        # 批量执行并发上限（同批同时在线 SSH 会话数）
+IDLE_WINDOW = 1.2             # 输出空闲窗口秒数：无新数据即认为本条命令输出结束
+LOGIN_IDLE_WINDOW = 1.2       # 登录横幅/提示符的空闲窗口
+POLL_INTERVAL = 0.03          # 读取轮询粒度（提示符响应延迟的下限）
 
 
 @dataclass
@@ -106,8 +107,13 @@ def mask_output(output: str) -> str:
 async def read_until_idle(stream, idle_window: float, hard_deadline: float,
                           prompt_re: re.Pattern | None = None,
                           min_len: int = 0) -> str:
-    """持续读取 stdout 直到：提示符匹配 / 空闲窗口无新数据 / 硬超时。"""
+    """持续读取 stdout 直到：提示符匹配 / 空闲窗口无新数据 / 硬超时。
+
+    三个条件按最快命中者返回；idle_window 自最后收到数据起算，
+    连接后始终无输出的场景同样按 idle_window 提前返回（如无横幅直出提示符）。
+    """
     buf: list[str] = []
+    state = {"last_data": None}
 
     async def _reader():
         while True:
@@ -115,17 +121,25 @@ async def read_until_idle(stream, idle_window: float, hard_deadline: float,
             if not data:
                 return
             buf.append(data)
+            state["last_data"] = asyncio.get_running_loop().time()
 
     reader = asyncio.ensure_future(_reader())
+    started = asyncio.get_running_loop().time()
     try:
         while True:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(POLL_INTERVAL)
             text = "".join(buf)
             now = asyncio.get_running_loop().time()
-            if prompt_re and text and min_len and len(text) >= min_len:
+            if prompt_re and text and len(text) >= max(min_len, 1):
                 tail = text.rstrip()[-200:]
                 if prompt_re.search(tail):
                     return text
+            if state["last_data"] is not None:
+                if now - state["last_data"] >= idle_window:
+                    return text
+            elif now - started >= idle_window:
+                # 尚未收到任何输出：idle_window 内无响应即返回（无横幅/静默设备）
+                return text
             if now >= hard_deadline:
                 return text
     finally:
@@ -136,21 +150,98 @@ class SSHResult(dict):
     pass
 
 
+# ---------------- SSH 连接池（跨任务复用，省去重复握手/认证） ----------------
+
+CONN_POOL_TTL = 120.0         # 空闲连接保留时长（秒），过期由清理任务关闭
+CONN_POOL_MAX = 24            # 池内空闲连接上限（与批量并发同级）
+_CONN_POOL: dict[str, tuple] = {}      # key -> (conn, last_used_ts)
+_pool_cleaner_task = None
+
+
+def _pool_key(device: dict) -> str:
+    return f"{device['host']}:{device.get('port') or 22}:{device.get('username', '')}"
+
+
+def _ensure_pool_cleaner() -> None:
+    global _pool_cleaner_task
+    if _pool_cleaner_task and not _pool_cleaner_task.done():
+        return
+
+    async def _cleaner():
+        while _CONN_POOL:
+            await asyncio.sleep(20)
+            now = asyncio.get_running_loop().time()
+            for key in [k for k, (_, ts) in _CONN_POOL.items() if now - ts > CONN_POOL_TTL]:
+                conn, _ = _CONN_POOL.pop(key)
+                try:
+                    conn.close()
+                except Exception:   # noqa: BLE001
+                    pass
+
+    _pool_cleaner_task = asyncio.get_running_loop().create_task(_cleaner())
+
+
+async def _get_or_connect(device: dict, timeout: float):
+    """优先复用池内空闲连接；无可用连接时新建。返回 (conn, reused)。"""
+    conn = _CONN_POOL.pop(_pool_key(device), None)
+    if conn is not None:
+        try:
+            if not conn[0].is_closed():
+                return conn[0], True
+        except Exception:   # noqa: BLE001
+            pass
+        try:
+            conn[0].close()
+        except Exception:   # noqa: BLE001
+            pass
+    fresh = await asyncio.wait_for(
+        asyncssh.connect(**ssh_connect_kwargs(device)),
+        timeout=min(10.0, timeout))
+    return fresh, False
+
+
+def _release_conn(device: dict, conn) -> None:
+    """归还连接进池；池满或连接异常则直接关闭。"""
+    try:
+        if conn.is_closed():
+            return
+    except Exception:   # noqa: BLE001
+        return
+    key = _pool_key(device)
+    if key not in _CONN_POOL and len(_CONN_POOL) < CONN_POOL_MAX:
+        _CONN_POOL[key] = (conn, asyncio.get_running_loop().time())
+        _ensure_pool_cleaner()
+    else:
+        try:
+            conn.close()
+        except Exception:   # noqa: BLE001
+            pass
+
+
 async def run_commands(device: dict, commands: list[str], timeout: float = 30,
-                       idle_window: float = IDLE_WINDOW) -> SSHResult:
-    """在单台设备上顺序执行命令并聚合输出。任何一步失败返回 ok=False + error。"""
+                       idle_window: float = IDLE_WINDOW,
+                       reuse_conn: bool = True) -> SSHResult:
+    """在单台设备上顺序执行命令并聚合输出。任何一步失败返回 ok=False + error。
+
+    reuse_conn=True 时连接执行完归还进池（默认），供同一设备连续任务复用。
+    """
     if not SSH_AVAILABLE:
         return SSHResult(ok=False, error="asyncssh 未安装（pip install asyncssh），SSH 功能不可用")
     prof = profile_of(device.get("vendor", ""))
     host = device["host"]
     started = time.monotonic()
     conn = None
+    pooled = False
+    ok_done = False   # 仅成功执行完毕的连接才归还进池（异常路径的会话状态不可信）
     try:
-        conn = await asyncio.wait_for(
-            asyncssh.connect(**ssh_connect_kwargs(device)),
-            timeout=min(10.0, timeout))
+        if reuse_conn:
+            conn, pooled = await _get_or_connect(device, timeout)
+        else:
+            conn = await asyncio.wait_for(
+                asyncssh.connect(**ssh_connect_kwargs(device)),
+                timeout=min(10.0, timeout))
         async with conn.create_process(term_type="vt100", term_size=(220, 60)) as proc:
-            # 登录横幅/首提示符
+            # 登录横幅/首提示符（提示符命中即返回，无横幅按空闲窗早退）
             await read_until_idle(proc.stdout, LOGIN_IDLE_WINDOW,
                                   time.monotonic() + timeout, PROMPT_FALLBACK)
             # 可选提权（enable/super）
@@ -159,13 +250,15 @@ async def run_commands(device: dict, commands: list[str], timeout: float = 30,
                 proc.stdin.write(prof.enable_cmd + "\n")
                 echo = await read_until_idle(proc.stdout, idle_window,
                                              time.monotonic() + 10,
-                                             re.compile(r"(?i)(password|口令)\s*[:：]?\s*$"))
+                                             re.compile(r"(?i)(password|口令)\s*[:：]?\s*$"), 1)
                 proc.stdin.write(enable_pwd + "\n")
-                await read_until_idle(proc.stdout, idle_window, time.monotonic() + 10)
+                await read_until_idle(proc.stdout, idle_window, time.monotonic() + 10,
+                                      PROMPT_FALLBACK, 1)
             # 关闭分页（部分厂家无分页概念如 MikroTik，paging_cmd 为空时跳过）
             if prof.paging_cmd:
                 proc.stdin.write(prof.paging_cmd + "\n")
-                await read_until_idle(proc.stdout, idle_window, time.monotonic() + 10)
+                await read_until_idle(proc.stdout, idle_window, time.monotonic() + 10,
+                                      PROMPT_FALLBACK, 1)
             # 逐条执行
             outputs: list[str] = []
             for cmd in commands:
@@ -178,6 +271,7 @@ async def run_commands(device: dict, commands: list[str], timeout: float = 30,
                                             PROMPT_FALLBACK, min_len=1)
                 outputs.append(f"{device['name']}@{host}> {cmd}\n{out.rstrip()}")
             db.update_netdev_last_ok(device["id"])
+            ok_done = True
             return SSHResult(ok=True, output="\n\n".join(outputs) or "（无输出）",
                              duration=round(time.monotonic() - started, 2))
     except asyncio.TimeoutError:
@@ -195,10 +289,13 @@ async def run_commands(device: dict, commands: list[str], timeout: float = 30,
                          duration=round(time.monotonic() - started, 2))
     finally:
         if conn is not None:
-            try:
-                conn.close()
-            except Exception:   # noqa: BLE001
-                pass
+            if reuse_conn and ok_done:
+                _release_conn(device, conn)
+            else:
+                try:
+                    conn.close()
+                except Exception:   # noqa: BLE001
+                    pass
 
 
 # ---------------- 批量执行编排（并行 + 进度落库） ----------------

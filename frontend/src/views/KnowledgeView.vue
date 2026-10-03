@@ -1,30 +1,28 @@
 <template>
   <div class="kb-page">
     <!-- 顶部：标题 + 统计卡片 + 操作 -->
-    <div class="page-card kb-header">
-      <div class="kb-header-top">
-        <div>
-          <b style="font-size: 16px">个人知识库</b>
-          <span class="kb-sub">勾选「查询知识库」的对话经 LLM WIKI 提炼，沉淀为你的个性化知识网络</span>
-        </div>
-        <div style="display: flex; gap: 8px">
-          <el-button size="small" :loading="processing" :disabled="!pendingCount" @click="processPending">
-            <el-icon><MagicStick /></el-icon> 立即沉淀{{ pendingCount ? `（${pendingCount} 条对话）` : '' }}
-          </el-button>
-          <el-button size="small" type="primary" :loading="reflecting" :disabled="!stats.total" @click="makeReflection">
-            <el-icon><DataAnalysis /></el-icon> 生成反思报告
-          </el-button>
-        </div>
+    <div class="page-head">
+      <div>
+        <h2 class="ph-title">个人知识库</h2>
+        <p class="ph-desc">勾选「查询知识库」的对话经 LLM WIKI 提炼，沉淀为你的个性化知识网络</p>
       </div>
-      <div class="stat-cards">
-        <div class="stat-card"><div class="stat-num">{{ stats.total }}</div><div class="stat-label">知识词条</div></div>
-        <div class="stat-card"><div class="stat-num">{{ stats.categories?.length || 0 }}</div><div class="stat-label">分类领域</div></div>
-        <div class="stat-card"><div class="stat-num">{{ stats.tags?.length || 0 }}</div><div class="stat-label">标签</div></div>
-        <div class="stat-card" :class="{ 'stat-warn': pendingCount > 0 }">
-          <div class="stat-num">{{ pendingCount }}</div><div class="stat-label">待沉淀对话</div>
-        </div>
-        <div class="stat-card"><div class="stat-num">{{ stats.reflections || 0 }}</div><div class="stat-label">反思报告</div></div>
+      <div class="ph-actions">
+        <el-button :loading="processing" :disabled="!pendingCount" @click="processPending">
+          <el-icon><MagicStick /></el-icon>&nbsp;立即沉淀{{ pendingCount ? `（${pendingCount} 条对话）` : '' }}
+        </el-button>
+        <el-button type="primary" :loading="reflecting" :disabled="!stats.total" @click="makeReflection">
+          <el-icon><DataAnalysis /></el-icon>&nbsp;生成反思报告
+        </el-button>
       </div>
+    </div>
+    <div class="kb-stats">
+      <div class="sfa-stat"><div class="num">{{ stats.total }}</div><div class="lbl">知识词条</div></div>
+      <div class="sfa-stat"><div class="num">{{ stats.categories?.length || 0 }}</div><div class="lbl">分类领域</div></div>
+      <div class="sfa-stat"><div class="num">{{ stats.tags?.length || 0 }}</div><div class="lbl">标签</div></div>
+      <div class="sfa-stat" :class="{ 'stat-warn': pendingCount > 0 }">
+        <div class="num">{{ pendingCount }}</div><div class="lbl">待沉淀对话</div>
+      </div>
+      <div class="sfa-stat"><div class="num">{{ stats.reflections || 0 }}</div><div class="lbl">反思报告</div></div>
     </div>
 
     <!-- 待沉淀对话：查看条目信息，勾选沉淀或忽略 -->
@@ -149,10 +147,10 @@
           <el-button size="small" text type="primary" @click="loadEntries">搜索</el-button>
         </div>
         <div class="entry-grid">
-          <div v-for="e in entries" :key="e.id" class="entry-card" @click="detail = e">
+          <div v-for="e in entries" :key="e.id" class="entry-card" :style="{ '--cat-accent': catAccent(e.category) }" @click="detail = e">
             <div class="entry-top">
-              <el-tag size="small" :type="catTagType(e.category)">{{ e.category }}</el-tag>
-              <span style="flex: 1; font-weight: 600">{{ e.topic }}</span>
+              <el-tag size="small" :type="catTagType(e.category)" effect="light">{{ e.category }}</el-tag>
+              <span class="entry-topic">{{ e.topic }}</span>
               <el-button size="small" text type="danger" @click.stop="removeEntry(e)">
                 <el-icon><Delete /></el-icon>
               </el-button>
@@ -160,7 +158,7 @@
             <div class="entry-summary">{{ e.summary }}</div>
             <div class="entry-foot">
               <el-tag v-for="t in e.tags.slice(0, 3)" :key="t" size="small" effect="plain" type="info">{{ t }}</el-tag>
-              <span class="kb-sub" style="margin-left: auto">{{ e.created_at?.slice(0, 16) }}</span>
+              <span class="entry-date">{{ e.created_at?.slice(0, 16) }}</span>
             </div>
           </div>
           <el-empty v-if="!entries.length" description="没有匹配的词条" style="grid-column: 1 / -1" />
@@ -169,7 +167,7 @@
     </template>
 
     <!-- 词条详情抽屉 -->
-    <el-drawer v-model="showDetail" :title="detail?.topic" size="480px">
+    <el-drawer v-model="showDetail" :title="detail?.topic" size="480px" append-to-body>
       <template v-if="detail">
         <div style="margin-bottom: 10px; display: flex; gap: 6px; align-items: center">
           <el-tag size="small" :type="catTagType(detail.category)">{{ detail.category }}</el-tag>
@@ -192,7 +190,16 @@
                 {{ refTitle(r) }}
               </a>
             </template>
-            <span v-else class="ref-plain">[{{ i + 1 }}] {{ refTitle(r) }}</span>
+            <template v-else>
+              <!-- 客服知识库引用源头无链接：提供「去问 Agent」降级入口，走应用内诸葛检索 -->
+              <span v-if="seedable(r)" class="ref-plain is-seed"
+                    :title="`切换到 AI 对话，通过官方知识库查询「${seedQuestion(r)}」`"
+                    @click="askInChat(r)">
+                [{{ i + 1 }}] {{ refTitle(r) }}
+                <el-icon class="seed-ico"><ChatDotRound /></el-icon>
+              </span>
+              <span v-else class="ref-plain">[{{ i + 1 }}] {{ refTitle(r) }}</span>
+            </template>
           </div>
         </div>
         <div class="kb-sub" style="margin-top: 12px">
@@ -230,6 +237,16 @@ const refUrl = (r) => {
 const refTitle = (r) => {
   if (r && typeof r === 'object') return r.title || r.url || '（未命名引用）'
   return String(r)
+}
+
+// 无 URL 的知识库引用 → 「去问 Agent」：剥掉来源前缀得到自然问题，交给 AI 对话走诸葛检索
+const SOURCE_PREFIX = /^(客服知识库内容|support知识库内容|官方知识库内容|知识库内容)[-—:：]\s*/
+const seedQuestion = (r) => refTitle(r).replace(SOURCE_PREFIX, '') || refTitle(r)
+const seedable = (r) => !refUrl(r) && !!seedQuestion(r)
+
+function askInChat(r) {
+  store.chatSeed = { text: seedQuestion(r), useKnowledge: true, tick: (store.chatSeed?.tick || 0) + 1 }
+  store.view = 'chat'
 }
 
 const loaded = ref(false)
@@ -282,7 +299,7 @@ const timeRef = ref(null)
 let graphChart = null
 let catChart = null
 let timeChart = null
-const PALETTE = ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4']
+const PALETTE = ['#3B63FF', '#0FB9A4', '#7C5CFC', '#F5A90B', '#E5484D', '#6A87FF', '#12B0A0', '#9AA5BB']
 
 function renderCharts() {
   const { graph, categories, timeline } = stats.value
@@ -294,7 +311,7 @@ function renderCharts() {
     }
     graphChart.setOption({
       tooltip: { formatter: (p) => p.dataType === 'node' ? `${p.data.category || ''} · ${p.name}` : '' },
-      legend: [{ data: graph.categories, bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#606266' } }],
+      legend: [{ data: graph.categories, bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#667085' } }],
       series: [{
         type: 'graph', layout: 'force', roam: true, draggable: true,
         data: graph.nodes.map(n => ({
@@ -306,7 +323,7 @@ function renderCharts() {
         links: graph.edges,
         categories: graph.categories.map((c, i) => ({ name: c, itemStyle: { color: PALETTE[i % PALETTE.length] } })),
         force: { repulsion: 300, edgeLength: [70, 140], gravity: 0.08 },
-        lineStyle: { color: '#c0c4cc', curveness: 0.15 },
+        lineStyle: { color: '#C6CEDD', curveness: 0.15 },
         emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
       }]
     })
@@ -319,7 +336,7 @@ function renderCharts() {
       grid: { left: 80, right: 24, top: 10, bottom: 24 },
       xAxis: { type: 'value', minInterval: 1 },
       yAxis: { type: 'category', data: cats.map(c => c.name), axisLabel: { fontSize: 11 } },
-      series: [{ type: 'bar', data: cats.map(c => c.value), barMaxWidth: 16, itemStyle: { color: '#5470c6', borderRadius: [0, 4, 4, 0] } }]
+      series: [{ type: 'bar', data: cats.map(c => c.value), barMaxWidth: 16, itemStyle: { color: '#3B63FF', borderRadius: [0, 6, 6, 0] } }]
     })
   }
   if (timeRef.value) {
@@ -329,7 +346,7 @@ function renderCharts() {
       grid: { left: 36, right: 16, top: 14, bottom: 26 },
       xAxis: { type: 'category', data: timeline.map(t => t.day.slice(5)), axisLabel: { fontSize: 10 } },
       yAxis: { type: 'value', minInterval: 1 },
-      series: [{ type: 'line', data: timeline.map(t => t.value), smooth: true, areaStyle: { opacity: 0.15 }, itemStyle: { color: '#91cc75' }, lineStyle: { color: '#91cc75' } }]
+      series: [{ type: 'line', data: timeline.map(t => t.value), smooth: true, areaStyle: { opacity: 0.14, color: '#0FB9A4' }, itemStyle: { color: '#0FB9A4' }, lineStyle: { color: '#0FB9A4', width: 2.5 } }]
     })
   }
 }
@@ -444,6 +461,7 @@ async function removeEntry(e) {
 }
 
 const catTagType = (c) => ({ 配置方法: 'primary', 故障排查: 'danger', 版本升级: 'warning', 安全策略: 'danger', 最佳实践: 'success' }[c] || 'info')
+const catAccent = (c) => ({ 配置方法: '#3B63FF', 故障排查: '#E5484D', 版本升级: '#E8930C', 安全策略: '#E5484D', 最佳实践: '#0E9F6E' }[c] || '#667085')
 
 onMounted(() => {
   loadAll()
@@ -456,32 +474,51 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.kb-page { display: flex; flex-direction: column; gap: 0; }
-.kb-header { padding: 14px 16px; }
-.kb-header-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-.kb-sub { color: #909399; font-size: 12px; margin-left: 8px; }
-.stat-cards { display: flex; gap: 10px; flex-wrap: wrap; }
-.stat-card { flex: 1; min-width: 110px; background: #f5f7fa; border-radius: 8px; padding: 10px 14px; text-align: center; }
-.stat-card.stat-warn { background: #fdf6ec; }
-.stat-num { font-size: 22px; font-weight: 700; color: #303133; }
-.stat-label { font-size: 12px; color: #909399; margin-top: 2px; }
-.kb-charts { display: flex; gap: 12px; margin-top: 12px; }
-.chart-card { padding: 12px 14px; }
-.col-title { font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; }
+/* 页面入场动画不带 fill-mode：transform 残留会把页面变成 fixed 弹层的包含块，导致抽屉错位出屏 */
+.kb-page { display: flex; flex-direction: column; animation: sfa-fade-up .3s var(--ease-out); }
+.kb-sub { color: var(--sfa-text-3); font-size: 12px; margin-left: 8px; }
+
+.kb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.sfa-stat.stat-warn { background: linear-gradient(180deg, #FFF9EE, #FEF3DC); border-color: #F6E3B4; }
+.sfa-stat.stat-warn .num { color: #C4870A; }
+
+.kb-charts { display: flex; gap: 16px; margin-top: 16px; }
+.chart-card { padding: 14px 16px; }
 .chart { width: 100%; }
 .chart-graph { height: 380px; }
-.chart-small { height: 178px; }
-.entry-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; margin-top: 10px; }
-.entry-card { border: 1px solid #ebeef5; border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: box-shadow .2s; }
-.entry-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.08); }
-.entry-top { display: flex; align-items: center; gap: 6px; }
-.entry-summary { font-size: 12px; color: #606266; margin: 6px 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.chart-small { height: 172px; }
+
+.entry-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }
+.entry-card {
+  --cat-accent: #667085;
+  position: relative; overflow: hidden;
+  border: 1px solid var(--sfa-border); border-radius: var(--sfa-r-md);
+  padding: 12px 14px 12px 17px; cursor: pointer; background: #fff;
+  transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2), border-color var(--dur-2);
+}
+.entry-card::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--cat-accent); opacity: .75;
+}
+.entry-card:hover { transform: translateY(-3px); box-shadow: var(--sfa-shadow-2); border-color: #D6DDF0; }
+.entry-top { display: flex; align-items: center; gap: 7px; }
+.entry-topic { flex: 1; font-weight: 650; font-size: 13px; line-height: 1.4; }
+.entry-summary { font-size: 12px; color: var(--sfa-text-2); margin: 7px 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.65; }
 .entry-foot { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.entry-date { margin-left: auto; color: var(--sfa-text-4); font-size: 11px; font-family: var(--sfa-mono); }
+
 .refl-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 .detail-block { margin-top: 14px; }
 .ref-item { font-size: 13px; margin-top: 6px; word-break: break-all; }
-.ref-link { color: #409eff; text-decoration: none; }
+.ref-link { color: var(--sfa-primary); text-decoration: none; }
 .ref-link:hover { text-decoration: underline; }
-.ref-plain { color: #606266; }
-.refl-hist { font-size: 12px; color: #409eff; padding: 3px 0; cursor: pointer; }
+.ref-plain { color: var(--sfa-text-2); }
+.ref-plain.is-seed {
+  cursor: pointer; border-radius: 7px; padding: 2px 6px; margin-left: -6px;
+  display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1);
+}
+.ref-plain.is-seed .seed-ico { font-size: 13px; color: var(--sfa-primary); flex-shrink: 0; }
+.ref-plain.is-seed:hover { background: #F3F6FF; color: var(--sfa-primary); }
+.ref-plain.is-seed:active { transform: scale(.99); }
 </style>
