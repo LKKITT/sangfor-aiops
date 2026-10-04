@@ -115,11 +115,12 @@ def conversation_detail_list(page: int = 1, page_size: int = 20, keyword: str = 
 
 
 @router.get("/conversations/{conv_id}")
-def conversation_messages(conv_id: str) -> list[dict]:
+def conversation_messages(conv_id: str, limit: int = 200, before_id: int | None = None) -> list[dict]:
+    """会话消息（按 id 升序）。默认返回最近 200 条（上限 1000）；before_id 供前端向上翻页。"""
     conv = db.get_conversation(conv_id)
     if not conv:
         raise HTTPException(404, "会话不存在")
-    return db.get_messages(conv_id)
+    return db.get_messages(conv_id, limit=max(1, min(limit, 1000)), before_id=before_id)
 
 
 @router.get("/last-conversation/{device_id}")

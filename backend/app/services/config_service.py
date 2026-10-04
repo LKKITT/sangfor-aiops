@@ -11,12 +11,14 @@
 """
 import hashlib
 import json
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.adapters.base import ChangeOp, DeviceClient, DeviceError
 from app.adapters.factory import get_client
 from app import db
+from app.services.device_cache import device_cache
 
 # diff 时忽略的易变字段（运行时统计，非配置）
 VOLATILE_FIELDS = {"hit_count", "rx_kbps", "tx_kbps"}
@@ -269,10 +271,33 @@ async def restore_apply(device_id: str, backup_id: str, operator: str = "user") 
                 break   # 失败即停，保留现场，可用 safety 备份回退
     except DeviceError as e:
         errors.append({"op": "snapshot", "resource": "-", "target_id": "-", "error": str(e)})
+    device_cache.invalidate(device_id)   # 配置已回写设备，可视化缓存全失效
     db.audit("restore.apply", {"backup_id": backup_id, "executed": len(executed),
                                "failed": len(errors), "safety_backup": safety["id"]},
              device_id=device_id, actor=operator, result="ok" if not errors else "partial")
     return {"ok": not errors, "safety_backup_id": safety["id"], "executed": executed, "errors": errors}
+
+
+def cleanup_scheduled_backups(keep: int = 30) -> int:
+    """定时备份保留策略：每台设备仅保留最近 keep 份 scheduled 备份（记录 + 配置文件）。
+
+    manual / pre_change 备份永不自动清理。返回删除的备份数。
+    """
+    if keep <= 0:
+        return 0
+    removed = 0
+    for device in db.list_devices():
+        rows = [b for b in db.list_backups(device["id"]) if b.get("kind") == "scheduled"]
+        for b in rows[keep:]:
+            fp = b.get("file_path")
+            if fp:
+                try:
+                    Path(fp).unlink(missing_ok=True)
+                except OSError:
+                    pass   # 文件删除失败不阻塞记录清理（下次清理重试）
+            db.delete_backup(b["id"])
+            removed += 1
+    return removed
 
 
 async def restore_config_file(device_id: str, backup_id: str, operator: str = "user") -> dict:

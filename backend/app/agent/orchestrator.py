@@ -36,6 +36,7 @@ from app.agent.prompts import (
 from app.agent.tools import TOOLS_BY_NAME, get_tools
 from app.config import settings
 from app.services import personal_kb_service
+from app.services.device_cache import device_cache
 from app.services.app_settings import get_llm_config
 
 MAX_TOOL_ROUNDS = 8
@@ -250,6 +251,7 @@ class AgentOrchestrator:
                                                  "content": err})
                 yield {"type": "confirm_result", "action_id": action_id, "approved": True, "failed": True}
                 return
+            device_cache.invalidate(device_id)   # 配置已变更：可视化缓存失效（含批量在 _execute_write_batch 内逐台失效）
             db.update_pending_action(action_id, status="failed" if batch_all_failed else "executed",
                                      result_json=json.dumps(result, ensure_ascii=False)[:4000])
             guardrails.audit_tool(action["tool_name"], tool_args,
@@ -557,6 +559,8 @@ class AgentOrchestrator:
                          device_id=d["id"], result="failed")
         for s in missing:
             results.append({"device": s, "ok": False, "error": "未找到匹配的深信服设备"})
+        for d in matched:
+            device_cache.invalidate(d["id"])   # 每台配置可能已变更：缓存逐台失效
         ok_n = sum(1 for r in results if r.get("ok"))
         return {"batch": True, "targets": len(targets), "succeeded": ok_n,
                 "results": results,

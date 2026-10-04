@@ -7,7 +7,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -366,6 +366,35 @@ def audit(action: str, detail: dict | None = None, conv_id: str = "", device_id:
         )
 
 
+def cleanup_expired(retention_days: int = 180, audit_days: int = 365) -> dict:
+    """数据保留清理：过期会话（含消息/摘要/沉淀状态/已处理待确认）与审计日志。
+
+    阈值 0 表示对应项不清理；pending 状态的待确认动作永不自动删除；
+    指向过期会话的渠道绑定仅解绑不删除。返回各表实际删除行数。
+    """
+    removed: dict[str, int] = {}
+    conv_cutoff = (datetime.now() - timedelta(days=retention_days)).isoformat(timespec="seconds")
+    audit_cutoff = (datetime.now() - timedelta(days=audit_days)).isoformat(timespec="seconds")
+    with _connect() as conn:
+        old_convs = [r["id"] for r in conn.execute(
+            "SELECT id FROM conversations WHERE updated_at < ?", (conv_cutoff,))]
+        if old_convs and retention_days > 0:
+            q = ",".join("?" * len(old_convs))
+            args = (*old_convs,)
+            removed["messages"] = conn.execute(
+                f"DELETE FROM messages WHERE conv_id IN ({q})", args).rowcount
+            conn.execute(f"DELETE FROM conv_summaries WHERE conv_id IN ({q})", args)
+            conn.execute(f"DELETE FROM kb_sediment_status WHERE conv_id IN ({q})", args)
+            conn.execute(f"DELETE FROM pending_actions WHERE conv_id IN ({q}) AND status != 'pending'", args)
+            conn.execute(f"UPDATE channel_bindings SET conv_id = '' WHERE conv_id IN ({q})", args)
+            removed["conversations"] = conn.execute(
+                f"DELETE FROM conversations WHERE id IN ({q})", args).rowcount
+        if audit_days > 0:
+            removed["audit_logs"] = conn.execute(
+                "DELETE FROM audit_logs WHERE ts < ?", (audit_cutoff,)).rowcount
+    return removed
+
+
 def list_audit(limit: int = 200) -> list[dict]:
     with _connect() as conn:
         rows = conn.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
@@ -472,9 +501,26 @@ def max_message_id(conv_id: str) -> int:
 
 
 def get_messages(conv_id: str, limit: Optional[int] = None,
-                 since_id: Optional[int] = None) -> list[dict]:
-    """会话消息（按 id 升序）。limit=只取最近 N 条；since_id=只取该 id 之后的新消息。"""
+                 since_id: Optional[int] = None,
+                 before_id: Optional[int] = None) -> list[dict]:
+    """会话消息（按 id 升序）。limit=只取最近 N 条；since_id=只取该 id 之后的新消息；
+    before_id=只取该 id 之前的消息（配合 limit 做向上翻页游标）。"""
     with _connect() as conn:
+        if before_id is not None:
+            if limit:   # 向上翻页：取 before_id 之前最近 limit 条，再按 id 升序返回
+                rows = conn.execute(
+                    "SELECT * FROM (SELECT * FROM messages WHERE conv_id=? AND id<?"
+                    " ORDER BY id DESC LIMIT ?) ORDER BY id", (conv_id, before_id, limit)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE conv_id=? AND id<? ORDER BY id",
+                    (conv_id, before_id)).fetchall()
+            out = []
+            for r in rows:
+                d = _row_to_dict(r)
+                d["content"] = json.loads(d.pop("content_json"))
+                out.append(d)
+            return out
         if since_id:
             if limit:
                 rows = conn.execute(

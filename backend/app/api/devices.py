@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import db
+from app.services.device_cache import CONFIG_TTL, STATUS_TTL, device_cache
 from app.adapters.base import DeviceError
 from app.adapters.factory import get_client
 from app.config import settings
@@ -73,6 +74,7 @@ def patch_device(device_id: str, payload: DevicePatch) -> dict:
         fields["readonly"] = int(fields["readonly"])
     device.update(fields)
     saved = db.upsert_device(device)
+    device_cache.invalidate(device_id)   # 设备连接信息/权限变更，缓存全失效
     return {**saved, "password": "***"}
 
 
@@ -80,6 +82,7 @@ def patch_device(device_id: str, payload: DevicePatch) -> dict:
 def remove_device(device_id: str) -> dict:
     _require(device_id)
     db.delete_device(device_id)
+    device_cache.invalidate(device_id)
     db.audit("device.delete", {"device_id": device_id})
     return {"ok": True}
 
@@ -158,16 +161,23 @@ async def test_device(device_id: str) -> dict:
 
 # ---------------- 实时配置查询（可视化面板数据源） ----------------
 
-async def _with_client(device_id: str, fn) -> Any:
+async def _with_client(device_id: str, fn, cache_key: str = "", ttl: float = 0.0) -> Any:
+    """执行设备调用。带 cache_key 时走进程内 TTL 缓存（single-flight），仅用于只读可视化端点。"""
     _require(device_id)
-    try:
-        client = await get_client(device_id)   # 共享客户端，复用登录会话
-        # 兜底超时：登录超时/负缓存已挡住不可达设备，这里防端点内部拖长
-        return await asyncio.wait_for(fn(client), timeout=settings.device_http_timeout + 5)
-    except asyncio.TimeoutError as e:
-        raise HTTPException(504, "设备响应超时，请检查设备网络后重试") from e
-    except DeviceError as e:
-        raise HTTPException(502, f"设备连接失败：{e}") from e
+
+    async def _run() -> Any:
+        try:
+            client = await get_client(device_id)   # 共享客户端，复用登录会话
+            # 兜底超时：登录超时/负缓存已挡住不可达设备，这里防端点内部拖长
+            return await asyncio.wait_for(fn(client), timeout=settings.device_http_timeout + 5)
+        except asyncio.TimeoutError as e:
+            raise HTTPException(504, "设备响应超时，请检查设备网络后重试") from e
+        except DeviceError as e:
+            raise HTTPException(502, f"设备连接失败：{e}") from e
+
+    if cache_key:
+        return await device_cache.get_or_load(device_id, cache_key, ttl, _run)
+    return await _run()
 
 
 @router.get("/{device_id}/status")
@@ -177,7 +187,7 @@ async def get_status(device_id: str) -> dict:
     async def do(client) -> dict:
         return (await client.get_status()).to_dict()
 
-    return await _with_client(device_id, do)
+    return await _with_client(device_id, do, cache_key="status", ttl=STATUS_TTL)
 
 
 @router.get("/{device_id}/interfaces")
@@ -200,29 +210,30 @@ async def get_interfaces(device_id: str) -> list[dict]:
                 pass
         return rows
 
-    return await _with_client(device_id, do)
+    return await _with_client(device_id, do, cache_key="interfaces", ttl=STATUS_TTL)
 
 
 @router.get("/{device_id}/zones")
 async def get_zones(device_id: str) -> list[dict]:
-    return await _with_client(device_id, lambda c: c.get_zones())
+    return await _with_client(device_id, lambda c: c.get_zones(), cache_key="zones", ttl=CONFIG_TTL)
 
 
 @router.get("/{device_id}/nat")
 async def get_nat(device_id: str) -> list[dict]:
-    rules = await _with_client(device_id, lambda c: c.get_nat_rules())
+    rules = await _with_client(device_id, lambda c: c.get_nat_rules(), cache_key="nat", ttl=CONFIG_TTL)
     return [r.to_dict() for r in rules]
 
 
 @router.get("/{device_id}/acl")
 async def get_acl(device_id: str) -> list[dict]:
-    rules = await _with_client(device_id, lambda c: c.get_acl_rules())
+    rules = await _with_client(device_id, lambda c: c.get_acl_rules(), cache_key="acl", ttl=CONFIG_TTL)
     return [r.to_dict() for r in rules]
 
 
 @router.get("/{device_id}/bindings")
 async def get_bindings(device_id: str, keyword: str = "") -> list[dict]:
-    rows = await _with_client(device_id, lambda c: c.get_user_bindings(keyword))
+    rows = await _with_client(device_id, lambda c: c.get_user_bindings(keyword),
+                              cache_key=f"bindings:{keyword.strip().lower()}", ttl=CONFIG_TTL)
     kw = keyword.strip().lower()
     if kw:   # 非开放接口设备本地过滤
         rows = [r for r in rows if kw in json.dumps(r.to_dict(), ensure_ascii=False).lower()]
@@ -231,53 +242,54 @@ async def get_bindings(device_id: str, keyword: str = "") -> list[dict]:
 
 @router.get("/{device_id}/ipmac_bindings")
 async def get_ipmac_bindings(device_id: str, keyword: str = "") -> list[dict]:
-    rows = await _with_client(device_id, lambda c: c.get_ipmac_bindings(keyword))
+    rows = await _with_client(device_id, lambda c: c.get_ipmac_bindings(keyword),
+                              cache_key=f"ipmac:{keyword.strip().lower()}", ttl=CONFIG_TTL)
     return [r.to_dict() for r in rows]
 
 
 @router.get("/{device_id}/objects")
 async def get_objects(device_id: str) -> list[dict]:
-    rows = await _with_client(device_id, lambda c: c.get_network_objects())
+    rows = await _with_client(device_id, lambda c: c.get_network_objects(), cache_key="objects", ttl=CONFIG_TTL)
     return [r.to_dict() for r in rows]
 
 
 @router.get("/{device_id}/services")
 async def get_services(device_id: str) -> list[dict]:
-    rows = await _with_client(device_id, lambda c: c.get_services())
+    rows = await _with_client(device_id, lambda c: c.get_services(), cache_key="services", ttl=CONFIG_TTL)
     return [r.to_dict() for r in rows]
 
 
 @router.get("/{device_id}/routes")
 async def get_routes(device_id: str) -> list[dict]:
-    rows = await _with_client(device_id, lambda c: c.get_static_routes())
+    rows = await _with_client(device_id, lambda c: c.get_static_routes(), cache_key="routes", ttl=CONFIG_TTL)
     return [r.to_dict() for r in rows]
 
 
 @router.get("/{device_id}/snapshot")
 async def get_snapshot(device_id: str) -> dict:
-    return await _with_client(device_id, lambda c: c.snapshot_config())
+    return await _with_client(device_id, lambda c: c.snapshot_config(), cache_key="snapshot", ttl=CONFIG_TTL)
 
 
 # ---------------- AC 特有端点（仅 AC 设备有效） ----------------
 
 @router.get("/{device_id}/ac/online-users")
 async def get_ac_online_users(device_id: str) -> list[dict]:
-    return await _with_client(device_id, lambda c: c.get_online_users())
+    return await _with_client(device_id, lambda c: c.get_online_users(), cache_key="ac_users", ttl=STATUS_TTL)
 
 
 @router.get("/{device_id}/ac/net-policies")
 async def get_ac_net_policies(device_id: str) -> list[dict]:
-    return await _with_client(device_id, lambda c: c.get_net_policies())
+    return await _with_client(device_id, lambda c: c.get_net_policies(), cache_key="ac_netp", ttl=CONFIG_TTL)
 
 
 @router.get("/{device_id}/ac/flux-policies")
 async def get_ac_flux_policies(device_id: str) -> list[dict]:
-    return await _with_client(device_id, lambda c: c.get_flux_policies())
+    return await _with_client(device_id, lambda c: c.get_flux_policies(), cache_key="ac_flux", ttl=CONFIG_TTL)
 
 
 @router.get("/{device_id}/ac/throughput")
 async def get_ac_throughput(device_id: str) -> dict:
-    return await _with_client(device_id, lambda c: c.get_throughput())
+    return await _with_client(device_id, lambda c: c.get_throughput(), cache_key="ac_tput", ttl=STATUS_TTL)
 
 
 @router.get("/{device_id}/ac/app-rank")

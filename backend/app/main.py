@@ -28,6 +28,14 @@ async def scheduled_backup_all() -> None:
             log.warning("定时备份失败 device=%s: %s", device["id"], e)
 
 
+async def scheduled_cleanup() -> None:
+    removed_db = db.cleanup_expired(retention_days=settings.retention_days,
+                                    audit_days=settings.retention_audit_days)
+    removed_backups = config_service.cleanup_scheduled_backups(keep=settings.backup_keep_scheduled)
+    if any(removed_db.values()) or removed_backups:
+        log.info("保留策略清理完成：会话数据=%s 定时备份=%s 份", removed_db, removed_backups)
+
+
 async def scheduled_update_refresh() -> None:
     for prod in ("af", "ac", "scp", "hci"):
         try:
@@ -48,6 +56,8 @@ async def lifespan(app: FastAPI):
                       id="daily_backup")
     scheduler.add_job(scheduled_update_refresh, "cron", hour=settings.update_refresh_hour,
                       minute=30, id="update_refresh")
+    scheduler.add_job(scheduled_cleanup, "cron", hour=settings.cleanup_hour, minute=45,
+                      id="retention_cleanup")
     scheduler.start()
     start_keepalive()
     await wecom_bot_service.start()

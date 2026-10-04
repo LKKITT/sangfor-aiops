@@ -49,6 +49,11 @@ class Settings:
     readonly_mode: bool = _bool("READONLY_MODE")
     auto_backup_hour: int = int(os.getenv("AUTO_BACKUP_HOUR", "2"))
     update_refresh_hour: int = int(os.getenv("UPDATE_REFRESH_HOUR", "3"))
+    # 数据保留（0 = 不清理）：会话/消息保留天数、审计日志保留天数、每设备 scheduled 备份保留份数
+    retention_days: int = int(os.getenv("RETENTION_DAYS", "180"))
+    retention_audit_days: int = int(os.getenv("RETENTION_AUDIT_DAYS", "365"))
+    backup_keep_scheduled: int = int(os.getenv("BACKUP_KEEP_SCHEDULED", "30"))
+    cleanup_hour: int = int(os.getenv("CLEANUP_HOUR", "4"))
 
     # 深信服技术支持平台会话（可选，仅 .env 配置，用于抓取需认证正文；界面不再提供输入）
     support_cookie: str = os.getenv("SANGFOR_SUPPORT_COOKIE", "")

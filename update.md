@@ -6,6 +6,25 @@
 
 ## 2026-10-04
 
+### perf: 设备数据 TTL 缓存、数据保留策略、会话消息分页（第三批第 2 步：A-5 + N-2 + N-3）
+
+**A-5 服务端设备缓存（可视化端点读加速）**
+- 新增 `services/device_cache.py`：按 (device_id, key) 的进程内 TTL 缓存 + single-flight（同设备同 key 并发加载合并为一次实拉，防缓存击穿）
+- 边界红线（变更安全）：只缓存在 API/服务层——Agent 变更计划（tool.prepare）与工具 handler 直调适配器读实时数据，永不经过缓存，脏缓存不会污染 before/after 比对
+- 端点接入：`api/devices.py` `_with_client` 增加 cache_key/ttl 参数；状态/接口/AC 在线用户/吞吐 TTL 4s，zones/nat/acl/bindings/ipmac/objects/services/routes/snapshot/AC 策略 TTL 30s；bindings/ipmac 缓存键含 keyword
+- 写后失效（三处）：确认流批准执行（单台直接失效 + 批量在 `_execute_write_batch` 内逐台失效）、备份恢复 apply 后、设备 PATCH/DELETE 后
+
+**N-2 数据保留策略（此前全库零清理，四类数据无限增长）**
+- `db.cleanup_expired(retention_days, audit_days)`：过期会话级联清理（消息/摘要/沉淀状态/已处理的待确认动作）；pending 状态动作永不自动删；指向过期会话的渠道绑定仅解绑不删；审计日志按独立保留期清理
+- `config_service.cleanup_scheduled_backups(keep)`：每设备 scheduled 备份仅保留最近 N 份（记录 + .conf 配置文件同步删除）；manual/pre_change 备份永不自动清理
+- `main.py` 新增每日定时清理任务（CLEANUP_HOUR，默认 4:45）；新增设置 RETENTION_DAYS=180 / RETENTION_AUDIT_DAYS=365 / BACKUP_KEEP_SCHEDULED=30（均为 0 关闭）
+
+**N-3 会话消息分页（此前唯一无界接口）**
+- `GET /api/chat/conversations/{id}` 增加 limit（默认 200，上限 1000）与 before_id 游标参数；`db.get_messages` 支持 before_id 向上翻页
+- ChatLogView 详情弹窗默认加载最近 200 条，"加载更早消息"按钮按需向上翻页
+
+**新增测试**：`tests/test_retention_cache.py` 6 项（缓存命中/设备隔离/失效/single-flight 合并/端点级缓存与写后失效/保留清理含 pending 与绑定保护/备份保留策略），全量 245/245 通过
+
 ### build: 工程基建与前端首屏优化（第三批第 1 步：A-7 基建 + N-1 代码分割）
 
 **A-7 工程基建**

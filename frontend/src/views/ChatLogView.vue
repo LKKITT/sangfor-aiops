@@ -91,6 +91,11 @@
         <el-icon class="is-loading" style="font-size: 24px"><Loading /></el-icon>
       </div>
       <div v-else class="detail-messages">
+        <div v-if="detailHasMore" style="text-align: center; padding: 8px 0">
+          <el-button size="small" text type="primary" :loading="loadingMore" @click="loadEarlier">
+            加载更早消息
+          </el-button>
+        </div>
         <div v-for="(m, i) in detailMessages" :key="i" class="detail-row" :class="m.role">
           <div class="detail-role-tag">
             <el-tag :type="m.role === 'user' ? '' : 'success'" size="small" effect="plain">
@@ -131,6 +136,31 @@ const showDetailDialog = ref(false)
 const detailTitle = ref('')
 const detailMessages = ref([])
 const loadingDetail = ref(false)
+const DETAIL_PAGE = 200   // 详情消息分页：默认最近 200 条，更早内容点击按需加载
+const detailConvId = ref('')
+const detailOldestId = ref(null)
+const detailHasMore = ref(false)
+const loadingMore = ref(false)
+
+async function fetchDetailMessages(convId, beforeId = null) {
+  const rows = await apiGet(`/api/chat/conversations/${convId}?limit=${DETAIL_PAGE + 1}`
+    + (beforeId ? `&before_id=${beforeId}` : ''))
+  const hasMore = rows.length > DETAIL_PAGE
+  return { msgs: hasMore ? rows.slice(rows.length - DETAIL_PAGE) : rows, hasMore }
+}
+
+async function loadEarlier() {
+  if (!detailOldestId.value || loadingMore.value) return
+  loadingMore.value = true
+  try {
+    const { msgs, hasMore } = await fetchDetailMessages(detailConvId.value, detailOldestId.value)
+    if (msgs.length) detailOldestId.value = msgs[0].id
+    detailHasMore.value = hasMore
+    detailMessages.value = [...msgs, ...detailMessages.value]
+  } catch { /* 静默 */ } finally {
+    loadingMore.value = false
+  }
+}
 
 async function loadLogs() {
   loading.value = true
@@ -169,7 +199,11 @@ async function showDetail(convId) {
   loadingDetail.value = true
   showDetailDialog.value = true
   try {
-    detailMessages.value = await apiGet(`/api/chat/conversations/${convId}`)
+    detailConvId.value = convId
+    const { msgs, hasMore } = await fetchDetailMessages(convId)
+    detailMessages.value = msgs
+    detailOldestId.value = msgs.length ? msgs[0].id : null
+    detailHasMore.value = hasMore
   } catch (e) {
     detailMessages.value = []
   } finally {
