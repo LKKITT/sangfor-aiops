@@ -248,7 +248,7 @@ async def run_commands(device: dict, commands: list[str], timeout: float = 30,
             enable_pwd = device.get("enable_password", "")
             if enable_pwd:
                 proc.stdin.write(prof.enable_cmd + "\n")
-                echo = await read_until_idle(proc.stdout, idle_window,
+                await read_until_idle(proc.stdout, idle_window,
                                              time.monotonic() + 10,
                                              re.compile(r"(?i)(password|口令)\s*[:：]?\s*$"), 1)
                 proc.stdin.write(enable_pwd + "\n")
@@ -322,7 +322,7 @@ async def _run_batch(task_id: str, devices: list[dict], commands: list[str],
     results = await asyncio.gather(
         *[_run_one_task_item(task_id, d, commands, timeout, semaphore) for d in devices],
         return_exceptions=True)
-    for d, r in zip(devices, results):
+    for d, r in zip(devices, results, strict=True):
         if isinstance(r, BaseException):   # 单台编排异常不拖垮任务
             log.warning("批量执行单台编排异常 device=%s: %s", d["id"], r, exc_info=True)
             db.save_netdev_task_item({"task_id": task_id, "device_id": d["id"],

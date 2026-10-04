@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app import db
 from app.adapters.base import DeviceError
@@ -104,7 +104,7 @@ async def test_connection(payload: DeviceIn) -> dict:
             status = await client.get_status()
             sw_version = status.sw_version
             model = status.model
-        except Exception as e:
+        except Exception:
             # get_status 失败不影响连接测试结果，但记录原因
             pass
         await client.aclose()
@@ -118,7 +118,7 @@ async def test_connection(payload: DeviceIn) -> dict:
                                      else "开放接口共享密钥和来源 IP 白名单配置"))}
             msg = f"连接成功，版本 {sw_version}"
             return {"ok": True, "sw_version": sw_version, "model": model, "message": msg}
-        msg = f"连接成功"
+        msg = "连接成功"
         if model:
             msg += f"：{model}"
         if sw_version and sw_version != "unknown":
@@ -140,7 +140,7 @@ async def test_connection(payload: DeviceIn) -> dict:
 
 @router.post("/{device_id}/test")
 async def test_device(device_id: str) -> dict:
-    device = _require(device_id)
+    _require(device_id)
     try:
         client = await get_client(device_id)   # 共享客户端（复用登录会话）
         sw_version = "unknown"
@@ -164,10 +164,10 @@ async def _with_client(device_id: str, fn) -> Any:
         client = await get_client(device_id)   # 共享客户端，复用登录会话
         # 兜底超时：登录超时/负缓存已挡住不可达设备，这里防端点内部拖长
         return await asyncio.wait_for(fn(client), timeout=settings.device_http_timeout + 5)
-    except asyncio.TimeoutError:
-        raise HTTPException(504, "设备响应超时，请检查设备网络后重试")
+    except asyncio.TimeoutError as e:
+        raise HTTPException(504, "设备响应超时，请检查设备网络后重试") from e
     except DeviceError as e:
-        raise HTTPException(502, f"设备连接失败：{e}")
+        raise HTTPException(502, f"设备连接失败：{e}") from e
 
 
 @router.get("/{device_id}/status")

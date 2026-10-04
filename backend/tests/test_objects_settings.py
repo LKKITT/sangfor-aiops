@@ -1,7 +1,5 @@
 """新增能力回归：对象/服务分析、设置存储、快照导出与迁移语义。"""
-import json
 
-import pytest
 
 from app import db
 from app.services.analyzer import check_objects, check_services

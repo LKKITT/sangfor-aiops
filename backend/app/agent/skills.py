@@ -8,7 +8,7 @@
 - 技能选择不消耗工具循环轮数上限（orchestrator 侧保证）。
 """
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.agent.tools import get_tools_by_name
 

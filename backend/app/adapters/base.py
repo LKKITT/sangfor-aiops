@@ -5,7 +5,7 @@ AF（下一代防火墙）与 AC（上网行为管理）等设备均通过该接
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
-from typing import Any, Optional
+from typing import Optional
 
 
 @dataclass

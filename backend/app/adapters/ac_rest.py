@@ -137,7 +137,7 @@ class AcApiClient(DeviceClient):
                 if "302" in msg:
                     raise DeviceError(
                         "AC 设备开放接口地址不正确（收到 302 重定向），请使用 HTTP 端口 9999 "
-                        "（如 http://192.168.253.253:9999），而非 HTTPS")
+                        "（如 http://192.168.253.253:9999），而非 HTTPS") from e
                 # 空响应或业务错误继续尝试下一个端点
                 continue
         # 所有端点都失败但非连接/认证错误，仍视为可达（设备开放接口可能返回空数据）

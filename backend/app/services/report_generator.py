@@ -1,6 +1,5 @@
 """HTML 报告生成器：将备份快照 + 配置体检 + 软件更新建议合并为一份自包含 HTML 文件。"""
 
-import json
 from datetime import datetime
 from html import escape
 
@@ -188,7 +187,6 @@ def _scp_res(block: dict) -> str:
         return "—"
     if total >= 1000000:   # mb 大数值转 TB/G 展示
         val = total / 1024 / 1024
-        unit = "TB" if val >= 1024 else "GB"
         show = f"{val / 1024:.1f}TB" if val >= 1024 else f"{val:.0f}GB"
         used_v = used / 1024 / 1024
         used_show = f"{used_v / 1024:.1f}TB" if used_v >= 1024 else f"{used_v:.0f}GB"
@@ -452,7 +450,7 @@ def render_update_section(advice: dict) -> str:
     # 升级路径
     hops = path.get("hops", [])
     if hops:
-        html.append(f"<h3>升级路径</h3>")
+        html.append("<h3>升级路径</h3>")
         html.append(f"<p>{' → '.join(_h(h) for h in hops)}</p>")
 
     # 升级理由

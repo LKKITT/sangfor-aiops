@@ -8,8 +8,7 @@ import pytest
 
 from app import db
 from app.agent import guardrails, skills
-from app.agent.netdev_tools import (_full_commands, _h_get_status, _h_list_devices,
-                                    _h_locate_terminal, _p_apply_config, _resolve_targets,
+from app.agent.netdev_tools import (_full_commands, _h_get_status, _h_locate_terminal, _p_apply_config, _resolve_targets,
                                     _vendor_check)
 from app.agent.orchestrator import (AgentOrchestrator, device_context_type,
                                     load_any_device, match_sangfor_devices,

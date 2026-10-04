@@ -17,7 +17,6 @@ import re
 import sys
 import threading
 import time
-from pathlib import Path
 
 from app.config import PROJECT_DIR, settings
 from app.services import app_settings

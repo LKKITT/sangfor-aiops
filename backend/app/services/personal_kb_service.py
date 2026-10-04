@@ -17,7 +17,6 @@ import logging
 import re
 import sys
 import threading
-from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI

@@ -675,7 +675,7 @@ class AgentOrchestrator:
                            "args": {k: v for k, v in r["args"].items() if not str(k).startswith("_")}}
                 sem = asyncio.Semaphore(READ_CONCURRENCY)
 
-                async def _exec_read(tool, args):
+                async def _exec_read(tool, args, sem):
                     async with sem:
                         try:
                             if (tool.needs_device and tool.device_type != "netdev"
@@ -687,9 +687,9 @@ class AgentOrchestrator:
                             return {"_read_error": f"工具执行失败：{e}"}
 
                 unique = [r for r in reads if not r["dup"]]
-                outcomes = await asyncio.gather(*(_exec_read(r["tool"], r["args"]) for r in unique))
+                outcomes = await asyncio.gather(*(_exec_read(r["tool"], r["args"], sem) for r in unique))
                 raws: dict = {}
-                for r, result in zip(unique, outcomes):
+                for r, result in zip(unique, outcomes, strict=True):
                     if isinstance(result, dict) and "_read_error" in result:
                         continue
                     raws[r["key"]] = result
@@ -697,7 +697,7 @@ class AgentOrchestrator:
                     executed_results[r["key"]] = (content, _compact_result(r["call"]["name"], result))
                 # 失败原因按 key 收集：同 key 重复调用直接复用，不重试执行
                 errors = {r["key"]: result["_read_error"]
-                          for r, result in zip(unique, outcomes)
+                          for r, result in zip(unique, outcomes, strict=True)
                           if isinstance(result, dict) and "_read_error" in result}
                 for r in reads:
                     call, key, name = r["call"], r["key"], r["call"]["name"]

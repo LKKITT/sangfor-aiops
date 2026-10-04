@@ -1,4 +1,5 @@
 """对话 API：SSE 流式对话 + 变更确认 + 会话管理。"""
+import asyncio
 import json
 
 from fastapi import APIRouter, HTTPException
@@ -13,7 +14,6 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 orchestrator = AgentOrchestrator()
 
 # 活跃对话取消信号：conv_id → Event
-import asyncio
 _cancel_events: dict[str, asyncio.Event] = {}
 
 

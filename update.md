@@ -6,6 +6,20 @@
 
 ## 2026-10-04
 
+### build: 工程基建与前端首屏优化（第三批第 1 步：A-7 基建 + N-1 代码分割）
+
+**A-7 工程基建**
+- 新增 `backend/pyproject.toml`：ruff lint 配置（E/F/W/B 规则集，行宽 120；测试目录放宽 E402/F841/B904 等），存量 58 处问题全部清零——自动修复 26 处（未用导入/f-string/文件尾换行），人工修复 32 处：死赋值删除（transfer_src/dev_by_id/unit 等 8 处）、异常链补全 `from e`（B904 ×5：factory 登录超时/ac 302 引导/devices 网关超时）、zip 显式 `strict=True`（B905 ×4，均为长度恒等场景）、循环变量改名（B007 ×2）、闭包捕获循环变量改为参数显式传入（B023，`_exec_read` 增加-sem 形参）、测试数据重复键修正（F601）、中文标点字符集 lstrip 标注 noqa（B005 有意行为）
+- 新增 `backend/requirements.lock`：由当前已测环境（pytest 239 全绿）按依赖闭包导出的 54 个精确版本，CI 复现测试环境；requirements.txt 保持宽松区间供本地开发
+- 新增 `.github/workflows/ci.yml`：后端（锁版本安装 → ruff check → pytest）+ 前端（npm ci → build）双 job，push/PR 触发
+
+**N-1 前端代码分割**
+- App.vue 全部 9 个视图改 `defineAsyncComponent` 按需加载（`<component :is>` 切换机制原生兼容），首次进入仅加载当前视图，其余视图首次切换时拉取
+- vite.config.js 增加 `manualChunks`：element-plus / element-icons / vue vendor 独立分片，业务代码改动不再使框架缓存失效
+- 构建产物对比：首屏 JS 由单文件 2482KB（gzip 823KB）降至约 460KB gzip（entry 28KB + vendor 84KB + element-plus 918KB + 图标 171KB + 公共块 93KB，**降约 44%**）；echarts（1MB/gzip 343KB）随知识库/拓扑视图按需加载，xterm 维持既有动态加载，各视图代码 5-35KB 独立分片
+
+**验证**：ruff check 全过；pytest 239/239；npm run build 通过且分片符合预期
+
 ### fix: 代码审查修复（第一批 10 项 + 第二批 4 项，基于第三方审查建议的复核修正版实施）
 
 **缺陷修复**

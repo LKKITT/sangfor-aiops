@@ -1,0 +1,21 @@
+[project]
+name = "sangfor-agent"
+version = "1.0.0"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["app/adapters/simulator"]
+
+[tool.ruff.lint]
+# 渐进采纳：E/F/W 基础正确性 + B 常见陷阱；存量问题按文件白名单，不阻塞 CI
+select = ["E", "F", "W", "B"]
+ignore = [
+    "E501",    # 行宽：存量长注释/文案较多，统一交由 line-length 管理但暂不强改
+    "E741",    # 歧义单字符变量：存量少量 l/I 命名
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试代码放宽：sys.path 引入（E402）、测试辅助变量（F841）、断言式异常（B904/B017/B011）
+"tests/*" = ["B011", "B017", "B904", "E402", "F841"]

@@ -450,7 +450,6 @@ def _chunk(content, finish=None):
 @pytest.mark.asyncio
 async def test_generate_entries_uses_streaming(device_id, monkeypatch):
     """知识沉淀提炼改为流式调用（stream=True）且 max_tokens 收敛为 3500，词条正常落库。"""
-    import types
     from types import SimpleNamespace as NS
 
     topic = f"AF IPv6 支持与开启方式 {db.new_id()[-6:]}"
@@ -547,7 +546,6 @@ def test_pending_excludes_zero_yield_and_skipped():
 @pytest.mark.asyncio
 async def test_generate_empty_entries_returns_skipped_with_log(device_id, monkeypatch, caplog):
     """提炼输出为空（模型判定无价值/无法解析）：返回 skipped 并记录原始输出片段。"""
-    import types
     from types import SimpleNamespace as NS
 
     class _FakeCompletions:

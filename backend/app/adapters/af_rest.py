@@ -610,7 +610,6 @@ class AfRestClient(DeviceClient):
                 if ntype == "BNAT":
                     body = r.get("bnat") or {}
                     transfer_dst = body.get("transferDst") or {}
-                    transfer_src = body.get("transferSrc") or {}
                     dst_ip = self._first((body.get("dstIpobj") or {}).get("specifyIp"), "")
                     translated = self._transfer_addr_str(transfer_dst)
                     port = ""

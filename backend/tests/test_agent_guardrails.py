@@ -3,7 +3,6 @@ import json
 
 import pytest
 
-from app import db
 from app.agent import guardrails
 from app.agent.guardrails import GuardrailError
 

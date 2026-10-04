@@ -154,7 +154,7 @@ def _prose_features(seg_lines: list[str], version: str = "") -> list[dict]:
         # 剥掉「AC&SG13.0.121【版本主要价值】」类版本陈述前缀，保留其实际内容
         head = re.match(r"^(?:【[^】]{1,14}】)?\s*((?:AC&SG)|AF|AC|SG)?\s*\d+\.\d+\.\d+R?\d*\s*(?:版本)?[^，。；]{0,16}", chunk)
         if head:
-            chunk = chunk[head.end():].lstrip("：: ，，")
+            chunk = chunk[head.end():].lstrip("：: ，，")   # noqa: B005 -- 字符集语义（剥离任意前导标点）
         chunk = re.sub(r"^【[^】]{1,12}】", "", chunk)                  # 去掉【版本主要价值】等段标
         chunk = re.sub(r"^\d+[、.)）]\s*", "", chunk)                   # 去掉序号
         if not (10 <= len(chunk) <= 150) or not _PROSE_VERB.search(chunk):

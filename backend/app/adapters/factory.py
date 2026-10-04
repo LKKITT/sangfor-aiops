@@ -105,11 +105,11 @@ async def get_client(device_id: str) -> DeviceClient:
             client = create_client(device)
             try:
                 await asyncio.wait_for(client.login(), timeout=settings.device_login_timeout)
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError as e:
                 await _close_quietly(client)
                 _mark_failed(device_id)
                 raise DeviceError(f"设备「{device.get('name')}」登录超时（>{int(settings.device_login_timeout)}s），"
-                                  f"请检查设备网络可达性")
+                                  f"请检查设备网络可达性") from e
             except DeviceError:
                 await _close_quietly(client)
                 _mark_failed(device_id)

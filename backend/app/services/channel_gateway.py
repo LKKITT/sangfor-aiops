@@ -145,7 +145,7 @@ def _split_reply(text: str) -> list[str]:
         segments.append(rest[:cut])
         rest = rest[cut:].lstrip("\n")
     if rest:
-        segments[-1] += f"\n\n（内容过长已截断，完整内容请在 Web 控制台查看）"
+        segments[-1] += "\n\n（内容过长已截断，完整内容请在 Web 控制台查看）"
     return segments
 
 
@@ -357,7 +357,6 @@ async def _run_message_locked(channel: str, sender_id: str, text: str) -> dict:
         conv_id = ""
         if device_id != GLOBAL_DEVICE_ID:
             device_id = GLOBAL_DEVICE_ID
-            dev = _load_bound_device(GLOBAL_DEVICE_ID)
             global_reset_note = "，并已回到全局模式"
         new_session_note = (f"（距上次对话已超过 {settings.channel_session_timeout_min} 分钟，"
                             f"已自动开启新会话{global_reset_note}）\n\n")

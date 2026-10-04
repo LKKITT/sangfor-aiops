@@ -1,5 +1,4 @@
 """后端入口：FastAPI 应用 + 定时任务（每日自动备份/更新信息刷新）。"""
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -22,7 +21,7 @@ async def scheduled_backup_all() -> None:
     for device in db.list_devices():
         try:
             rec = await config_service.create_backup(device["id"],
-                                                     label=f"每日自动备份", kind="scheduled",
+                                                     label="每日自动备份", kind="scheduled",
                                                      created_by="scheduler")
             log.info("定时备份完成 device=%s backup=%s", device["id"], rec["id"])
         except Exception as e:   # noqa: BLE001

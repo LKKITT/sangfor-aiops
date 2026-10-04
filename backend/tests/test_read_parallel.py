@@ -184,7 +184,6 @@ async def test_write_round_stays_sequential_and_suspends(device_id, monkeypatch)
 async def test_read_failure_dedup_reuses_error(device_id, monkeypatch):
     calls = {"n": 0}
     tool = TOOLS_BY_NAME["get_device_status"]
-    orig = tool.handler
 
     async def failing(client, args, device):
         calls["n"] += 1

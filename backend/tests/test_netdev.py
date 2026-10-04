@@ -169,7 +169,7 @@ async def test_netdev_api_smoke(nd_device):
             "device_ids": [nd_device["id"]], "commands": []})
         assert r2.status_code == 400
 
-        detail = await ac.get(f"/api/netdev/tasks/nonexistent")
+        detail = await ac.get("/api/netdev/tasks/nonexistent")
         assert detail.status_code == 404
 
         # 清理批量导入

@@ -1,5 +1,4 @@
 """SCP 云计算平台适配器测试：MockTransport 模拟 OpenAPI（不打真网）。"""
-import json
 
 import httpx
 import pytest
@@ -212,7 +211,7 @@ def test_scp_report_section():
                           "cpu": {"total_mhz": 100, "used_mhz": 30},
                           "memory": {"ratio": 40}, "storage": {"ratio": 50}}],
         "scp_hosts": [{"name": "10.68.10.11", "cluster_name": "集群A", "status": "running",
-                       "cpu": {"ratio": 30}, "memory": {"ratio": 40},
+                       "memory": {"ratio": 40},
                        "storage": {"total_mb": 10240000}, "alarm_count": 1,
                        "cpu": {"ratio": 30, "type": "Xeon"}}],
         "scp_vms": [{"name": "web01", "status": "running", "ips": ["192.168.1.10"],

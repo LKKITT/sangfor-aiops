@@ -205,19 +205,21 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, markRaw, watch } from 'vue'
+import { ref, computed, onMounted, markRaw, watch, defineAsyncComponent } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { store, loadDevices, loadHealth, currentDevice, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from './store.js'
 import { Devices } from './api.js'
-import ChatView from './views/ChatView.vue'
-import ConfigView from './views/ConfigView.vue'
-import BackupView from './views/BackupView.vue'
-import CheckupView from './views/CheckupView.vue'
-import UpdatesView from './views/UpdatesView.vue'
-import KnowledgeView from './views/KnowledgeView.vue'
-import ChatLogView from './views/ChatLogView.vue'
-import NetDevView from './views/NetDevView.vue'
-import SettingsView from './views/SettingsView.vue'
+
+// 视图按需加载：异步组件让 Vite 自动按视图分片，首屏只携带当前视图，其余首次切换时拉取
+const ChatView = defineAsyncComponent(() => import('./views/ChatView.vue'))
+const ConfigView = defineAsyncComponent(() => import('./views/ConfigView.vue'))
+const BackupView = defineAsyncComponent(() => import('./views/BackupView.vue'))
+const CheckupView = defineAsyncComponent(() => import('./views/CheckupView.vue'))
+const UpdatesView = defineAsyncComponent(() => import('./views/UpdatesView.vue'))
+const KnowledgeView = defineAsyncComponent(() => import('./views/KnowledgeView.vue'))
+const ChatLogView = defineAsyncComponent(() => import('./views/ChatLogView.vue'))
+const NetDevView = defineAsyncComponent(() => import('./views/NetDevView.vue'))
+const SettingsView = defineAsyncComponent(() => import('./views/SettingsView.vue'))
 
 const views = {
   chat: markRaw(ChatView),

@@ -9,7 +9,6 @@
 认证与凭据不落日志；接口出参不含密码。
 """
 import asyncio
-import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -100,7 +99,7 @@ def _parse_lldp_list_table(output: str) -> list[dict]:
             values.append(line[start:end].strip())
         if len(values) != len(order):
             continue
-        rec = dict(zip(order, values))
+        rec = dict(zip(order, values, strict=True))
         local_port = rec.get('Local Interface', '')
         sysname = rec.get('System Name', '')
         chassis = rec.get('Chassis ID', '').lstrip('*# ')
@@ -216,7 +215,7 @@ def parse_lldp(vendor: str, output: str) -> list[dict]:
 
 
 _IFACE_RE = re.compile(
-    rf"\b([A-Za-z][A-Za-z0-9]{{0,7}}(?:/\d+)+|Vlanif\d+|MEth\d[\w/\-]*|Eth-Trunk\d+|LoopBack\d+|Vlan\d+)\b",
+    r"\b([A-Za-z][A-Za-z0-9]{0,7}(?:/\d+)+|Vlanif\d+|MEth\d[\w/\-]*|Eth-Trunk\d+|LoopBack\d+|Vlan\d+)\b",
     re.I)
 
 
@@ -449,7 +448,7 @@ def build_graph(group: str) -> dict:
             if target and target["id"] == d["id"]:
                 continue   # 自引用畸形行（如提示符被误解析为邻居），跳过
             if target:
-                tgt_id, tgt_name = target["id"], target["name"]
+                tgt_id = target["id"]
                 if tgt_id not in nodes:   # 跨分组设备：以可操作的真实设备节点呈现
                     nodes[tgt_id] = _device_node(by_id[tgt_id], cross=True)
             elif not target and neighbor_mac and len(neighbor_mac) == 12 \
@@ -457,7 +456,7 @@ def build_graph(group: str) -> dict:
                 tgt = by_id.get(mac_index[neighbor_mac])
                 if not tgt:
                     continue
-                tgt_id, tgt_name = tgt["id"], tgt["name"]
+                tgt_id = tgt["id"]
                 if tgt_id not in nodes:
                     nodes[tgt_id] = _device_node(tgt, cross=True)
             else:
@@ -472,7 +471,7 @@ def build_graph(group: str) -> dict:
                 if ext_key not in nodes:
                     nodes[ext_key] = {"id": ext_key, "kind": "external", "name": label,
                                       "vendor": "", "model": "", "host": "", "group": group}
-                tgt_id, tgt_name = ext_key, label
+                tgt_id = ext_key
             reports.append({"frm": d["id"], "frm_port": (e.get("local_port") or "").strip(),
                             "to": tgt_id, "to_port": (tgt_port or "").strip()})
         for a in cache.get("arp") or []:
@@ -491,7 +490,7 @@ def build_graph(group: str) -> dict:
             continue
         pair_map.setdefault(tuple(sorted([lk["frm"], lk["to"]])), []).append(lk)
     merged_links: list[dict] = []
-    for pair, lks in pair_map.items():
+    for _pair, lks in pair_map.items():
         if len(lks) >= 3:
             first = lks[0]
             merged_links.append({"frm": first["frm"], "to": first["to"],
@@ -527,11 +526,10 @@ def build_graph(group: str) -> dict:
                 degree.setdefault(a, set()).add(b)
     deg_n = {k: len(v) for k, v in degree.items()}
     core_ids: set[str] = set()
-    dev_by_id = {d["id"]: d for d in devices}
     groups_here: dict[str, list] = {}
     for d in devices:
         groups_here.setdefault(d.get("group_name", ""), []).append(d)
-    for grp, grp_devs in groups_here.items():
+    for _grp, grp_devs in groups_here.items():
         ranked = sorted(grp_devs, key=lambda d: deg_n.get(d["id"], 0), reverse=True)
         top = deg_n.get(ranked[0]["id"], 0)
         if top >= 2:
@@ -682,7 +680,6 @@ def search_asset(group: str, query: str) -> dict:
     nq_mac = _norm_mac(q)
     is_ip = re.fullmatch(_IP_RE, q)
     devices = [d for d in db.list_netdev_devices(group) if d.get("host")]
-    dev_by_id = {d["id"]: d for d in devices}
     caches = {c["device_id"]: c for c in db.list_netdev_topology_cache(group)}
 
     # 0) 管理 IP 短路：IP 是某设备的 loopback/管理地址
