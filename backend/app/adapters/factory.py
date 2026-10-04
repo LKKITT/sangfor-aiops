@@ -135,6 +135,14 @@ async def _close_quietly(client: DeviceClient) -> None:
         pass
 
 
+def forget_device(device_id: str) -> None:
+    """设备删除后清理其全部工厂状态（客户端/签名/锁/负缓存），防字典慢性增长。"""
+    _clients.pop(device_id, None)
+    _client_signatures.pop(device_id, None)
+    _client_locks.pop(device_id, None)
+    _failed_until.pop(device_id, None)
+
+
 def reset_cache() -> None:
     """清空全部客户端/锁/负缓存状态（测试隔离用；请求路径不要调用）。"""
     _clients.clear()

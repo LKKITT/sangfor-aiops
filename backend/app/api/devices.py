@@ -83,6 +83,8 @@ def remove_device(device_id: str) -> dict:
     _require(device_id)
     db.delete_device(device_id)
     device_cache.invalidate(device_id)
+    from app.adapters.factory import forget_device
+    forget_device(device_id)   # 清理连接缓存/锁/负缓存残留
     db.audit("device.delete", {"device_id": device_id})
     return {"ok": True}
 

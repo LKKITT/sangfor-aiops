@@ -6,6 +6,21 @@
 
 ## 2026-10-04
 
+### refactor: dbcore 基础设施剥离、定时备份并发、微项清理（第三批第 4 步：A-1 + N-4 + N-6）
+
+**A-1 第 1 步（dbcore 剥离，为渐进拆分铺路）**
+- 新增 `app/dbcore.py`：线程本地连接/SCHEMA/init_db/now/new_id/_row_to_dict/audit/backup_file_path/get_setting(s)/set_setting 等共享基础设施
+- `db.py` 顶部显式 re-export（noqa F401），全部调用方（services/api/tests 的 `db.xxx`、`db._connect`）零改动；db.py 1247→约 990 行，后续按域迁移 repo 时只动 db.py
+- 约定：dbcore 禁止反向依赖领域函数，repo 之间禁止互相 import
+
+**N-4 定时备份限流并发**：`scheduled_backup_all` 由逐台串行改为 `asyncio.Semaphore(3)` 限流并发（多设备凌晨窗口耗时显著缩短，设备侧管理会话有限不宜全并发）
+
+**N-6 微项**
+- `factory.forget_device(device_id)`：设备删除时清理客户端缓存/签名/锁/失败负缓存残留（api/devices.py DELETE 接入），防工厂字典慢性增长
+- 记忆节流字典 `_mem_extracted_at` 超 500 条截断最旧一半，防长期运行慢性增长
+
+**验证**：ruff 全过，pytest 245/245，前端构建通过
+
 ### refactor: af_rest 读写翻译分离、orchestrator 分层提取（第三批第 3 步：A-3 + A-2）
 
 **A-3 af_rest.py 读写分离（1426 → 1132 行）**

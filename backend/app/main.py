@@ -1,4 +1,5 @@
 """后端入口：FastAPI 应用 + 定时任务（每日自动备份/更新信息刷新）。"""
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -18,14 +19,19 @@ log = logging.getLogger("sangfor-agent")
 
 
 async def scheduled_backup_all() -> None:
-    for device in db.list_devices():
-        try:
-            rec = await config_service.create_backup(device["id"],
-                                                     label="每日自动备份", kind="scheduled",
-                                                     created_by="scheduler")
-            log.info("定时备份完成 device=%s backup=%s", device["id"], rec["id"])
-        except Exception as e:   # noqa: BLE001
-            log.warning("定时备份失败 device=%s: %s", device["id"], e)
+    sem = asyncio.Semaphore(3)   # 设备侧管理会话有限：限流并发而非全量并发
+
+    async def _one(device: dict) -> None:
+        async with sem:
+            try:
+                rec = await config_service.create_backup(device["id"],
+                                                         label="每日自动备份", kind="scheduled",
+                                                         created_by="scheduler")
+                log.info("定时备份完成 device=%s backup=%s", device["id"], rec["id"])
+            except Exception as e:   # noqa: BLE001
+                log.warning("定时备份失败 device=%s: %s", device["id"], e)
+
+    await asyncio.gather(*(_one(d) for d in db.list_devices()))
 
 
 async def scheduled_cleanup() -> None:

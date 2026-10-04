@@ -64,6 +64,9 @@ async def extract_memory(orch, conv_id: str, device_id: str) -> None:
         return
     if len(messages) - orch._mem_extracted_at.get(conv_id, 0) < MEMORY_EXTRACT_INTERVAL:
         return
+    if len(orch._mem_extracted_at) > 500:   # 防慢性增长：截断最旧的一半会话记录
+        for k in sorted(orch._mem_extracted_at)[:250]:
+            orch._mem_extracted_at.pop(k, None)
     orch._mem_extracted_at[conv_id] = len(messages)   # 先占位：连续快速对话不重复提取
     # 获取对话文本
     user_texts = []
