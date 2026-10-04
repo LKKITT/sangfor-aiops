@@ -6,6 +6,22 @@
 
 ## 2026-10-04
 
+### refactor: af_rest 读写翻译分离、orchestrator 分层提取（第三批第 3 步：A-3 + A-2）
+
+**A-3 af_rest.py 读写分离（1426 → 1132 行）**
+- 新增 `adapters/af_write.py`（332 行）：15 个写格式翻译纯函数外移（ip_ranges/service_payload/ip_like/parse_port_spec/acl_action_int/acl_native_payload/acl_create_payload/transfer_addr_str/transfer_port_str/split_refs/dst_ipobj/parse_ports/apply_transfer/nat_native_payload/nat_create_payload），可绕开 mock 设备直测
+- 新增 `adapters/af_mapping.py`（66 行）：读侧扁平化映射（acl_flat/nat_flat_of_raw + first/join 同口径辅助）
+- `AfRestClient` 保留 HTTP/认证/分页/端点编排与需要设备交互的引用自动创建（`_ensure_acl_*`），翻译函数改为薄委托——类内调用点与测试 API（`AfRestClient._acl_flat` 等）完全兼容；af_write 对 af_mapping 采用函数内惰性导入避免循环依赖
+- 现有 `test_af_nat_write` / `test_af_acl_write` 全部直测通过，作为拆分回归基线
+
+**A-2 orchestrator.py 分层提取（998 → 785 行，工具循环保持不拆）**
+- 新增 `agent/offline.py`：离线兜底（`offline_reply`/`offline_answer`，含全部固定意图分支）纯函数化；GLOBAL_DEVICE_ID 延迟导入避免循环
+- 新增 `agent/memory.py`：记忆管理（`parse_memory_extract`/`build_memory_context`/`extract_memory`/`schedule_memory_extraction` + MEMORY_EXTRACT_INTERVAL 常量）
+- 新增 `agent/routing.py`：技能路由（`llm_select_skill`/`tool_scope`）
+- orchestrator 三区块改为薄委托，保留原方法签名（`_parse_memory_extract` 等测试引用兼容）；工具循环（SSE 生成器 + 并行快路径 + 确认流）按评估结论不拆
+
+**验证**：ruff 全过，pytest 245/245，前端构建通过
+
 ### perf: 设备数据 TTL 缓存、数据保留策略、会话消息分页（第三批第 2 步：A-5 + N-2 + N-3）
 
 **A-5 服务端设备缓存（可视化端点读加速）**

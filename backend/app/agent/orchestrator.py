@@ -18,7 +18,6 @@
 import asyncio
 import copy
 import json
-import re
 from typing import AsyncGenerator
 
 from openai import AsyncOpenAI
@@ -27,12 +26,8 @@ from app import db
 from app.adapters.factory import get_client
 from app.agent import guardrails
 from app.agent import skills
-from app.agent.prompts import (
-    SYSTEM_PROMPT,
-    device_context_message,
-    memory_injection_message,
-    memory_extract_prompt,
-)
+from app.agent import memory, offline, routing
+from app.agent.prompts import SYSTEM_PROMPT, device_context_message
 from app.agent.tools import TOOLS_BY_NAME, get_tools
 from app.config import settings
 from app.services import personal_kb_service
@@ -49,9 +44,6 @@ HISTORY_LIMIT = 24
 # 避免多轮工具对话后每轮 prompt 膨胀到数万字符拖慢 LLM 推理（上下文由摘要/记忆机制兜底）
 RECENT_TOOL_FULL = 3
 TOOL_RESULT_KEEP = 200
-# 记忆提取间隔：至少积累 N 条消息才提取记忆
-MEMORY_EXTRACT_INTERVAL = 6
-
 
 GLOBAL_DEVICE_ID = "global"   # 全局模式：不绑定单一设备，跨全部深信服/网络设备操作
 
@@ -271,97 +263,16 @@ class AgentOrchestrator:
         async for ev in self._run_llm_loop(conv_id, device_id, device):
             yield ev
 
-    # ================= 记忆管理 =================
+    # ================= 记忆管理（实现见 agent/memory.py） =================
 
     def _schedule_memory_extraction(self, conv_id: str, device_id: str) -> None:
-        """记忆提取后台化：两次额外 LLM 调用不阻塞 SSE 结束（失败仅记日志）。"""
-        async def _run():
-            try:
-                await self._extract_memory(conv_id, device_id)
-            except Exception:   # noqa: BLE001
-                import logging
-                logging.getLogger("sangfor-agent").warning(
-                    "记忆提取失败 conv=%s", conv_id, exc_info=True)
-
-        try:
-            asyncio.get_running_loop().create_task(_run())
-        except RuntimeError:   # 无事件循环（如同步上下文）时跳过
-            pass
+        memory.schedule_memory_extraction(self, conv_id, device_id)
 
     def _build_memory_context(self, device_id: str) -> str | None:
-        """加载该设备的长期记忆，构建上下文注入消息。"""
-        items = db.get_memory_items(device_id, limit=15)
-        return memory_injection_message(items)
+        return memory.build_memory_context(device_id)
 
     async def _extract_memory(self, conv_id: str, device_id: str) -> None:
-        """对话结束后提取记忆：一次 LLM 调用同时生成会话摘要与重要事实。
-
-        增量节流：距上次提取新增消息不足 MEMORY_EXTRACT_INTERVAL 条时跳过，
-        避免每轮对话都追加后台 LLM 调用、与下一轮主对话争抢供应商并发。
-        """
-        messages = db.get_messages(conv_id)
-        if len(messages) < MEMORY_EXTRACT_INTERVAL:
-            return
-        if len(messages) - self._mem_extracted_at.get(conv_id, 0) < MEMORY_EXTRACT_INTERVAL:
-            return
-        self._mem_extracted_at[conv_id] = len(messages)   # 先占位：连续快速对话不重复提取
-        # 获取对话文本
-        user_texts = []
-        assistant_texts = []
-        for m in messages:
-            c = m.get("content", {})
-            if m["role"] == "user":
-                user_texts.append(c.get("text", ""))
-            elif m["role"] == "assistant":
-                t = c.get("text", "")
-                if t and not c.get("tool_calls"):
-                    assistant_texts.append(t)
-        conversation_text = "用户：" + "\n用户：".join(user_texts[-10:])
-        if assistant_texts:
-            conversation_text += "\n\n助手：" + "\n助手：".join(assistant_texts[-10:])
-
-        llm = self._llm()
-        if llm is None:
-            return
-
-        try:
-            # 与知识沉淀共用后台串行锁：同一 API Key 并发长调用会互相挤兑超时
-            async with personal_kb_service.background_llm_lock():
-                resp = await llm.chat.completions.create(
-                    model=get_llm_config()["model"],
-                    messages=[
-                        {"role": "system", "content": memory_extract_prompt()},
-                        {"role": "user", "content": conversation_text[:3000]},
-                    ],
-                    temperature=settings.llm_temperature, top_p=settings.llm_top_p,
-                    max_tokens=2048, extra_body=settings.llm_extra_body(),
-                )
-            summary, fact_text = _parse_memory_extract(resp.choices[0].message.content or "")
-            if summary:
-                db.save_conv_summary(conv_id, summary, device_id)
-
-            for line in fact_text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                # 解析类型
-                category = "fact"
-                if "偏好" in line or "习惯" in line:
-                    category = "preference"
-                elif "操作" in line or "配置" in line or "变更" in line:
-                    category = "action_history"
-                elif "设备" in line:
-                    category = "device_context"
-                # 去重：内容相似的不重复保存
-                existing = db.get_memory_items(device_id, limit=30)
-                if any(line[:30] in item["content"] for item in existing):
-                    continue
-                db.save_memory_item(device_id, category, line[:300], conv_id)
-            # 清理旧记忆
-            db.delete_old_memory(device_id, keep=50)
-        except Exception:   # noqa: BLE001 —— 记忆提取失败不影响主流程
-            import logging
-            logging.getLogger("sangfor-agent").warning("记忆提取失败", exc_info=True)
+        await memory.extract_memory(self, conv_id, device_id)
 
     # ================= LLM 工具循环 =================
 
@@ -429,39 +340,13 @@ class AgentOrchestrator:
         ]
         return "\n".join(parts)
 
-    # ================= 技能路由 =================
+    # ================= 技能路由（实现见 agent/routing.py） =================
 
     async def _llm_select_skill(self, user_message: str, dtype: str):
-        """LLM 兜底技能选择：一次非流式小调用；带独立超时（不拖慢首 token），失败回退全量模式。
-
-        仅在关键词路由未命中且消息疑似写操作时触发（见 _run_llm_loop）：
-        技能的价值在收窄写工具集与注入流程指引，纯查询直接走全量模式即可。
-        """
-        try:
-            resp = await asyncio.wait_for(self._llm().chat.completions.create(
-                model=get_llm_config()["model"],
-                messages=[
-                    {"role": "system", "content": skills.skill_catalog_message(dtype)},
-                    {"role": "user", "content": user_message[:500]},
-                ],
-                temperature=settings.llm_temperature, top_p=settings.llm_top_p,
-                max_tokens=1024, extra_body=settings.llm_extra_body(),
-            ), timeout=4.0)
-            return skills.parse_skill_choice(resp.choices[0].message.content or "", dtype)
-        except Exception:   # noqa: BLE001 —— 选择失败/超时（TimeoutError 亦为 Exception 子类）不影响主流程
-            return None
+        return await routing.llm_select_skill(self, user_message, dtype)
 
     def _tool_scope(self, skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
-        """工具注入范围：只读全量 + 技能解锁的写工具；勾选知识库时附加官方知识库工具。"""
-        scope = skills.resolve_skill_tools(skill, dtype)
-        tools_by_name = {t.name: t for t in scope}
-        tool_schemas = [t.schema() for t in scope]
-        if use_knowledge and skills.KB_TOOL_NAME not in tools_by_name:
-            kb_tool = TOOLS_BY_NAME.get(skills.KB_TOOL_NAME)
-            if kb_tool is not None:
-                tool_schemas.append(kb_tool.schema())
-                tools_by_name[kb_tool.name] = kb_tool
-        return tool_schemas, tools_by_name
+        return routing.tool_scope(skill, dtype, use_knowledge)
 
     # ================= 跨设备批量（devices 参数 fan-out） =================
 
@@ -857,108 +742,15 @@ class AgentOrchestrator:
         yield {"type": "error", "text": f"已达单次对话最大工具轮次（{MAX_TOOL_ROUNDS}），请拆分问题后重试"}
         yield {"type": "done"}
 
-    # ================= 离线兜底（未配置 LLM Key） =================
+    # ================= 离线兜底（实现见 agent/offline.py） =================
 
     async def _offline_reply(self, conv_id: str, message: str, device_id: str,
                              device: dict) -> AsyncGenerator[dict, None]:
-        db.audit("agent.offline_chat", {"message": message[:100]},
-                 conv_id=conv_id, device_id=device_id)
-        text = await self._offline_answer(message, device_id, device)
-        db.add_message(conv_id, "assistant", {"text": text, "tool_calls": []})
-        for i in range(0, len(text), 80):
-            yield {"type": "token", "text": text[i:i + 80]}
-        yield {"type": "offline_notice",
-               "text": "（未配置 LLM API Key，当前为离线兜底模式：仅支持固定意图查询，"
-                       "完整对话能力请在 backend/.env 配置 LLM_API_KEY）"}
-        yield {"type": "done"}
+        async for ev in offline.offline_reply(conv_id, message, device_id, device):
+            yield ev
 
     async def _offline_answer(self, message: str, device_id: str, device: dict) -> str:
-        from app.services.analyzer import run_checks
-
-        if str(device_id or "").startswith("nd_"):
-            return ("我是全局运维助手（当前绑定网络设备）。离线兜底模式仅支持深信服设备的固定意图查询，"
-                    "网络设备对话能力需要配置 LLM API Key 后使用（backend/.env 或『平台设置』中的 LLM_API_KEY）。")
-        if device_id == GLOBAL_DEVICE_ID:
-            return ("我是全局运维助手（全局模式）。离线兜底模式仅支持绑定具体深信服设备后的固定意图查询，"
-                    "完整全局对话能力需要配置 LLM API Key 后使用（backend/.env 或『平台设置』中的 LLM_API_KEY）。")
-        client = await get_client(device_id)
-        m = message.lower()
-        if re.search(r"状态|健康|cpu|内存|资源", m):
-            s = (await client.get_status()).to_dict()
-            return (f"**设备状态**（{device.get('name')}）\n- 软件版本：{s['sw_version']}（{s['model']}）\n"
-                    f"- CPU：{s['cpu_usage']}%　内存：{s['memory_usage']}%　磁盘：{s['disk_usage']}%\n"
-                    f"- 会话：{s['session_count']}/{s['session_capacity']}\n"
-                    f"- 运行时间：{s['uptime']}")
-        if re.search(r"接口|网口|端口流量", m):
-            rows = [i.to_dict() for i in await client.get_interfaces()]
-            lines = ["| 接口 | 区域 | IP | 状态 | 收/发 (kbps) |", "|---|---|---|---|---|"]
-            lines += [f"| {r['name']} | {r['zone'] or '-'} | {r['ip'] or '-'} | {r['status']} "
-                      f"| {r['rx_kbps']}/{r['tx_kbps']} |" for r in rows]
-            return "**网络接口**\n" + "\n".join(lines)
-        if re.search(r"网络对象|ip组|ip组|地址组|对象", m) and "更新" not in m and "升级" not in m:
-            rows = [o.to_dict() for o in await client.get_network_objects()]
-            lines = ["| 对象 | 类型 | 成员 | 备注 |", "|---|---|---|---|"]
-            lines += [f"| {r['name']} | {r['type']} | {r['members']} | {r['comment'] or '-'} |"
-                      for r in rows]
-            return "**网络对象**\n" + "\n".join(lines)
-        if re.search(r"自定义服务|服务列表", m) or ("服务" in m and "升级" not in m and "更新" not in m):
-            rows = [s.to_dict() for s in await client.get_services()]
-            lines = ["| 服务 | 协议 | 端口 | 备注 |", "|---|---|---|---|"]
-            lines += [f"| {r['name']} | {r['protocol']} | {r['ports']} | {r['comment'] or '-'} |"
-                      for r in rows]
-            return "**自定义服务**\n" + "\n".join(lines)
-        if re.search(r"nat|地址转换", m):
-            rules = [n.to_dict() for n in await client.get_nat_rules()]
-            lines = ["| ID | 名称 | 类型 | 源 | 目的 | 服务 | 转换 | 启用 | 命中 |",
-                     "|---|---|---|---|---|---|---|---|---|"]
-            lines += [f"| {r['id']} | {r['name']} | {r['type']} | {r['src_addr']} | {r['dst_addr']} "
-                      f"| {r['service']} | {r['translated_addr']}"
-                      f"{'：' + r['translated_port'] if r['translated_port'] else ''} "
-                      f"| {'✓' if r['enabled'] else '✗'} | {r['hit_count']} |" for r in rules]
-            return "**NAT 策略**\n" + "\n".join(lines)
-        if re.search(r"acl|访问控制|策略", m):
-            rules = [a.to_dict() for a in await client.get_acl_rules()]
-            lines = ["| ID | 名称 | 源 | 目的 | 服务 | 动作 | 启用 | 命中 |",
-                     "|---|---|---|---|---|---|---|---|"]
-            lines += [f"| {r['id']} | {r['name']} | {r['src_addr']} | {r['dst_addr']} | {r['service']} "
-                      f"| {r['action']} | {'✓' if r['enabled'] else '✗'} | {r['hit_count']} |"
-                      for r in rules]
-            return "**访问控制策略**\n" + "\n".join(lines)
-        if re.search(r"绑定", m):
-            rows = [b.to_dict() for b in await client.get_user_bindings()]
-            lines = ["| 用户 | IP | MAC | 类型 | 启用 |", "|---|---|---|---|---|"]
-            lines += [f"| {r['user']} | {r['ip']} | {r['mac'] or '-'} | {r['binding_type']} "
-                      f"| {'✓' if r['enabled'] else '✗'} |" for r in rows]
-            return "**IP-MAC 绑定**\n" + "\n".join(lines)
-        if re.search(r"体检|检查|风险|分析", m):
-            report = run_checks(await client.snapshot_config(), (await client.get_status()).to_dict())
-            lines = [f"**配置体检**：得分 {report['score']}/100（{report['grade']}），"
-                     f"高危 {report['counts']['high']} / 中危 {report['counts']['medium']} / "
-                     f"低危 {report['counts']['low']}", ""]
-            for item in report["items"][:10]:
-                lines.append(f"- 【{item['severity']}】{item['title']} → {item['suggestion']}")
-            return "\n".join(lines)
-        if re.search(r"备份列表|备份", m):
-            rows = db.list_backups(device_id)[:10]
-            if not rows:
-                return "尚无备份记录，可对我说\"创建备份\"。"
-            lines = ["| 备份 | 标签 | 版本 | 时间 |", "|---|---|---|---|"]
-            lines += [f"| {r['id']} | {r['label']} | {r['sw_version']} | {r['created_at']} |"
-                      for r in rows]
-            return "**备份列表**\n" + "\n".join(lines)
-        if re.search(r"升级|更新|新版本", m):
-            from app.services import upgrade_advisor
-            st = await client.get_status()
-            advice = await upgrade_advisor.build_upgrade_advice(st.sw_version, st.to_dict(),
-                                                                device.get("name", ""))
-            return (f"**升级建议**：{advice['recommendation']}\n"
-                    f"- 当前 {advice['current_version']} → 最新 {advice['latest_version']}\n"
-                    f"- 升级路径：{' → '.join(advice['upgrade_path']['hops']) or '无需'}\n"
-                    f"- 时机：{advice['timing']['window']}\n"
-                    f"- 理由：{'; '.join(r['text'] for r in advice['reasons'])}")
-        return ("我是深信服售后技术支持 Agent。当前为**离线兜底模式**，可回答：设备状态 / 接口 / NAT / "
-                "访问控制策略 / 用户绑定 / 配置体检 / 备份列表 / 升级建议。"
-                "配置 backend/.env 或『平台设置』中的 LLM_API_KEY 后即可使用完整自然语言对话（含配置变更与恢复）。")
+        return await offline.offline_answer(message, device_id, device)
 
 
 def _kb_hit_result(result) -> bool:
@@ -968,18 +760,8 @@ def _kb_hit_result(result) -> bool:
             and bool((result.get("answer") or "").strip()))
 
 
-def _parse_memory_extract(text: str) -> tuple[str, str]:
-    """解析合并的记忆提取输出（[摘要]/[事实] 两节），返回 (摘要, 事实文本)。
-
-    格式完全不符时返回空串（本轮放弃提取），与提取失败同等对待，不影响主流程。
-    """
-    s = text or ""
-    summary_m = re.search(r"\[摘要\]\s*(.*?)(?:\[事实\]|\Z)", s, re.S)
-    facts_m = re.search(r"\[事实\]\s*(.*)\Z", s, re.S)
-    if not (summary_m or facts_m):
-        return "", ""
-    return (summary_m.group(1).strip() if summary_m else "",
-            facts_m.group(1).strip() if facts_m else "")
+# 兼容旧引用（tests 从本模块导入 _parse_memory_extract）
+_parse_memory_extract = memory.parse_memory_extract
 
 
 def _compact_result(name: str, result) -> str:
