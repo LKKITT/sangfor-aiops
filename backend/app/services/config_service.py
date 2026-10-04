@@ -280,7 +280,8 @@ async def restore_config_file(device_id: str, backup_id: str, operator: str = "u
     backup = db.get_backup(backup_id)
     if not backup or not backup.get("file_path"):
         raise ValueError("该备份没有配置文件归档")
-    data = open(backup["file_path"], "rb").read()
+    with open(backup["file_path"], "rb") as f:
+        data = f.read()
     sha = hashlib.sha256(data).hexdigest()
     if sha != backup["file_sha256"]:
         raise ValueError("配置文件完整性校验失败（SHA256 不匹配），已中止恢复")

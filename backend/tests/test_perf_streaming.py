@@ -139,3 +139,19 @@ async def test_background_refresh_deduplicated(device_id, monkeypatch):
         gate.set()
         for t in update_service._refresh_tasks.values():
             t.cancel()
+
+
+# ---------- 离线兜底意图匹配（if True: 死代码清理后的行为锁定） ----------
+
+@pytest.mark.asyncio
+async def test_offline_answer_intent_matching(device_id):
+    """_offline_answer 反缩进后各固定意图分支行为不变。"""
+    from app.agent.orchestrator import AgentOrchestrator
+    orch = AgentOrchestrator()
+    device = db.get_device(device_id)
+    status_text = await orch._offline_answer("看一下设备状态", device_id, device)
+    assert "设备状态" in status_text and "CPU" in status_text
+    nat_text = await orch._offline_answer("查一下 NAT", device_id, device)
+    assert "NAT 策略" in nat_text
+    fallback = await orch._offline_answer("随便聊聊天气", device_id, device)
+    assert "离线兜底模式" in fallback

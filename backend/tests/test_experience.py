@@ -175,3 +175,32 @@ def test_get_messages_limit_keeps_latest_in_order():
     assert len(db.get_messages(conv["id"])) == 30
     last5 = db.get_messages(conv["id"], limit=5)
     assert [m["content"]["text"] for m in last5] == [f"m{i}" for i in range(25, 30)]
+
+
+# ---------------- 保活失败释放连接（B-2） ----------------
+
+@pytest.mark.asyncio
+async def test_keepalive_failure_closes_client(monkeypatch):
+    """保活失败丢弃缓存客户端时，同步关闭其 httpx 连接池（aclose 被调用）。"""
+    import contextlib
+
+    closed = asyncio.Event()
+
+    class _DeadClient:
+        async def keepalive(self):
+            raise DeviceError("token expired")
+        async def aclose(self):
+            closed.set()
+
+    factory._clients["dev_dead"] = _DeadClient()
+    factory._client_signatures["dev_dead"] = "sig"
+    monkeypatch.setattr(factory, "KEEPALIVE_INTERVAL", 0.01)
+    task = asyncio.create_task(factory._keepalive_loop())
+    try:
+        await asyncio.wait_for(closed.wait(), timeout=2)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert "dev_dead" not in factory._clients
+    assert "dev_dead" not in factory._client_signatures

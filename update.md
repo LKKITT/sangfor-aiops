@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-10-04
+
+### fix: 代码审查修复（第一批 10 项 + 第二批 4 项，基于第三方审查建议的复核修正版实施）
+
+**缺陷修复**
+- 保活失败释放连接（B-2）：`factory._keepalive_loop` 丢弃缓存客户端时补 `await _close_quietly(client)`，堵住设备反复掉线时 httpx 连接池泄漏
+- 配置文件读取关句柄（B-3）：`config_service.restore_config_file` 改 `with open`，异常路径不再泄漏文件句柄
+- 前端待沉淀轮询定时器卸载清理（B-4）：KnowledgeView `onBeforeUnmount` 补 `clearTimeout(pendingTimer)`
+- `Devices.patch` 接入统一请求封装（B-5）：api.js 新增 `apiPatch`（超时 + `!resp.ok` 抛错），替换裸 fetch
+- 死代码清理（B-6）：`_llm_select_skill` 冗余异常元组改 `except Exception`；`_offline_answer` 的 `if True:` 调试残留删除并整体反缩进（新增意图匹配测试锁定行为）
+- 装饰器清理（B-1）：`af_rest._transfer_addr_str` 删除叠加的 `@classmethod`（复核确认 Python 3.9+ 描述符链式绑定下非 bug，属误导性写法清理）
+- 移除空转 PRAGMA（B-7）：`db._connect` 删除 `foreign_keys=ON`（SCHEMA 无外键声明，级联由业务层手工完成）
+
+**效率优化**
+- 只读工具整轮并行化（E-1）：`_run_llm_loop` 新增快路径——一轮内全部为可执行只读调用时经信号量（READ_CONCURRENCY=3）并发执行，延迟由"各工具之和"降为"最慢者"；写操作/未知工具/全局缺 devices 轮次回退串行路径（确认流零改动）；同轮/跨轮同参数调用去重（失败结果不缓存，重复调用复用失败原因不重试）；结果按原调用顺序落库保证 tool_call_id 一一对应。配套 ChatView trace 改按工具名配对收尾（兼容"先全部 tool_call 后全部 tool_result"事件序）
+- internal 模板提升（E-2）：原本每个工具调用重复构建的工具表过滤 + dict 推导提升到整轮一次
+- `kb_stats` 反思计数改 `SELECT COUNT(*)`（E-4a），不再加载 1000 条正文只为 count
+- 数据库补 10 个索引（E-5）：messages/audit/pending/memory/kb/netdev 等高频过滤列，`EXPLAIN QUERY PLAN` 验证 SCAN→SEARCH
+- LLM 配置读取合并（E-3）：db 新增 `get_settings` 单条 IN 查询，`get_llm_config` 由 4 次 SQL 降为 1 次
+- `Tool.schema()` 惰性缓存（A-4）：schema 静态，构建一次复用（4 个调用点均为只读已核实）
+- 前端轮询退避（E-6）：NetDevView 1.2s→2.4s→4s 退避、KnowledgeView 3s→6s→9s 退避，页面隐藏时低频待机
+
+**新增测试**：`tests/test_read_parallel.py`（并发重叠/同轮去重/写操作回退挂起/失败复用 4 项）+ 保活释放连接 + 离线意图匹配，全量 239/239 通过；前端构建通过
+
+---
+
 ## 2026-10-03
 
 ### feat: 「平台设置」升级为左侧主菜单页面

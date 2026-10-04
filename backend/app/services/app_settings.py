@@ -51,11 +51,13 @@ def get_zhuge_credentials() -> tuple[str, str, str]:
 
 
 def get_llm_config() -> dict:
+    """LLM 配置（DB 优先，回退 .env）。设置项合并为一条 IN 查询，避免逐 key 多次往返。"""
+    kv = db.get_settings([LLM_URL_KEY, LLM_KEY_KEY, LLM_MODEL_KEY])
     return {
-        "base_url": db.get_setting(LLM_URL_KEY, "") or settings.llm_base_url,
-        "api_key": db.get_setting(LLM_KEY_KEY, "") or settings.llm_api_key,
-        "model": db.get_setting(LLM_MODEL_KEY, "") or settings.llm_model,
+        "base_url": kv.get(LLM_URL_KEY, "") or settings.llm_base_url,
+        "api_key": kv.get(LLM_KEY_KEY, "") or settings.llm_api_key,
+        "model": kv.get(LLM_MODEL_KEY, "") or settings.llm_model,
         "temperature": settings.llm_temperature,
-        "source": "database" if db.get_setting(LLM_KEY_KEY, "") else (
+        "source": "database" if kv.get(LLM_KEY_KEY, "") else (
             "env" if settings.llm_api_key and not settings.llm_api_key.startswith("your-") else "none"),
     }

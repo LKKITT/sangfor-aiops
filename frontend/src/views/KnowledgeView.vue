@@ -373,16 +373,23 @@ async function loadReflections() {
   try { reflections.value = await KB.reflections() } catch { /* 静默 */ }
 }
 let pendingTimer = null
+let pendingTicks = 0   // 连续轮询计数：间隔指数退避 3s→6s→9s（长沉淀任务降低空转频率）
 async function loadPending() {
   try {
     const p = await KB.pending()
     pendingCount.value = p.count
     pendingItems.value = p.items || []
     selPending.value = []
-    // 有排队/提炼中的对话时定时刷新，实时展示自动沉淀进度
+    // 有排队/提炼中的对话时定时刷新，实时展示自动沉淀进度；页面隐藏时低频待机
     const busy = (p.items || []).some(x => ['pending', 'running'].includes(x.sediment_status))
     clearTimeout(pendingTimer)
-    if (busy) pendingTimer = setTimeout(loadPending, 3000)
+    if (busy) {
+      if (!document.hidden) pendingTicks++
+      pendingTimer = setTimeout(loadPending,
+        document.hidden ? 10000 : Math.min(3000 * 2 ** pendingTicks, 9000))
+    } else {
+      pendingTicks = 0
+    }
   } catch { /* 静默 */ }
 }
 
@@ -469,6 +476,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeAll)
+  clearTimeout(pendingTimer)   // 待沉淀轮询定时器：卸载时清理，避免对已卸载组件补发请求
   graphChart?.dispose(); catChart?.dispose(); timeChart?.dispose()
 })
 </script>

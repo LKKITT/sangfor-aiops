@@ -40,6 +40,9 @@ from app.services.app_settings import get_llm_config
 
 MAX_TOOL_ROUNDS = 8
 TOOL_RESULT_LIMIT = 8000
+# 只读工具整轮并发上限：一轮内全部为只读调用时并发执行（延迟从"各工具之和"降为"最慢者"）。
+# 设备侧单 token 并发上限未知，取保守值；写操作永远不参与并行。
+READ_CONCURRENCY = 3
 HISTORY_LIMIT = 24
 # 历史工具结果瘦身：仅最近 N 条工具结果保留全文，更早的截断为开头摘要，
 # 避免多轮工具对话后每轮 prompt 膨胀到数万字符拖慢 LLM 推理（上下文由摘要/记忆机制兜底）
@@ -443,7 +446,7 @@ class AgentOrchestrator:
                 max_tokens=1024, extra_body=settings.llm_extra_body(),
             ), timeout=4.0)
             return skills.parse_skill_choice(resp.choices[0].message.content or "", dtype)
-        except (asyncio.TimeoutError, Exception):   # noqa: BLE001 —— 选择失败/超时不影响主流程
+        except Exception:   # noqa: BLE001 —— 选择失败/超时（TimeoutError 亦为 Exception 子类）不影响主流程
             return None
 
     def _tool_scope(self, skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
@@ -585,6 +588,9 @@ class AgentOrchestrator:
             yield {"type": "skill_selected", "skill": "kb-auto", "name": "知识问答（本地优先）"}
         tool_schemas, tools_by_name = self._tool_scope(skill, dtype,
                                                        use_knowledge=use_knowledge or kb_auto)
+        # internal 参数模板整轮不变：构建一次（原先在 per-call 循环内重复构建全量表 + dict 推导）
+        internal_template = {t.name: getattr(t, "internal", {}) for t in get_tools(dtype)
+                             if getattr(t, "internal", None)}
         executed_results: dict = {}   # (工具名, 参数) -> 结果：同一提问内重复调用直接合并
         failed_write_tools: set = set()   # 写工具失败后终止同工具重试
         kb_hit = False   # 本轮是否实际命中官方知识库（返回了答案）：决定是否后台沉淀
@@ -637,6 +643,89 @@ class AgentOrchestrator:
             if final_text:
                 yield {"type": "token", "text": final_text}
 
+            # ---- 只读整轮快路径：一轮内全部为可执行只读调用时并发执行 ----
+            # 写操作 / 未知工具 / 全局模式缺 devices 引导的轮次不进入（走下方串行路径，确认流零改动）。
+            # 本方法是 async generator，SSE 事件只能在生成器本体产出：
+            # 结构上先纯解析分类 → 并发执行收齐结果 → 再按原调用顺序落库/产出事件。
+            reads: list[dict] = []   # {call, tool, args, key, dup}
+            fast = bool(calls)
+            seen_keys: set = set()
+            for call in calls:
+                tool = tools_by_name.get(call["name"])
+                if tool is None or tool.write:
+                    fast = False
+                    break
+                try:
+                    args = json.loads(call["arguments"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                args = {**internal_template.get(call["name"], {}), **args}
+                if (dtype == "global" and tool.needs_device and tool.device_type != "netdev"
+                        and not resolve_batch_targets(args)):
+                    fast = False
+                    break
+                key = (call["name"], json.dumps(args, sort_keys=True, ensure_ascii=False))
+                dup = key in executed_results or key in seen_keys   # 跨轮/同轮重复：不执行，复用结果
+                seen_keys.add(key)
+                reads.append({"call": call, "tool": tool, "args": args, "key": key, "dup": dup})
+
+            if fast:
+                for r in reads:
+                    yield {"type": "tool_call", "name": r["call"]["name"],
+                           "args": {k: v for k, v in r["args"].items() if not str(k).startswith("_")}}
+                sem = asyncio.Semaphore(READ_CONCURRENCY)
+
+                async def _exec_read(tool, args):
+                    async with sem:
+                        try:
+                            if (tool.needs_device and tool.device_type != "netdev"
+                                    and resolve_batch_targets(args)):
+                                return await self._run_read_batch(tool, args)
+                            client = await get_client(device_id) if tool.needs_device else None
+                            return await tool.handler(client, args, device)
+                        except Exception as e:   # noqa: BLE001
+                            return {"_read_error": f"工具执行失败：{e}"}
+
+                unique = [r for r in reads if not r["dup"]]
+                outcomes = await asyncio.gather(*(_exec_read(r["tool"], r["args"]) for r in unique))
+                raws: dict = {}
+                for r, result in zip(unique, outcomes):
+                    if isinstance(result, dict) and "_read_error" in result:
+                        continue
+                    raws[r["key"]] = result
+                    content = json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]
+                    executed_results[r["key"]] = (content, _compact_result(r["call"]["name"], result))
+                # 失败原因按 key 收集：同 key 重复调用直接复用，不重试执行
+                errors = {r["key"]: result["_read_error"]
+                          for r, result in zip(unique, outcomes)
+                          if isinstance(result, dict) and "_read_error" in result}
+                for r in reads:
+                    call, key, name = r["call"], r["key"], r["call"]["name"]
+                    if key in errors:
+                        err = errors[key]
+                        db.add_message(conv_id, "tool", {"tool_call_id": call["id"],
+                                                         "name": name, "content": err})
+                        messages.append({"role": "tool", "tool_call_id": call["id"], "content": err})
+                        yield {"type": "tool_result", "name": name, "preview": err}
+                        continue
+                    content, preview = executed_results[key]
+                    db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
+                                                     "content": content})
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
+                    if r["dup"]:   # 重复调用：提示 LLM 直接使用已有结果
+                        yield {"type": "tool_result", "name": name,
+                               "preview": f"（重复调用已合并，请直接使用已有结果）{preview}"}
+                        continue
+                    guardrails.audit_tool(name, r["args"], "ok", conv_id, device_id)
+                    if name == skills.KB_TOOL_NAME and _kb_hit_result(raws.get(key)):
+                        kb_hit = True
+                        # 标记官方知识库实际命中：待沉淀队列与自动沉淀均以此为准（未命中不入队）
+                        db.audit("agent.kb.hit",
+                                 {"args": {"question": str(r["args"].get("question", ""))[:200]}},
+                                 conv_id=conv_id, device_id=device_id)
+                    yield {"type": "tool_result", "name": name, "preview": preview}
+                continue
+
             for call in calls:
                 name, raw_args = call["name"], call["arguments"]
                 tool = tools_by_name.get(name)
@@ -652,9 +741,7 @@ class AgentOrchestrator:
                     args = json.loads(raw_args or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                # 合并内部参数模板（优先从过滤后的工具查找，再回退到全量）
-                filtered_tools = get_tools(dtype)
-                internal_template = {t.name: getattr(t, "internal", {}) for t in filtered_tools if getattr(t, "internal", None)}
+                # 合并内部参数模板（模板已在工具轮次循环外构建一次）
                 args = {**internal_template.get(name, {}), **args}
 
                 yield {"type": "tool_call", "name": name,
@@ -791,84 +878,83 @@ class AgentOrchestrator:
             return ("我是全局运维助手（全局模式）。离线兜底模式仅支持绑定具体深信服设备后的固定意图查询，"
                     "完整全局对话能力需要配置 LLM API Key 后使用（backend/.env 或『平台设置』中的 LLM_API_KEY）。")
         client = await get_client(device_id)
-        if True:
-            m = message.lower()
-            if re.search(r"状态|健康|cpu|内存|资源", m):
-                s = (await client.get_status()).to_dict()
-                return (f"**设备状态**（{device.get('name')}）\n- 软件版本：{s['sw_version']}（{s['model']}）\n"
-                        f"- CPU：{s['cpu_usage']}%　内存：{s['memory_usage']}%　磁盘：{s['disk_usage']}%\n"
-                        f"- 会话：{s['session_count']}/{s['session_capacity']}\n"
-                        f"- 运行时间：{s['uptime']}")
-            if re.search(r"接口|网口|端口流量", m):
-                rows = [i.to_dict() for i in await client.get_interfaces()]
-                lines = ["| 接口 | 区域 | IP | 状态 | 收/发 (kbps) |", "|---|---|---|---|---|"]
-                lines += [f"| {r['name']} | {r['zone'] or '-'} | {r['ip'] or '-'} | {r['status']} "
-                          f"| {r['rx_kbps']}/{r['tx_kbps']} |" for r in rows]
-                return "**网络接口**\n" + "\n".join(lines)
-            if re.search(r"网络对象|ip组|ip组|地址组|对象", m) and "更新" not in m and "升级" not in m:
-                rows = [o.to_dict() for o in await client.get_network_objects()]
-                lines = ["| 对象 | 类型 | 成员 | 备注 |", "|---|---|---|---|"]
-                lines += [f"| {r['name']} | {r['type']} | {r['members']} | {r['comment'] or '-'} |"
-                          for r in rows]
-                return "**网络对象**\n" + "\n".join(lines)
-            if re.search(r"自定义服务|服务列表", m) or ("服务" in m and "升级" not in m and "更新" not in m):
-                rows = [s.to_dict() for s in await client.get_services()]
-                lines = ["| 服务 | 协议 | 端口 | 备注 |", "|---|---|---|---|"]
-                lines += [f"| {r['name']} | {r['protocol']} | {r['ports']} | {r['comment'] or '-'} |"
-                          for r in rows]
-                return "**自定义服务**\n" + "\n".join(lines)
-            if re.search(r"nat|地址转换", m):
-                rules = [n.to_dict() for n in await client.get_nat_rules()]
-                lines = ["| ID | 名称 | 类型 | 源 | 目的 | 服务 | 转换 | 启用 | 命中 |",
-                         "|---|---|---|---|---|---|---|---|---|"]
-                lines += [f"| {r['id']} | {r['name']} | {r['type']} | {r['src_addr']} | {r['dst_addr']} "
-                          f"| {r['service']} | {r['translated_addr']}"
-                          f"{'：' + r['translated_port'] if r['translated_port'] else ''} "
-                          f"| {'✓' if r['enabled'] else '✗'} | {r['hit_count']} |" for r in rules]
-                return "**NAT 策略**\n" + "\n".join(lines)
-            if re.search(r"acl|访问控制|策略", m):
-                rules = [a.to_dict() for a in await client.get_acl_rules()]
-                lines = ["| ID | 名称 | 源 | 目的 | 服务 | 动作 | 启用 | 命中 |",
-                         "|---|---|---|---|---|---|---|---|"]
-                lines += [f"| {r['id']} | {r['name']} | {r['src_addr']} | {r['dst_addr']} | {r['service']} "
-                          f"| {r['action']} | {'✓' if r['enabled'] else '✗'} | {r['hit_count']} |"
-                          for r in rules]
-                return "**访问控制策略**\n" + "\n".join(lines)
-            if re.search(r"绑定", m):
-                rows = [b.to_dict() for b in await client.get_user_bindings()]
-                lines = ["| 用户 | IP | MAC | 类型 | 启用 |", "|---|---|---|---|---|"]
-                lines += [f"| {r['user']} | {r['ip']} | {r['mac'] or '-'} | {r['binding_type']} "
-                          f"| {'✓' if r['enabled'] else '✗'} |" for r in rows]
-                return "**IP-MAC 绑定**\n" + "\n".join(lines)
-            if re.search(r"体检|检查|风险|分析", m):
-                report = run_checks(await client.snapshot_config(), (await client.get_status()).to_dict())
-                lines = [f"**配置体检**：得分 {report['score']}/100（{report['grade']}），"
-                         f"高危 {report['counts']['high']} / 中危 {report['counts']['medium']} / "
-                         f"低危 {report['counts']['low']}", ""]
-                for item in report["items"][:10]:
-                    lines.append(f"- 【{item['severity']}】{item['title']} → {item['suggestion']}")
-                return "\n".join(lines)
-            if re.search(r"备份列表|备份", m):
-                rows = db.list_backups(device_id)[:10]
-                if not rows:
-                    return "尚无备份记录，可对我说\"创建备份\"。"
-                lines = ["| 备份 | 标签 | 版本 | 时间 |", "|---|---|---|---|"]
-                lines += [f"| {r['id']} | {r['label']} | {r['sw_version']} | {r['created_at']} |"
-                          for r in rows]
-                return "**备份列表**\n" + "\n".join(lines)
-            if re.search(r"升级|更新|新版本", m):
-                from app.services import upgrade_advisor
-                st = await client.get_status()
-                advice = await upgrade_advisor.build_upgrade_advice(st.sw_version, st.to_dict(),
-                                                                    device.get("name", ""))
-                return (f"**升级建议**：{advice['recommendation']}\n"
-                        f"- 当前 {advice['current_version']} → 最新 {advice['latest_version']}\n"
-                        f"- 升级路径：{' → '.join(advice['upgrade_path']['hops']) or '无需'}\n"
-                        f"- 时机：{advice['timing']['window']}\n"
-                        f"- 理由：{'; '.join(r['text'] for r in advice['reasons'])}")
-            return ("我是深信服售后技术支持 Agent。当前为**离线兜底模式**，可回答：设备状态 / 接口 / NAT / "
-                    "访问控制策略 / 用户绑定 / 配置体检 / 备份列表 / 升级建议。"
-                    "配置 backend/.env 或『平台设置』中的 LLM_API_KEY 后即可使用完整自然语言对话（含配置变更与恢复）。")
+        m = message.lower()
+        if re.search(r"状态|健康|cpu|内存|资源", m):
+            s = (await client.get_status()).to_dict()
+            return (f"**设备状态**（{device.get('name')}）\n- 软件版本：{s['sw_version']}（{s['model']}）\n"
+                    f"- CPU：{s['cpu_usage']}%　内存：{s['memory_usage']}%　磁盘：{s['disk_usage']}%\n"
+                    f"- 会话：{s['session_count']}/{s['session_capacity']}\n"
+                    f"- 运行时间：{s['uptime']}")
+        if re.search(r"接口|网口|端口流量", m):
+            rows = [i.to_dict() for i in await client.get_interfaces()]
+            lines = ["| 接口 | 区域 | IP | 状态 | 收/发 (kbps) |", "|---|---|---|---|---|"]
+            lines += [f"| {r['name']} | {r['zone'] or '-'} | {r['ip'] or '-'} | {r['status']} "
+                      f"| {r['rx_kbps']}/{r['tx_kbps']} |" for r in rows]
+            return "**网络接口**\n" + "\n".join(lines)
+        if re.search(r"网络对象|ip组|ip组|地址组|对象", m) and "更新" not in m and "升级" not in m:
+            rows = [o.to_dict() for o in await client.get_network_objects()]
+            lines = ["| 对象 | 类型 | 成员 | 备注 |", "|---|---|---|---|"]
+            lines += [f"| {r['name']} | {r['type']} | {r['members']} | {r['comment'] or '-'} |"
+                      for r in rows]
+            return "**网络对象**\n" + "\n".join(lines)
+        if re.search(r"自定义服务|服务列表", m) or ("服务" in m and "升级" not in m and "更新" not in m):
+            rows = [s.to_dict() for s in await client.get_services()]
+            lines = ["| 服务 | 协议 | 端口 | 备注 |", "|---|---|---|---|"]
+            lines += [f"| {r['name']} | {r['protocol']} | {r['ports']} | {r['comment'] or '-'} |"
+                      for r in rows]
+            return "**自定义服务**\n" + "\n".join(lines)
+        if re.search(r"nat|地址转换", m):
+            rules = [n.to_dict() for n in await client.get_nat_rules()]
+            lines = ["| ID | 名称 | 类型 | 源 | 目的 | 服务 | 转换 | 启用 | 命中 |",
+                     "|---|---|---|---|---|---|---|---|---|"]
+            lines += [f"| {r['id']} | {r['name']} | {r['type']} | {r['src_addr']} | {r['dst_addr']} "
+                      f"| {r['service']} | {r['translated_addr']}"
+                      f"{'：' + r['translated_port'] if r['translated_port'] else ''} "
+                      f"| {'✓' if r['enabled'] else '✗'} | {r['hit_count']} |" for r in rules]
+            return "**NAT 策略**\n" + "\n".join(lines)
+        if re.search(r"acl|访问控制|策略", m):
+            rules = [a.to_dict() for a in await client.get_acl_rules()]
+            lines = ["| ID | 名称 | 源 | 目的 | 服务 | 动作 | 启用 | 命中 |",
+                     "|---|---|---|---|---|---|---|---|"]
+            lines += [f"| {r['id']} | {r['name']} | {r['src_addr']} | {r['dst_addr']} | {r['service']} "
+                      f"| {r['action']} | {'✓' if r['enabled'] else '✗'} | {r['hit_count']} |"
+                      for r in rules]
+            return "**访问控制策略**\n" + "\n".join(lines)
+        if re.search(r"绑定", m):
+            rows = [b.to_dict() for b in await client.get_user_bindings()]
+            lines = ["| 用户 | IP | MAC | 类型 | 启用 |", "|---|---|---|---|---|"]
+            lines += [f"| {r['user']} | {r['ip']} | {r['mac'] or '-'} | {r['binding_type']} "
+                      f"| {'✓' if r['enabled'] else '✗'} |" for r in rows]
+            return "**IP-MAC 绑定**\n" + "\n".join(lines)
+        if re.search(r"体检|检查|风险|分析", m):
+            report = run_checks(await client.snapshot_config(), (await client.get_status()).to_dict())
+            lines = [f"**配置体检**：得分 {report['score']}/100（{report['grade']}），"
+                     f"高危 {report['counts']['high']} / 中危 {report['counts']['medium']} / "
+                     f"低危 {report['counts']['low']}", ""]
+            for item in report["items"][:10]:
+                lines.append(f"- 【{item['severity']}】{item['title']} → {item['suggestion']}")
+            return "\n".join(lines)
+        if re.search(r"备份列表|备份", m):
+            rows = db.list_backups(device_id)[:10]
+            if not rows:
+                return "尚无备份记录，可对我说\"创建备份\"。"
+            lines = ["| 备份 | 标签 | 版本 | 时间 |", "|---|---|---|---|"]
+            lines += [f"| {r['id']} | {r['label']} | {r['sw_version']} | {r['created_at']} |"
+                      for r in rows]
+            return "**备份列表**\n" + "\n".join(lines)
+        if re.search(r"升级|更新|新版本", m):
+            from app.services import upgrade_advisor
+            st = await client.get_status()
+            advice = await upgrade_advisor.build_upgrade_advice(st.sw_version, st.to_dict(),
+                                                                device.get("name", ""))
+            return (f"**升级建议**：{advice['recommendation']}\n"
+                    f"- 当前 {advice['current_version']} → 最新 {advice['latest_version']}\n"
+                    f"- 升级路径：{' → '.join(advice['upgrade_path']['hops']) or '无需'}\n"
+                    f"- 时机：{advice['timing']['window']}\n"
+                    f"- 理由：{'; '.join(r['text'] for r in advice['reasons'])}")
+        return ("我是深信服售后技术支持 Agent。当前为**离线兜底模式**，可回答：设备状态 / 接口 / NAT / "
+                "访问控制策略 / 用户绑定 / 配置体检 / 备份列表 / 升级建议。"
+                "配置 backend/.env 或『平台设置』中的 LLM_API_KEY 后即可使用完整自然语言对话（含配置变更与恢复）。")
 
 
 def _kb_hit_result(result) -> bool:

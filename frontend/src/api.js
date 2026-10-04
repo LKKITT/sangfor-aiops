@@ -99,6 +99,22 @@ export async function apiPut(path, body = {}, timeout = 45000) {
   }
 }
 
+export async function apiPatch(path, body = {}, timeout = 45000) {
+  const { signal, done } = timeoutSignal(timeout)
+  try {
+    const resp = await fetch(BASE + path, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal
+    })
+    if (!resp.ok) throw new Error(await readError(resp))
+    return resp.json()
+  } finally {
+    done()
+  }
+}
+
 export const Health = { get: () => apiGet('/api/health') }
 export const Settings = {
   get: () => apiGet('/api/settings'),
@@ -107,7 +123,7 @@ export const Settings = {
 export const Devices = {
   list: () => apiGet('/api/devices'),
   add: (d) => apiPost('/api/devices', d),
-  patch: (id, d) => fetch(`/api/devices/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json()),
+  patch: (id, d) => apiPatch(`/api/devices/${id}`, d),
   remove: (id) => apiDelete(`/api/devices/${id}`),
   test: (id) => apiPost(`/api/devices/${id}/test`),
   testConnection: (d) => apiPost('/api/devices/test-connection', d),

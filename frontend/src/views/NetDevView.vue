@@ -508,11 +508,18 @@ async function execute() {
 
 function pollTask(taskId) {
   clearTimeout(pollTimer.value)
+  let ticks = 0   // 连续轮询计数：间隔指数退避 1.2s→2.4s→4s（长任务降低空转频率）
   const tick = async () => {
     try {
+      // 页面隐藏时低频待机（不递增 ticks，回前台后恢复基础频率）
+      if (document.hidden) { pollTimer.value = setTimeout(tick, 2000); return }
       const t = await NetDev.task(taskId)
       task.value = t
-      if (t.status === 'running') { pollTimer.value = setTimeout(tick, 1200); return }
+      if (t.status === 'running') {
+        ticks++
+        pollTimer.value = setTimeout(tick, Math.min(1200 * 2 ** ticks, 4000))
+        return
+      }
       const ok = t.items.filter(i => i.status === 'ok').length
       ElMessage.success(`批量执行完成：成功 ${ok} / ${t.items.length} 台`)
     } catch { /* 静默，下一轮重试 */ }

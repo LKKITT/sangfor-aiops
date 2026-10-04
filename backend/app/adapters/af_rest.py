@@ -1190,7 +1190,6 @@ class AfRestClient(DeviceClient):
                 return r
         raise DeviceError(f"未找到 NAT 策略 {rule_id}，可能已被删除，请刷新策略列表后重试")
 
-    @classmethod
     @staticmethod
     def _transfer_addr_str(transfer: dict) -> str:
         """原生 transfer → 转换地址串（兼容 specifyIp 列表/单值与 ipRange 范围）。"""

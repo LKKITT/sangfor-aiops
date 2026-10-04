@@ -171,6 +171,7 @@ async def _keepalive_loop() -> None:
             except Exception as e:   # noqa: BLE001 —— 保活失败即丢弃缓存，下次使用时重新登录
                 _clients.pop(device_id, None)
                 _client_signatures.pop(device_id, None)
+                await _close_quietly(client)   # 释放 httpx 连接池，避免反复掉线时连接泄漏
                 log.info("keepalive 失败，已重置会话 device=%s: %s", device_id, e)
 
 

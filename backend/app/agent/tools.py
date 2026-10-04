@@ -53,6 +53,7 @@ class Tool:
         self.device_type = device_type
         self.needs_device = needs_device
         self._batch_devices = batch_devices
+        self._schema: dict | None = None   # schema 静态，构建一次后复用（调用方不得原地修改）
         guardrails.register_meta(name, {"write": write})
 
     @property
@@ -63,14 +64,16 @@ class Tool:
         return self.needs_device or self.device_type == "netdev"
 
     def schema(self) -> dict:
-        params = self.parameters
-        if self.supports_batch_devices:
-            params = copy.deepcopy(self.parameters)
-            props = params.setdefault("properties", {})
-            props.setdefault("devices", self.DEVICES_PARAM)
-        return {"type": "function",
-                "function": {"name": self.name, "description": self.description,
-                             "parameters": params}}
+        if self._schema is None:
+            params = self.parameters
+            if self.supports_batch_devices:
+                params = copy.deepcopy(self.parameters)
+                props = params.setdefault("properties", {})
+                props.setdefault("devices", self.DEVICES_PARAM)
+            self._schema = {"type": "function",
+                            "function": {"name": self.name, "description": self.description,
+                                         "parameters": params}}
+        return self._schema
 
 
 # ============================ 查询类工具 ============================

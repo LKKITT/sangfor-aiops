@@ -651,10 +651,14 @@ function handleEvent(ev, aiMsg) {
     return
   }
   if (ev.type === 'tool_result') {
-    if (aiMsg._currentTool && aiMsg.trace.length) {
-      aiMsg.trace[aiMsg.trace.length - 1] = `${aiMsg._currentTool} ✓`
+    // 按工具名配对收尾：并行轮次的事件顺序为"全部 tool_call → 全部 tool_result"，
+    // 不能假设结果紧跟在对应调用之后（串行轮次同样兼容）
+    const label = TOOL_NAMES[ev.name] || ev.name
+    const idx = aiMsg.trace.lastIndexOf(`${label} …`)
+    if (idx >= 0) {
+      aiMsg.trace[idx] = `${label} ✓`
     } else {
-      aiMsg.trace.push(`${TOOL_NAMES[ev.name] || ev.name} ✓`)
+      aiMsg.trace.push(`${label} ✓`)
     }
     aiMsg._currentTool = null
     return

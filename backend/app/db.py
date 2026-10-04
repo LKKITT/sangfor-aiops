@@ -199,6 +199,17 @@ CREATE TABLE IF NOT EXISTS netdev_topology_pos (
     updated_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (group_name, device_id)
 );
+-- 高频非主键过滤/关联列索引（IF NOT EXISTS 对存量库幂等）
+CREATE INDEX IF NOT EXISTS idx_messages_conv        ON messages(conv_id);
+CREATE INDEX IF NOT EXISTS idx_backups_device       ON backups(device_id);
+CREATE INDEX IF NOT EXISTS idx_audit_conv           ON audit_logs(conv_id);
+CREATE INDEX IF NOT EXISTS idx_audit_ts             ON audit_logs(ts);
+CREATE INDEX IF NOT EXISTS idx_pending_conv         ON pending_actions(conv_id, status);
+CREATE INDEX IF NOT EXISTS idx_memory_device        ON memory_items(device_id);
+CREATE INDEX IF NOT EXISTS idx_kb_topic             ON kb_entries(topic);
+CREATE INDEX IF NOT EXISTS idx_kb_updated           ON kb_entries(updated_at);
+CREATE INDEX IF NOT EXISTS idx_netdev_task_items    ON netdev_task_items(task_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_device ON conversations(device_id);
 """
 
 
@@ -208,7 +219,7 @@ def _connect() -> sqlite3.Connection:
         conn = sqlite3.connect(str(settings.db_path), timeout=15)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        # 不开启 foreign_keys：SCHEMA 未声明任何外键，级联删除由业务层手工完成，开了也是空转
         _local.conn = conn
     return conn
 
@@ -526,6 +537,16 @@ def get_setting(key: str, default: str = "") -> str:
     with _connect() as conn:
         row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default
+
+
+def get_settings(keys: list[str]) -> dict[str, str]:
+    """一次取多个设置项（合并为单条 IN 查询，避免逐 key 往返）。"""
+    if not keys:
+        return {}
+    with _connect() as conn:
+        q = ",".join("?" * len(keys))
+        return {r["key"]: r["value"] for r in
+                conn.execute(f"SELECT key, value FROM app_settings WHERE key IN ({q})", keys)}
 
 
 def set_setting(key: str, value: str) -> None:
@@ -991,8 +1012,10 @@ def kb_stats() -> dict:
             "SELECT substr(created_at,1,10) AS day, COUNT(*) AS c FROM kb_entries"
             " GROUP BY day ORDER BY day")]
     tags = group_tags(list_kb_entries(limit=1000))
+    with _connect() as conn:
+        reflections = conn.execute("SELECT COUNT(*) AS c FROM kb_reflections").fetchone()["c"]
     return {"total": total, "categories": categories, "tags": tags,
-            "timeline": timeline, "reflections": len(list_kb_reflections(limit=1000))}
+            "timeline": timeline, "reflections": reflections}
 
 
 # ---------------- 网络设备管理（SSH 交换机/路由器） ----------------
