@@ -11,6 +11,7 @@
         </el-button>
       </div>
     </div>
+    <el-alert v-if="netdevMode || globalMode" type="info" :closable="false" show-icon :title="guardText" />
 
     <div class="cols">
       <div class="page-card col-list">
@@ -105,9 +106,9 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { store, currentDevice } from '../store.js'
+import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
 import { Backups } from '../api.js'
 
 const backups = ref([])
@@ -120,12 +121,17 @@ const restorePlan = ref(null)
 const restoreTarget = ref(null)
 const restoring = ref(false)
 
+const netdevMode = computed(() => isNetDev(currentDevice()))
+const globalMode = computed(() => isGlobal(currentDevice()))
+const guardText = computed(() => netdevMode.value
+  ? '当前选中的是网络设备：配置备份/恢复仅支持深信服设备；网络设备可用 AI 对话查询配置'
+  : '当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备')
 const kindName = k => ({ manual: '手动', scheduled: '自动', pre_change: '变更前安全备份' }[k] || k)
 const sectionName = s => ({ objects: '网络对象', services: '自定义服务', user_bindings: '用户绑定', acl_rules: '访问控制策略', nat_rules: 'NAT 策略', static_routes: '静态路由', interfaces: '网络接口' }[s] || s)
 
 async function load() {
   const dev = currentDevice()
-  if (!dev) return
+  if (!dev || isNetDev(dev) || isGlobal(dev)) return
   backups.value = await Backups.list(dev.id)
   // 已有两份备份时自动选最近两份做对比，方便快速查看差异
   if (!diffA.value && !diffB.value && backups.value.length >= 2) {
@@ -140,7 +146,7 @@ onMounted(load)
 
 async function createBackup() {
   const dev = currentDevice()
-  if (!dev) return
+  if (!dev || isNetDev(dev) || isGlobal(dev)) return
   creating.value = true
   try {
     await Backups.create(dev.id, `手动备份 ${new Date().toLocaleString('zh-CN')}`)

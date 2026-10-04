@@ -9,6 +9,8 @@ import pathlib
 _TMP = tempfile.mkdtemp(prefix="sangfor-agent-test-")
 os.environ["SF_DATA_DIR"] = _TMP
 os.environ.setdefault("LLM_API_KEY", "")   # 测试不依赖真实 LLM
+# 测试夹具依赖模拟器路由（mode=simulator 设备），跳过生产启动时的演示设备存量清理
+os.environ.setdefault("SF_SKIP_DEMO_CLEANUP", "1")
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 

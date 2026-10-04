@@ -28,20 +28,36 @@
       <div class="device-panel">
         <div class="device-panel-head">
           <span class="device-label">目标设备</span>
-          <span class="device-ops" v-if="device">
+          <span class="device-ops" v-if="device && !isNetDevDevice && !isGlobalDevice">
             <button class="icon-ghost" title="编辑设备连接信息" aria-label="编辑设备连接信息" @click="openEditDevice"><el-icon><Edit /></el-icon></button>
             <button class="icon-ghost is-danger" title="删除设备" aria-label="删除设备" @click="confirmDeleteDevice"><el-icon><Delete /></el-icon></button>
           </span>
+          <span class="device-ops" v-else-if="isNetDevDevice">
+            <span class="nd-hint" title="网络设备请在「网络设备管理」页维护">网络设备</span>
+          </span>
         </div>
         <el-select v-model="store.currentDeviceId" placeholder="选择设备" class="device-select" popper-class="sfa-device-popper">
-          <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
-                     :label="`${d.name}（${deviceTypeName(d)}）`">
-            <span>{{ d.name }}</span>
-            <span class="dev-opt-meta">{{ deviceTypeName(d) }} · {{ d.mode === 'simulator' ? '模拟器' : '真实设备' }}</span>
+          <el-option :value="GLOBAL_DEVICE_ID" label="全局（所有设备）">
+            <span>全局（所有设备）</span>
+            <span class="dev-opt-meta">全部深信服 + 网络设备</span>
           </el-option>
+          <el-option-group label="深信服设备">
+            <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
+                       :label="`${d.name}（${deviceTypeName(d)}）`">
+              <span>{{ d.name }}</span>
+              <span class="dev-opt-meta">{{ deviceTypeName(d) }} · 真实设备</span>
+            </el-option>
+          </el-option-group>
+          <el-option-group v-if="aiNetdevs().length" label="网络设备（华为/H3C/锐捷）">
+            <el-option v-for="d in aiNetdevs()" :key="d.id" :value="d.id"
+                       :label="`${d.name}（网络设备·${vendorName(d.vendor)}）`">
+              <span>{{ d.name }}</span>
+              <span class="dev-opt-meta">{{ vendorName(d.vendor) }} · {{ d.host }}</span>
+            </el-option>
+          </el-option-group>
         </el-select>
         <div class="device-tags">
-          <span v-if="device && device.readonly" class="mini-chip warn"><i class="mc-dot"></i>只读</span>
+          <span v-if="device && !isNetDevDevice && device.readonly" class="mini-chip warn"><i class="mc-dot"></i>只读</span>
           <span class="mini-chip" :class="llmChip.cls"><i class="mc-dot"></i>{{ llmChip.text }}</span>
           <span v-if="store.health.readonly_mode" class="mini-chip danger"><i class="mc-dot"></i>全局只读</span>
         </div>
@@ -171,18 +187,12 @@
             <el-radio value="scp">云计算平台 SCP</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="接入方式">
-          <el-radio-group v-model="form.mode">
-            <el-radio value="simulator" :disabled="form.type === 'scp'">内置模拟器</el-radio>
-            <el-radio value="real">真实设备</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <template v-if="form.mode === 'real' && form.type === 'af'">
+        <template v-if="form.type === 'af'">
           <el-form-item label="设备地址"><el-input v-model="form.base_url" placeholder="https://192.168.1.1" /></el-form-item>
           <el-form-item label="API 账号"><el-input v-model="form.username" /></el-form-item>
           <el-form-item label="API 密码"><el-input v-model="form.password" type="password" show-password /></el-form-item>
         </template>
-        <template v-if="form.mode === 'real' && form.type === 'scp'">
+        <template v-if="form.type === 'scp'">
           <el-form-item label="平台地址">
             <el-input v-model="form.device_ip" placeholder="SCP 平台 IP，如 10.134.85.140（可带端口 10.1.1.1:4430）" />
           </el-form-item>
@@ -194,7 +204,7 @@
             </span>
           </el-form-item>
         </template>
-        <template v-if="form.mode === 'real' && form.type === 'ac'">
+        <template v-if="form.type === 'ac'">
           <el-form-item label="设备 IP">
             <el-input v-model="form.device_ip" placeholder="192.168.1.1" />
           </el-form-item>
@@ -232,25 +242,19 @@
             <el-radio value="scp">云计算平台 SCP</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="接入方式">
-          <el-radio-group v-model="editForm.mode">
-            <el-radio value="simulator" :disabled="editForm.type === 'scp'">内置模拟器</el-radio>
-            <el-radio value="real">真实设备</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <template v-if="editForm.mode === 'real' && editForm.type === 'scp'">
+        <template v-if="editForm.type === 'scp'">
           <el-form-item label="平台地址">
             <el-input v-model="editForm.device_ip" placeholder="SCP 平台 IP（可带端口）" />
           </el-form-item>
           <el-form-item label="AccessKey"><el-input v-model="editForm.username" /></el-form-item>
           <el-form-item label="SecretKey"><el-input v-model="editForm.password" type="password" show-password placeholder="留空不修改" /></el-form-item>
         </template>
-        <template v-if="editForm.mode === 'real' && editForm.type === 'af'">
+        <template v-if="editForm.type === 'af'">
           <el-form-item label="设备地址"><el-input v-model="editForm.base_url" placeholder="https://192.168.1.1" /></el-form-item>
           <el-form-item label="API 账号"><el-input v-model="editForm.username" /></el-form-item>
           <el-form-item label="API 密码"><el-input v-model="editForm.password" type="password" show-password placeholder="留空不修改" /></el-form-item>
         </template>
-        <template v-if="editForm.mode === 'real' && editForm.type === 'ac'">
+        <template v-if="editForm.type === 'ac'">
           <el-form-item label="设备 IP">
             <el-input v-model="editForm.device_ip" placeholder="192.168.1.1" />
           </el-form-item>
@@ -277,7 +281,7 @@
 <script setup>
 import { ref, computed, onMounted, markRaw, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { store, loadDevices, loadHealth, currentDevice } from './store.js'
+import { store, loadDevices, loadHealth, currentDevice, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from './store.js'
 import { Devices, Settings } from './api.js'
 import ChatView from './views/ChatView.vue'
 import ConfigView from './views/ConfigView.vue'
@@ -321,6 +325,9 @@ const mobileOpen = ref(false)
 const showAdd = ref(false)
 const form = ref({ name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false })
 const device = computed(currentDevice)
+const isNetDevDevice = computed(() => isNetDev(device.value))
+const isGlobalDevice = computed(() => isGlobal(device.value))
+const vendorName = (v) => NETDEV_VENDOR_NAMES[v] || v
 // LLM 徽章：后端返回 false（未配置）/ true（已接入无模型名）/ 模型名字符串
 const llmChip = computed(() => {
   const v = store.health.llm_configured
@@ -329,7 +336,11 @@ const llmChip = computed(() => {
   return { text: `LLM ${v}`, cls: 'ok' }
 })
 // 设备类型中文名（与 ChatView 输入台的设备选择器保持同一文案口径）
-const deviceTypeName = (d) => d.type === 'af' ? '防火墙' : d.type === 'scp' ? '云计算平台' : '上网行为管理'
+const deviceTypeName = (d) => {
+  if (isGlobal(d)) return '全局模式'
+  if (isNetDev(d)) return `网络设备·${vendorName(d.vendor)}`
+  return d.type === 'af' ? '防火墙' : d.type === 'scp' ? '云计算平台' : '上网行为管理'
+}
 const testing = ref(false)
 const testResult = ref(null)
 
@@ -558,6 +569,7 @@ async function confirmDeleteDevice() {
 .device-panel { margin: 2px 14px 12px; padding: 12px; border-radius: 12px; background: rgba(148, 163, 199, .07); border: 1px solid var(--side-line); }
 .device-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .device-label { font-size: 10.5px; letter-spacing: .14em; color: #8A96B8; font-weight: 650; }
+.nd-hint { font-size: 10.5px; color: #8A96B8; letter-spacing: .04em; }
 .device-ops { display: inline-flex; gap: 2px; }
 .icon-ghost {
   width: 24px; height: 24px; border-radius: 7px; border: none; cursor: pointer;

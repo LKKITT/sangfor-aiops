@@ -24,11 +24,14 @@ SEGMENT_LIMIT = 1500
 MAX_SEGMENTS = 4
 
 HELP_TEXT = (
-    "**深信服运维助手**（企微渠道）\n"
-    "直接发消息即可对话，支持：设备状态 / 配置体检 / 备份与恢复 / 升级建议 / 知识问答。\n"
-    "管理指令（自然语言表达也可以，如\"开个新会话\"\"切换到演示设备\"）：\n"
-    "- 设备列表 — 查看可管理的设备\n"
-    "- 切换设备 关键词 — 切换当前操作设备（如：切换设备 演示）\n"
+    "**全局运维助手**（企微渠道）\n"
+    "默认为**全局模式**：对话覆盖全部已添加设备（深信服 + 网络设备），"
+    "可点名设备或说\"所有设备\"批量操作；超过 30 分钟未对话会自动回到全局模式开启新会话。\n"
+    "支持：深信服设备（AF/AC/SCP）状态/配置/体检/备份恢复/升级建议，"
+    "网络设备（华为/H3C/锐捷）查询与配置，以及知识问答。\n"
+    "管理指令（自然语言表达也可以，如\"开个新会话\"\"切换到总部AF\"）：\n"
+    "- 设备列表 — 查看可管理的设备（含网络设备）\n"
+    "- 切换设备 关键词 — 切换当前操作设备（如：切换设备 总部AF；切换设备 全局 回到全局模式）\n"
     "- 当前设备 — 查看当前操作设备\n"
     "- 新会话 — 开启新会话（对话日志独立成条）\n"
     "- 帮助 — 显示本说明"
@@ -109,7 +112,7 @@ def _is_new_session_text(t: str) -> bool:
 def _parse_switch_keyword(t: str) -> Optional[str]:
     """自然语言切换设备意图，返回目标关键词；非切换指令返回 None。
 
-    兼容「切换设备 演示」「切换到AC」「把设备切换到AF模拟器」等表达；
+    兼容「切换设备 总部AF」「切换到AC」「把设备切换到核心交换机」等表达；
     仅做字符串匹配，不触碰设备连接（切换本身无需检测连通性）。
     """
     if not t or len(t) > 30 or _is_question_like(t):
@@ -170,22 +173,37 @@ async def _consume_events(generator: AsyncGenerator[dict, None]) -> dict:
     return {"reply": "".join(parts).strip(), "pending": pending, "error": error}
 
 
-def _default_device(devices: list[dict]) -> dict:
-    """默认设备：优先演示环境（内置模拟器），无模拟器时取第一台。"""
-    sims = [d for d in devices if d.get("mode") == "simulator"]
-    return (sims or devices)[0]
+GLOBAL_DEVICE_ID = "global"   # 全局模式：不绑定单一设备，跨全部深信服/网络设备操作
+
+
+def _global_context() -> dict:
+    """全局模式合成设备上下文（与编排器 load_any_device 口径一致）。"""
+    return {"id": GLOBAL_DEVICE_ID, "name": "全局（所有设备）", "type": "global",
+            "sangfor_count": len(db.list_devices()),
+            "netdev_count": len(db.list_netdev_devices())}
+
+
+def _load_bound_device(device_id: str) -> Optional[dict]:
+    """按绑定 ID 取设备：global 为全局模式，nd_ 前缀为网络设备，其余为深信服设备。"""
+    if not device_id:
+        return None
+    if device_id == GLOBAL_DEVICE_ID:
+        return _global_context()
+    if device_id.startswith("nd_"):
+        return db.get_netdev_device(device_id)
+    return db.get_device(device_id)
 
 
 def _resolve_device(binding: dict) -> tuple[Optional[dict], str]:
-    """解析当前操作设备：绑定值优先，失效/为空回退默认演示设备（并回写绑定）。"""
-    devices = db.list_devices()
-    if not devices:
-        return None, ""
-    dev = db.get_device(binding.get("device_id", "")) if binding.get("device_id") else None
+    """解析当前操作设备：绑定值优先；为空或绑定已失效时回退**全局模式**（并回写绑定）。
+
+    与 Web 端一致，企微渠道默认即为全局对话。
+    """
+    dev = _load_bound_device(binding.get("device_id", ""))
     if dev is None:
-        dev = _default_device(devices)
+        dev = _global_context()
         db.upsert_channel_binding(binding["channel"], binding["sender_id"],
-                                  device_id=dev["id"])
+                                  device_id=GLOBAL_DEVICE_ID)
     return dev, dev["id"]
 
 
@@ -203,14 +221,25 @@ def _session_expired(binding: dict) -> bool:
 
 
 def _fmt_devices(current_id: str) -> str:
+    """设备列表文本：全局模式 + 深信服设备 + 网络设备（标厂家与 AI 对话支持范围）。"""
     type_names = {"af": "AF", "ac": "AC", "scp": "SCP", "hci": "HCI"}
-    lines = []
+    vendor_names = {"huawei": "华为", "h3c": "H3C", "ruijie": "锐捷"}
+    gmark = "▶" if current_id == GLOBAL_DEVICE_ID else " "
+    lines = [f"{gmark} 全局（所有设备）—— 默认，点名设备或说\"所有设备\"批量"]
     for i, d in enumerate(db.list_devices(), 1):
         mark = "▶" if d["id"] == current_id else " "
-        mode = "模拟器" if d.get("mode") == "simulator" else "真实"
         ro = "·只读" if d.get("readonly") else ""   # 标注可写状态：只读设备的变更操作会被拒绝
         lines.append(f"{mark} {i}. {d['name']}（{type_names.get(d.get('type', ''), d.get('type', ''))}"
-                     f"·{mode}{ro}）")
+                     f"{ro}）")
+    netdevs = db.list_netdev_devices()
+    if netdevs:
+        base = len(lines) - 1
+        for j, n in enumerate(netdevs, 1):
+            mark = "▶" if n["id"] == current_id else " "
+            vendor = vendor_names.get(n.get("vendor", ""), n.get("vendor", ""))
+            support = "" if n.get("vendor") in ("huawei", "h3c", "ruijie") else "·AI对话暂不支持"
+            lines.append(f"{mark} {base + j}. {n['name']}（网络设备·{vendor}"
+                         f"·{n.get('host', '')}{support}）")
     return "\n".join(lines)
 
 
@@ -221,36 +250,59 @@ def _handle_manage_command(text: str, channel: str, sender_id: str,
     if t in ("帮助", "help", "Help", "HELP", "菜单"):
         return [HELP_TEXT]
     if t in ("设备列表", "设备清单", "我的设备"):
-        current = binding.get("device_id") or (db.list_devices() or [{}])[0].get("id", "")
+        current = binding.get("device_id") or GLOBAL_DEVICE_ID
         return [f"**设备列表**\n{_fmt_devices(current)}\n\n回复「切换设备 关键词」切换操作设备"]
     if t in ("当前设备",):
         dev, _ = _resolve_device(binding)
-        if not dev:
-            return ["尚无可用设备，请先在 Web 控制台添加设备。"]
+        if dev["id"] == GLOBAL_DEVICE_ID:
+            return [f"当前为**全局模式**：对话覆盖全部已添加设备"
+                    f"（深信服 {dev.get('sangfor_count', 0)} 台、网络设备 {dev.get('netdev_count', 0)} 台）。"
+                    f"可点名设备或说\"所有设备\"批量操作；回复「设备列表」查看全部，"
+                    f"「切换设备 关键词」绑定具体设备。"]
         return [f"当前操作设备：**{dev['name']}**\n回复「设备列表」查看全部，"
-                f"「切换设备 关键词」切换。"]
+                f"「切换设备 关键词」切换（或「切换设备 全局」回到全局模式）。"]
     if t in ("新对话", "新会话", "重新开始", "重置会话") or _is_new_session_text(t):
         db.upsert_channel_binding(channel, sender_id, conv_id="")
         return ["已开启新会话，之前的会话上下文不再带入（对话日志按会话独立记录）。"]
     # 切换设备：纯绑定变更，不检测设备连通性（后续对话时才连接目标设备）
     if t in ("切换设备", "切换"):
         return [f"**设备列表**\n{_fmt_devices(binding.get('device_id', ''))}\n\n"
-                f"回复「切换设备 关键词」切换，如：切换设备 演示"]
+                f"回复「切换设备 关键词」切换，如：切换设备 总部AF"]
     keyword = _parse_switch_keyword(t)
     if keyword:
-        devices = db.list_devices()
+        # 回到全局模式
+        if keyword.lower() in ("global", "全局", "所有", "所有设备", "全部"):
+            db.upsert_channel_binding(channel, sender_id, conv_id="",
+                                      device_id=GLOBAL_DEVICE_ID)
+            return ["已切换到**全局模式**并开启新会话：对话将覆盖全部已添加设备，"
+                    "可点名设备或说\"所有设备\"批量操作。"]
         kw = keyword.lower()
-        # 匹配设备名 / 设备 id / 管理地址（支持只给 IP 切换，如「切换到10.20.33.20」）
-        hit = next((d for d in devices if kw in (d["name"] or "").lower()
-                    or kw in d["id"].lower()
-                    or kw in (d.get("base_url") or "").lower()), None)
+        # 匹配设备名 / 设备 id / 管理地址（深信服 + 网络设备两张表；支持只给 IP 切换）
+        hit = None
+        for d in db.list_devices():
+            if (kw in (d["name"] or "").lower() or kw in d["id"].lower()
+                    or kw in (d.get("base_url") or "").lower()):
+                hit = d
+                break
+        if hit is None:
+            for n in db.list_netdev_devices():
+                if (kw in (n["name"] or "").lower() or kw in n["id"].lower()
+                        or kw in (n.get("host") or "").lower()):
+                    hit = n
+                    break
         if hit is None:
             return [f"未找到匹配「{keyword}」的设备。\n**设备列表**\n"
                     f"{_fmt_devices(binding.get('device_id', ''))}"]
         # 切换同时重置会话：旧会话日志保持原设备归属，新对话在新设备下开启
         db.upsert_channel_binding(channel, sender_id, conv_id="", device_id=hit["id"])
-        ro = "（该设备为只读模式，变更类操作会被拒绝）" if hit.get("readonly") else ""
-        return [f"已切换到设备 **{hit['name']}** 并开启新会话，后续对话将针对该设备进行。{ro}"]
+        vendor_names = {"huawei": "华为", "h3c": "H3C", "ruijie": "锐捷"}
+        if hit["id"].startswith("nd_"):
+            note = (f"（网络设备·{vendor_names.get(hit.get('vendor', ''), hit.get('vendor', ''))}；"
+                    f"AI 对话仅支持华为/H3C/锐捷）"
+                    if hit.get("vendor") not in vendor_names else "（网络设备）")
+        else:
+            note = "（该设备为只读模式，变更类操作会被拒绝）" if hit.get("readonly") else ""
+        return [f"已切换到设备 **{hit['name']}** 并开启新会话，后续对话将针对该设备进行。{note}"]
     return None
 
 
@@ -293,19 +345,22 @@ async def _run_message_locked(channel: str, sender_id: str, text: str) -> dict:
                 "device_id": binding["device_id"], "pending": None}
 
     dev, device_id = _resolve_device(binding)
-    if dev is None:
-        return {"ok": True, "replies": ["尚无可用设备，请先在 Web 控制台添加设备。"],
-                "conv_id": "", "device_id": "", "pending": None}
 
-    # 会话：绑定值有效则续接；长时间未对话自动开启新会话（日志按时间段分段）
+    # 会话：绑定值有效则续接；长时间未对话自动开启新会话（日志按时间段分段），
+    # 超时重置同时回到全局模式（绑定设备复位，可重新点名或切换）
+    global_reset_note = ""
     new_session_note = ""
     conv_id = binding.get("conv_id", "")
     if conv_id and not db.get_conversation(conv_id):
         conv_id = ""
     if conv_id and _session_expired(binding):
         conv_id = ""
+        if device_id != GLOBAL_DEVICE_ID:
+            device_id = GLOBAL_DEVICE_ID
+            dev = _load_bound_device(GLOBAL_DEVICE_ID)
+            global_reset_note = "，并已回到全局模式"
         new_session_note = (f"（距上次对话已超过 {settings.channel_session_timeout_min} 分钟，"
-                            f"已自动开启新会话）\n\n")
+                            f"已自动开启新会话{global_reset_note}）\n\n")
     if not conv_id:
         conv = db.create_conversation((text or "新对话")[:40], device_id=device_id)
         conv_id = conv["id"]

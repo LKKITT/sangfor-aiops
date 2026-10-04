@@ -55,9 +55,18 @@ def _sse_events(generator, conv_id: str = ""):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def _device_exists(device_id: str) -> bool:
+    """设备存在性校验：global 为全局模式；nd_ 前缀为网络设备；其余为深信服设备。"""
+    if device_id == "global":
+        return True
+    if device_id.startswith("nd_"):
+        return db.get_netdev_device(device_id) is not None
+    return db.get_device(device_id) is not None
+
+
 @router.post("")
 async def chat(payload: ChatIn):
-    if not db.get_device(payload.device_id):
+    if not _device_exists(payload.device_id):
         raise HTTPException(404, "设备不存在")
     # 续接已有对话（含待确认卡片上下文）或开启新对话
     conv_id = payload.conv_id

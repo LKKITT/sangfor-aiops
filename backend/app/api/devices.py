@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 class DeviceIn(BaseModel):
     name: str
     type: str = "af"
-    mode: str = "simulator"            # simulator / real
+    mode: str = "real"                 # real（模拟器演示模式已下线）
     base_url: str = ""
     username: str = ""
     password: str = ""
@@ -49,8 +49,10 @@ def list_devices() -> list[dict]:
 
 @router.post("")
 async def add_device(payload: DeviceIn) -> dict:
-    if payload.mode == "real" and not payload.base_url:
-        raise HTTPException(400, "真实设备必须填写 base_url（如 https://192.168.1.1）")
+    if payload.mode != "real":
+        raise HTTPException(400, "内置模拟器（演示设备）已下线，请以真实设备方式接入")
+    if not payload.base_url:
+        raise HTTPException(400, "请填写 base_url（如 https://192.168.1.1）")
     device = db.upsert_device({
         "id": db.new_id("dev_"), "name": payload.name, "type": payload.type,
         "mode": payload.mode, "base_url": payload.base_url,
@@ -65,6 +67,8 @@ async def add_device(payload: DeviceIn) -> dict:
 def patch_device(device_id: str, payload: DevicePatch) -> dict:
     device = _require(device_id)
     fields = payload.model_dump(exclude_none=True)
+    if fields.get("mode") not in (None, "real"):
+        raise HTTPException(400, "内置模拟器（演示设备）已下线，接入方式仅支持真实设备")
     if "readonly" in fields:
         fields["readonly"] = int(fields["readonly"])
     device.update(fields)
@@ -83,8 +87,8 @@ def remove_device(device_id: str) -> dict:
 @router.post("/test-connection")
 async def test_connection(payload: DeviceIn) -> dict:
     """在添加设备前测试连接（设备尚未入库）。"""
-    if payload.mode == "simulator":
-        return {"ok": True, "message": "模拟器设备，无需测试连接"}
+    if payload.mode != "real":
+        return {"ok": False, "error": "内置模拟器（演示设备）已下线，请以真实设备方式接入"}
     from app.adapters.factory import create_client
     tmp_device = {
         "id": "_test_", "name": payload.name, "type": payload.type, "mode": payload.mode,

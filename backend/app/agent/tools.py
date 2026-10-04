@@ -5,6 +5,7 @@
 - write：先经 guardrails 检查 → prepare() 生成人类可读变更计划 → 存 pending_action
   → 前端确认卡片 → 用户确认后由 orchestrator 调 execute() 真正下发。
 """
+import copy
 import json
 from typing import Any, Awaitable, Callable
 
@@ -27,12 +28,22 @@ def _rule_brief(r: dict) -> str:
 
 
 class Tool:
+    # devices 批量参数说明（注入设备类工具 schema，LLM 据此发起跨设备/批量操作）
+    DEVICES_PARAM = {
+        "type": "array", "items": {"type": "string"},
+        "description": ("可选：目标设备列表（设备名称或管理IP，可多个）用于跨设备或批量操作，"
+                        "如 [\"总部-AF-01\",\"分支-AC-02\"]，传 [\"all\"] 表示全部深信服设备；"
+                        "缺省对当前会话设备执行（全局模式下必须指定）。"
+                        "写操作传多台时会为每台生成变更计划统一确认后逐台下发")}
+
     def __init__(self, name: str, description: str, parameters: dict, handler: ToolHandler,
                  write: bool = False, prepare: ToolHandler | None = None,
-                 device_type: str | None = None, needs_device: bool = True):
-        """device_type: None=通用, 'af'=仅AF, 'ac'=仅AC；
-        needs_device: False=执行/生成计划不需要连接设备（知识库沉淀、添加设备等），
-        编排器将跳过设备登录——绑定设备不在线也不影响执行。"""
+                 device_type: str | None = None, needs_device: bool = True,
+                 batch_devices: bool | None = None):
+        """device_type: None=通用, 'af'=仅AF, 'ac'=仅AC, 'scp'=仅SCP, 'netdev'=网络设备(SSH)；
+        needs_device: False=执行/生成计划不需要连接设备（知识库沉淀、添加设备、网络设备 SSH 工具等），
+        编排器将跳过设备登录——绑定设备不在线也不影响执行；
+        batch_devices: None=按 needs_device/device_type 推断是否支持 devices 批量参数。"""
         self.name = name
         self.description = description
         self.parameters = parameters
@@ -41,12 +52,25 @@ class Tool:
         self.prepare = prepare
         self.device_type = device_type
         self.needs_device = needs_device
+        self._batch_devices = batch_devices
         guardrails.register_meta(name, {"write": write})
 
+    @property
+    def supports_batch_devices(self) -> bool:
+        """是否支持 devices 批量参数（设备类工具：需要设备连接的深信服工具 + 网络设备工具）。"""
+        if self._batch_devices is not None:
+            return self._batch_devices
+        return self.needs_device or self.device_type == "netdev"
+
     def schema(self) -> dict:
+        params = self.parameters
+        if self.supports_batch_devices:
+            params = copy.deepcopy(self.parameters)
+            props = params.setdefault("properties", {})
+            props.setdefault("devices", self.DEVICES_PARAM)
         return {"type": "function",
                 "function": {"name": self.name, "description": self.description,
-                             "parameters": self.parameters}}
+                             "parameters": params}}
 
 
 # ============================ 查询类工具 ============================
@@ -358,18 +382,17 @@ async def _h_add_device(client: DeviceClient, args: dict, device: dict) -> dict:
     if any(d["name"] == name for d in existing):
         return {"error": f"已存在同名设备「{name}」"}
     dtype = str(args.get("type", "af"))
-    dmode = str(args.get("mode", "real"))
     base_url = str(args.get("base_url", "")).strip()
     username = str(args.get("username", "")).strip()
     password = str(args.get("password", "")).strip()
     readonly = bool(args.get("readonly", False))
     device = db.upsert_device({
         "id": db.new_id("dev_"), "name": name, "type": dtype,
-        "mode": dmode, "base_url": base_url,
+        "mode": "real", "base_url": base_url,
         "username": username, "password": password,
         "readonly": int(readonly), "settings_json": "{}", "created_at": db.now(),
     })
-    db.audit("device.create", {"name": name, "mode": dmode, "source": "agent_dialog"})
+    db.audit("device.create", {"name": name, "mode": "real", "source": "agent_dialog"})
     return {"ok": True, "device_id": device["id"], "name": name,
             "message": f"设备「{name}」已添加成功"}
 
@@ -383,19 +406,18 @@ async def _p_add_device(client: DeviceClient, args: dict, device: dict) -> dict:
     if any(d["name"] == name for d in existing):
         return {"error": f"已存在同名设备「{name}」"}
     dtype = str(args.get("type", "af"))
-    dmode = str(args.get("mode", "real"))
     base_url = str(args.get("base_url", "")).strip()
     username = str(args.get("username", "")).strip()
     password = str(args.get("password", "")).strip()
     readonly = bool(args.get("readonly", False))
 
-    # 真实设备时尝试测试连接
+    # 真实设备尝试测试连接
     test_result = ""
-    if dmode == "real" and base_url:
+    if base_url:
         try:
             from app.adapters.factory import create_client
             tmp_device = {
-                "id": "_test_", "name": name, "type": dtype, "mode": dmode,
+                "id": "_test_", "name": name, "type": dtype, "mode": "real",
                 "base_url": base_url, "username": username, "password": password,
                 "readonly": 0, "settings_json": "{}", "created_at": db.now(),
             }
@@ -407,30 +429,27 @@ async def _p_add_device(client: DeviceClient, args: dict, device: dict) -> dict:
         except Exception as e:
             test_result = f"连接测试：{e}"
     else:
-        test_result = "模拟器设备，跳过连接测试"
+        test_result = "未提供设备地址，跳过连接测试"
 
     type_label = {"af": "下一代防火墙 AF", "ac": "上网行为管理 AC",
                   "scp": "云计算平台 SCP"}.get(dtype, dtype)
-    mode_label = "真实设备" if dmode == "real" else "内置模拟器"
     info_lines = [
         f"- **名称**：{name}",
         f"- **类型**：{type_label}",
-        f"- **接入方式**：{mode_label}",
+        f"- **设备地址**：{base_url or '（未填写）'}",
     ]
-    if dmode == "real":
-        info_lines.append(f"- **设备地址**：{base_url}")
-        if dtype == "af":
-            info_lines.append(f"- **API 账号**：{username}")
-            info_lines.append(f"- **API 密码**：{'*' * len(password) if password else '（空）'}")
+    if dtype == "af":
+        info_lines.append(f"- **API 账号**：{username}")
+        info_lines.append(f"- **API 密码**：{'*' * len(password) if password else '（空）'}")
 
     return {
         "title": f"添加设备「{name}」",
         "resource": "device", "resource_cn": "设备", "op": "create",
         "target_id": "",
         "before": None,
-        "after": {"name": name, "type": dtype, "mode": dmode, "base_url": base_url,
+        "after": {"name": name, "type": dtype, "mode": "real", "base_url": base_url,
                   "username": username, "readonly": readonly},
-        "fields": ["name", "type", "mode", "base_url", "username", "readonly"],
+        "fields": ["name", "type", "base_url", "username", "readonly"],
         "conflicts": [],
         "warning": "请确认设备信息正确，添加后即可通过对话管理该设备。",
         "detail": "\n".join(info_lines) + f"\n\n**连接测试**：{test_result}",
@@ -629,17 +648,27 @@ async def _h_scp_storages(client: DeviceClient, args: dict, device: dict) -> lis
 
 
 async def _h_switch_device(client: DeviceClient, args: dict, device: dict) -> dict:
-    """列出所有可用设备，供用户选择切换。"""
+    """列出所有可用设备（深信服 + 网络设备），供用户选择切换或指定批量目标。"""
     devices = db.list_devices()
+    netdevs = db.list_netdev_devices()
     return {
         "available_devices": [
             {"id": d["id"], "name": d["name"], "type": d["type"], "mode": d["mode"]}
             for d in devices
         ],
+        "available_netdev_devices": [
+            {"id": n["id"], "name": n["name"], "vendor": n["vendor"],
+             "host": n["host"], "group": n.get("group_name", "")}
+            for n in netdevs
+        ],
         "current_device": device.get("name", ""),
-        "_llm_summary": f"当前设备：{device.get('name')}。可用设备：{', '.join(d['name'] for d in devices)}。"
-                        f"请告知用户可在界面上方设备选择器中切换目标设备。"
-                        f"如需操作不存在的设备，请引导用户先在「设备管理」页面添加。",
+        "_llm_summary": (
+            f"当前设备：{device.get('name')}。"
+            f"深信服设备：{', '.join(d['name'] for d in devices) or '（无）'}；"
+            f"网络设备：{', '.join(n['name'] + '(' + n['vendor'] + ')' for n in netdevs) or '（无）'}。"
+            f"请告知用户可在界面上方设备选择器中切换目标设备；网络设备操作也可直接在当前对话中"
+            f"通过 netdev_* 工具传 devices 参数指定（无需切换）。"
+            f"如需操作不存在的设备，请引导用户先在「设备管理」/「网络设备管理」页面添加。"),
     }
 
 
@@ -659,8 +688,22 @@ def rule_tool(name: str, desc: str, params: dict, handler: ToolHandler,
 
 # 按设备类型过滤的工具列表
 def get_tools(device_type: str = "") -> list[Tool]:
-    """返回指定设备类型的工具列表。device_type='' 或 'af' 返回 AF 工具，'ac' 返回 AC 工具。"""
-    return [t for t in TOOLS if t.device_type is None or t.device_type == device_type]
+    """返回指定设备类型上下文的工具列表。
+
+    - ''（未指定）与具体类型：该类型工具 + 通用工具（深信服上下文另注入网络设备工具）；
+    - 'global'（全局模式）：全量工具——深信服工具在编排器内强制 devices 指定目标；
+    - 'netdev'（网络设备）：网络设备工具 + 不依赖设备连接的通用工具（知识库/设备列表等），
+      深信服设备类查询工具不注入（其 handler 依赖 REST 客户端）。
+    """
+    if device_type == "global":
+        return list(TOOLS)
+    if device_type == "netdev":
+        return [t for t in TOOLS
+                if t.device_type == "netdev"
+                or (t.device_type is None and not t.needs_device)]
+    return [t for t in TOOLS
+            if t.device_type is None or t.device_type == device_type
+            or t.device_type == "netdev"]
 
 
 def get_tool_schemas(device_type: str = "") -> list[dict]:
@@ -738,8 +781,8 @@ TOOLS: list[Tool] = [
         "type": "object",
         "properties": {"limit": {"type": "integer", "default": 20}},
     }, _h_audit),
-    Tool("list_available_devices", "列出所有可用的设备列表，供用户选择切换目标设备。当用户提到其他设备名或想操作另一个设备时使用。",
-         {"type": "object", "properties": {}}, _h_switch_device),
+    Tool("list_available_devices", "列出所有可用的设备列表（深信服设备+网络设备），供用户选择切换目标设备或指定批量操作目标。当用户提到其他设备名或想操作另一个设备时使用。",
+         {"type": "object", "properties": {}}, _h_switch_device, needs_device=False),
     _write_tool("record_to_kb",
                 "把当前对话记录沉淀到个人知识库（用户明确要求『记录/保存/沉淀到知识库』时使用）。可选 note 说明希望重点记录的内容。生成确认卡片供用户确认后登记。",
                 {"type": "object",
@@ -759,14 +802,14 @@ TOOLS: list[Tool] = [
           "properties": {"keyword": {"type": "string",
                                      "description": "核心技术关键词，如：HA 主备、内存虚高、445 端口、ARP 冲突"}},
           "required": ["keyword"]},
-         _h_search_personal_kb),
+         _h_search_personal_kb, needs_device=False),
     Tool("search_official_knowledge",
          "检索深信服官方知识库（诸葛小T）：适用于产品配置方法、故障排查思路、版本兼容性、官方最佳实践等通用技术问题，回答附带官方引用来源。设备实时数据（状态/策略/资源）请使用设备查询工具，不要用本工具。",
          {"type": "object",
           "properties": {"question": {"type": "string",
                                       "description": "要检索的问题，用一句完整的中文技术问题描述"}},
           "required": ["question"]},
-         _h_search_kb),
+         _h_search_kb, needs_device=False),
     # ---- SCP 云计算平台（只读查询，device_type='scp'） ----
     Tool("get_scp_clusters", "获取 SCP 云计算平台的集群列表：名称/状态/版本/类型，及 CPU、内存、存储资源的总量与使用率", {"type": "object", "properties": {}}, _h_scp_clusters, device_type='scp'),
     Tool("get_scp_hosts", "获取 SCP 平台的物理机（HCI 节点）列表：IP/状态/所属集群/CPU 内存存储使用率/GPU/告警数。仅在用户明确询问物理机/宿主机/节点时使用；查询虚拟机资源使用情况请用 get_scp_vms 的过滤参数，不要先查物理机",
@@ -794,13 +837,12 @@ TOOLS: list[Tool] = [
           "required": ["server_id"]},
          _h_scp_vm_detail, device_type='scp'),
     Tool("get_scp_storages", "获取 SCP 平台的存储列表：名称/类型/状态/总量与使用率/关联主机", {"type": "object", "properties": {}}, _h_scp_storages, device_type='scp'),
-    _write_tool("add_device", "添加新设备到系统。用户提供设备名称、类型(AF/AC)、接入方式(模拟器/真实设备)、地址、账号密码等信息。生成确认卡片供用户确认后执行添加。",
+    _write_tool("add_device", "添加新的深信服设备到系统（AF/AC/SCP）。用户提供设备名称、类型、地址、账号密码等信息。生成确认卡片供用户确认后执行添加。网络设备（华为/H3C/锐捷交换机路由器）请在「网络设备管理」页面添加，不适用本工具。",
                 {"type": "object",
                  "properties": {
                      "name": {"type": "string", "description": "设备名称，如：总部-AF-01"},
                      "type": {"type": "string", "description": "设备类型：af（防火墙）/ ac（上网行为管理）/ scp（云计算平台，AccessKey+SecretKey 只读接入），默认 af"},
-                     "mode": {"type": "string", "description": "接入方式：real（真实设备）/ simulator（内置模拟器），默认 real"},
-                     "base_url": {"type": "string", "description": "设备地址，真实设备必填，如 https://192.168.1.1"},
+                     "base_url": {"type": "string", "description": "设备地址，必填，如 https://192.168.1.1（AC 自动补 :9999 端口，SCP 填平台地址）"},
                      "username": {"type": "string", "description": "API 账号（AF 真实设备需要）"},
                      "password": {"type": "string", "description": "API 密码（AF 真实设备）或共享密钥（AC 设备）"},
                      "readonly": {"type": "boolean", "description": "是否只读模式，默认 false"},
@@ -869,6 +911,15 @@ def _register_write_tools() -> None:
 
 
 _register_write_tools()
+
+
+def _register_netdev_tools() -> None:
+    """合并网络设备（华为/H3C/锐捷）AI 工具；延迟导入避免模块循环依赖。"""
+    from app.agent.netdev_tools import NETDEV_TOOLS
+    TOOLS.extend(NETDEV_TOOLS)
+
+
+_register_netdev_tools()
 
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 TOOL_SCHEMAS = [t.schema() for t in TOOLS]

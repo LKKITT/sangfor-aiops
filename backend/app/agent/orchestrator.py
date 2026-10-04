@@ -16,6 +16,7 @@
   - 重要事实自动提取并保存到长期记忆
 """
 import asyncio
+import copy
 import json
 import re
 from typing import AsyncGenerator
@@ -48,6 +49,90 @@ TOOL_RESULT_KEEP = 200
 MEMORY_EXTRACT_INTERVAL = 6
 
 
+GLOBAL_DEVICE_ID = "global"   # 全局模式：不绑定单一设备，跨全部深信服/网络设备操作
+
+
+def load_any_device(device_id: str) -> dict:
+    """按 ID 加载设备上下文：nd_ 前缀为网络设备（netdev_devices 表），global 为全局模式
+    （合成上下文，含设备数量供提示词使用），其余为深信服设备。"""
+    if device_id == GLOBAL_DEVICE_ID:
+        return {"id": GLOBAL_DEVICE_ID, "name": "全局（所有设备）", "type": "global",
+                "sangfor_count": len(db.list_devices()),
+                "netdev_count": len(db.list_netdev_devices())}
+    if str(device_id or "").startswith("nd_"):
+        return db.get_netdev_device(device_id) or {}
+    return db.get_device(device_id) or {}
+
+
+def device_context_type(device: dict) -> str:
+    """设备上下文类型：网络设备返回 'netdev'，全局模式返回 'global'，
+    深信服设备返回其 type（af/ac/scp）。"""
+    if str(device.get("id", "")) == GLOBAL_DEVICE_ID or device.get("type") == "global":
+        return "global"
+    if str(device.get("id", "")).startswith("nd_"):
+        return "netdev"
+    return device.get("type", "")
+
+
+# devices 参数中表示"全部设备"的写法
+ALL_DEVICE_TOKENS = {"all", "*", "全部", "所有", "所有设备", "全部设备"}
+
+
+def resolve_batch_targets(args: dict) -> list[str]:
+    """提取工具参数中的 devices 批量目标（设备名称/IP/ID/all 列表）。"""
+    raw = args.get("devices")
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(x).strip() for x in raw if str(x).strip()]
+
+
+def _global_target_guidance(devices: list[dict]) -> str:
+    """全局模式下调用深信服设备类工具且未指定 devices 时的引导文案（回填给 LLM）。"""
+    if not devices:
+        return ("当前为全局模式且尚未添加深信服设备。网络设备可用 netdev_* 工具的 devices "
+                "参数指定后操作；也可以引导用户先在「设备管理」页添加深信服设备。")
+    names = "、".join(d["name"] for d in devices)
+    return ("当前为全局模式（未绑定单一设备），存在多台深信服设备，调用深信服设备类工具时"
+            "必须用 devices 参数指定目标设备（可传 [\"all\"] 表示全部深信服设备）。"
+            f"可选设备：{names}。若用户未指明是对哪台设备操作，请先询问用户，"
+            "或建议其在设备选择器中切换到具体设备；网络设备直接用 netdev_* 工具操作。")
+
+
+def match_sangfor_devices(targets: list[str]) -> tuple[list[dict], list[str]]:
+    """按名称/IP/管理地址/ID 匹配深信服设备（devices 表）；支持 all/全部 表示全部设备。
+    返回 (匹配设备, 未匹配项)。"""
+    devices = db.list_devices()
+    matched, missing = [], []
+    for s in targets:
+        if s.lower() in ALL_DEVICE_TOKENS:
+            if not devices:
+                missing.append(f"{s}（尚无深信服设备）")
+                continue
+            for d in devices:
+                if d not in matched:
+                    matched.append(d)
+            continue
+        hit = next((d for d in devices
+                    if d["id"] == s or d["name"] == s
+                    or (d.get("base_url") or "") == s
+                    or (d.get("base_url") or "").rstrip("/").endswith(s)
+                    or (d["name"] or "").lower() == s.lower()), None)
+        if hit is None:
+            subs = [d for d in devices if s.lower() in (d["name"] or "").lower()]
+            hit = subs[0] if len(subs) == 1 else None
+            if hit is None and len(subs) > 1:
+                missing.append(f"{s}（匹配到多台，请用全名）")
+                continue
+        if hit:
+            if hit not in matched:
+                matched.append(hit)
+        else:
+            missing.append(s)
+    return matched, missing
+
+
 class AgentOrchestrator:
     def __init__(self) -> None:
         self._client = None
@@ -71,7 +156,7 @@ class AgentOrchestrator:
     async def stream_chat(self, conv_id: str, user_message: str, device_id: str,
                           use_knowledge: bool = False) -> AsyncGenerator[dict, None]:
         guardrails.check_user_request(user_message)   # 黑名单先于 LLM 拦截
-        device = db.get_device(device_id) or {}
+        device = load_any_device(device_id)
         # 本轮消息起点：知识沉淀（命中官方知识库时）只取本轮新增对话，不引入之前会话内容
         since_id = db.max_message_id(conv_id)
         db.add_message(conv_id, "user", {"text": user_message})
@@ -103,7 +188,13 @@ class AgentOrchestrator:
             yield {"type": "error", "text": f"该变更已被处理（{action['status']}），请勿重复操作"}
             return
 
-        device = db.get_device(device_id) or {}
+        device = load_any_device(device_id)
+        # 全局模式确认：单台深信服工具执行回退到动作所属会话绑定的设备（避免对 "global" 建连）
+        if device_id == GLOBAL_DEVICE_ID:
+            conv_device_id = (db.get_conversation(action["conv_id"]) or {}).get("device_id", "")
+            if conv_device_id and conv_device_id != GLOBAL_DEVICE_ID:
+                device_id = conv_device_id
+                device = load_any_device(device_id)
         payload = json.loads(action["args_json"])
         tool_call_id, tool_args = payload.get("tool_call_id", ""), payload.get("args", {})
         # 用户在确认卡片上编辑过的参数（仅允许覆盖 data 内的业务字段，绝不改资源/操作类型）
@@ -124,12 +215,22 @@ class AgentOrchestrator:
                                              "content": "用户在界面上审阅变更计划后拒绝执行。"})
             yield {"type": "confirm_result", "action_id": action_id, "approved": False}
         else:
-            guardrails.check_tool_call(action["tool_name"], tool_args, device)
             try:
-                # 知识库沉淀/添加设备等工具不依赖设备连接（needs_device=False）：
-                # 绑定设备不在线也不影响执行
-                client = await get_client(device_id) if tool.needs_device else None
-                result = await tool.handler(client, tool_args, device)
+                batch_targets = (resolve_batch_targets(tool_args)
+                                 if tool and tool.needs_device and tool.device_type != "netdev" else [])
+                if batch_targets:
+                    # 批量写操作：逐台下发（每台独立护栏检查与连接），聚合结果
+                    result = await self._execute_write_batch(action["tool_name"], tool_args,
+                                                             batch_targets, conv_id)
+                else:
+                    guardrails.check_tool_call(
+                        action["tool_name"], tool_args,
+                        None if (tool and tool.device_type == "netdev") else device)
+                    # 知识库沉淀/添加设备/网络设备等工具不依赖 REST 设备连接（needs_device=False）
+                    client = await get_client(device_id) if (tool and tool.needs_device) else None
+                    result = await tool.handler(client, tool_args, device)
+                batch_all_failed = isinstance(result, dict) and result.get("batch") \
+                    and not result.get("succeeded")
             except guardrails.GuardrailError as e:
                 db.update_pending_action(action_id, status="blocked")
                 db.add_message(conv_id, "tool", {"tool_call_id": tool_call_id, "name": action["tool_name"],
@@ -146,9 +247,10 @@ class AgentOrchestrator:
                                                  "content": err})
                 yield {"type": "confirm_result", "action_id": action_id, "approved": True, "failed": True}
                 return
-            db.update_pending_action(action_id, status="executed",
+            db.update_pending_action(action_id, status="failed" if batch_all_failed else "executed",
                                      result_json=json.dumps(result, ensure_ascii=False)[:4000])
-            guardrails.audit_tool(action["tool_name"], tool_args, "executed", conv_id, device_id)
+            guardrails.audit_tool(action["tool_name"], tool_args,
+                                  "failed" if batch_all_failed else "executed", conv_id, device_id)
             # 用户明确要求沉淀（record_to_kb 执行成功）：登记后触发后台提炼
             if action["tool_name"] == skills.KB_RECORD_TOOL_NAME:
                 personal_kb_service.schedule_sediment(conv_id)
@@ -356,12 +458,114 @@ class AgentOrchestrator:
                 tools_by_name[kb_tool.name] = kb_tool
         return tool_schemas, tools_by_name
 
+    # ================= 跨设备批量（devices 参数 fan-out） =================
+
+    async def _run_read_batch(self, tool, args: dict) -> dict:
+        """深信服设备类只读工具的批量执行：逐台连接并调用 handler，聚合结果。"""
+        targets = resolve_batch_targets(args)
+        matched, missing = match_sangfor_devices(targets)
+        sub_args = {k: v for k, v in args.items() if k != "devices"}
+        results = []
+        for d in matched:
+            try:
+                client = await get_client(d["id"])
+                r = await tool.handler(client, copy.deepcopy(sub_args), d)
+                results.append({"device": d["name"], "ok": True, "data": r})
+            except Exception as e:   # noqa: BLE001 —— 单台失败不阻塞同批其他设备
+                results.append({"device": d["name"], "ok": False, "error": str(e)})
+        for s in missing:
+            results.append({"device": s, "ok": False, "error": "未找到匹配的深信服设备"})
+        ok_n = sum(1 for r in results if r.get("ok"))
+        return {"batch": True, "targets": len(targets), "succeeded": ok_n,
+                "results": results,
+                "message": f"批量查询完成：成功 {ok_n}/{len(results)} 台"
+                           f"（{', '.join(r['device'] for r in results)}），"
+                           "请按设备分节汇总回答"}
+
+    def _merge_batch_plan(self, plans: list[dict]) -> dict:
+        """把每台设备的变更计划合并为一张确认卡片（首台计划承载 before/after 主体）。"""
+        base = dict(plans[0])
+        base["title"] = f"{plans[0].get('title', '')}（共 {len(plans)} 台设备）"
+        base["batch_devices"] = [{"device": p.get("device", ""), "title": p.get("title", ""),
+                                  "warning": p.get("warning", ""),
+                                  "detail": p.get("detail", "")} for p in plans]
+        warnings: list[str] = []
+        for p in plans:
+            for w in (p.get("warning") or "").split("\n"):
+                w = w.strip()
+                if w and w not in warnings:
+                    warnings.append(w)
+        base["warning"] = "\n".join(warnings)
+        return base
+
+    async def _prepare_write_plan(self, tool, name: str, args: dict, device: dict,
+                                  device_id: str) -> dict:
+        """写操作变更计划生成：单台直通；devices 批量时逐台生成并合并为一张卡片。"""
+        targets = (resolve_batch_targets(args)
+                   if tool.needs_device and tool.device_type != "netdev" else [])
+        if not targets:
+            # 网络设备写工具无 REST 客户端，绑定设备只读语义不适用于目标为网络设备的场景
+            guardrails.check_tool_call(name, args,
+                                       None if tool.device_type == "netdev" else device)
+            client = await get_client(device_id) if tool.needs_device else None
+            return await tool.prepare(client, args, device)
+        matched, missing = match_sangfor_devices(targets)
+        if missing:
+            raise RuntimeError(f"未找到匹配的深信服设备：{'、'.join(missing)}")
+        if not matched:
+            raise RuntimeError("未提供有效的目标设备")
+        plans = []
+        for d in matched:
+            sub_args = {k: v for k, v in args.items() if k != "devices"}
+            try:
+                guardrails.check_tool_call(name, args, d)
+                client = await get_client(d["id"])
+                plan = await tool.prepare(client, copy.deepcopy(sub_args), d)
+            except guardrails.GuardrailError as e:
+                raise guardrails.GuardrailError(f"设备「{d['name']}」：{e}") from e
+            except Exception as e:   # noqa: BLE001
+                raise RuntimeError(f"设备「{d['name']}」生成变更计划失败：{e}") from e
+            if isinstance(plan, dict) and plan.get("error"):
+                raise RuntimeError(f"设备「{d['name']}」：{plan['error']}")
+            plan["device"] = d["name"]
+            plans.append(plan)
+        return self._merge_batch_plan(plans)
+
+    async def _execute_write_batch(self, tool_name: str, tool_args: dict,
+                                   targets: list[str], conv_id: str) -> dict:
+        """确认后的批量写执行：逐台下发（护栏/连接/执行相互独立），聚合结果。"""
+        tool = TOOLS_BY_NAME[tool_name]
+        matched, missing = match_sangfor_devices(targets)
+        sub_args = {k: v for k, v in tool_args.items() if k != "devices"}
+        results = []
+        for d in matched:
+            try:
+                guardrails.check_tool_call(tool_name, tool_args, d)
+                client = await get_client(d["id"])
+                r = await tool.handler(client, copy.deepcopy(sub_args), d)
+                results.append({"device": d["name"], "ok": True, "data": r})
+                guardrails.audit_tool(tool_name, tool_args, "ok", conv_id, d["id"])
+            except guardrails.GuardrailError as e:
+                results.append({"device": d["name"], "ok": False, "error": f"被安全护栏拦截：{e}"})
+            except Exception as e:   # noqa: BLE001
+                results.append({"device": d["name"], "ok": False, "error": str(e)})
+                db.audit("agent.write.failed", {"tool": tool_name, "device": d["name"],
+                                                "error": str(e)}, conv_id=conv_id,
+                         device_id=d["id"], result="failed")
+        for s in missing:
+            results.append({"device": s, "ok": False, "error": "未找到匹配的深信服设备"})
+        ok_n = sum(1 for r in results if r.get("ok"))
+        return {"batch": True, "targets": len(targets), "succeeded": ok_n,
+                "results": results,
+                "message": f"批量下发完成：成功 {ok_n}/{len(results)} 台"
+                           + ("；失败设备请按下方逐台原因处理" if ok_n < len(results) else "")}
+
     async def _run_llm_loop(self, conv_id: str, device_id: str, device: dict,
                             user_message: str = "", use_knowledge: bool = False,
                             kb_since_id: int | None = None,
                             kb_auto: bool = False) -> AsyncGenerator[dict, None]:
         messages = self._build_messages(conv_id, device)
-        dtype = device.get("type", "")
+        dtype = device_context_type(device)
         # 技能路由：关键词优先（零延迟、离线可用）→ 疑似写操作时 LLM 按目录兜底 → 回退全量工具模式
         skill = skills.select_skill(user_message, dtype)
         if (skill is None and user_message and self._llm() is not None
@@ -455,6 +659,22 @@ class AgentOrchestrator:
 
                 yield {"type": "tool_call", "name": name,
                        "args": {k: v for k, v in args.items() if not str(k).startswith("_")}}
+                # 全局模式：深信服设备类工具必须指定 devices 目标（仅一台设备时自动定向，
+                # 多台时回填设备清单引导 LLM 明确目标，不消耗写工具重试禁令）
+                if (dtype == "global" and tool.needs_device and tool.device_type != "netdev"
+                        and not resolve_batch_targets(args)):
+                    sangfor = db.list_devices()
+                    if len(sangfor) == 1:
+                        args = {**args, "devices": [sangfor[0]["name"]]}
+                    else:
+                        guidance = _global_target_guidance(sangfor)
+                        db.add_message(conv_id, "tool", {"tool_call_id": call["id"],
+                                                         "name": name, "content": guidance})
+                        messages.append({"role": "tool", "tool_call_id": call["id"],
+                                         "content": guidance})
+                        yield {"type": "tool_result", "name": name,
+                               "preview": "全局模式需指定目标设备（见设备清单）"}
+                        continue
                 if tool.write:
                     call_key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
                     if call_key in executed_results:
@@ -475,10 +695,8 @@ class AgentOrchestrator:
                         yield {"type": "tool_result", "name": name, "preview": "已终止重复重试"}
                         continue
                     try:
-                        guardrails.check_tool_call(name, args, device)
-                        # needs_device=False 的工具（知识库沉淀/添加设备）跳过设备登录
-                        client = await get_client(device_id) if tool.needs_device else None
-                        plan = await tool.prepare(client, args, device)
+                        # 单台直通；devices 批量（深信服设备类工具）在 _prepare_write_plan 内逐台生成并合并
+                        plan = await self._prepare_write_plan(tool, name, args, device, device_id)
                     except guardrails.GuardrailError as e:
                         db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
                                                          "content": f"该操作被安全护栏拦截：{e}"})
@@ -516,8 +734,14 @@ class AgentOrchestrator:
                            "preview": f"（重复调用已合并，请直接使用已有结果）{preview}"}
                     continue
                 try:
-                    client = await get_client(device_id)
-                    result = await tool.handler(client, args, device)
+                    if (tool.needs_device and tool.device_type != "netdev"
+                            and resolve_batch_targets(args)):
+                        # 深信服设备类只读工具的批量 fan-out：逐台执行并聚合（网络设备工具自持 devices 解析）
+                        result = await self._run_read_batch(tool, args)
+                    else:
+                        # needs_device=False 的工具（知识库/添加设备/网络设备 SSH 工具）跳过设备登录
+                        client = await get_client(device_id) if tool.needs_device else None
+                        result = await tool.handler(client, args, device)
                     content = json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]
                     executed_results[call_key] = (content, _compact_result(name, result))
                     db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
@@ -560,6 +784,12 @@ class AgentOrchestrator:
     async def _offline_answer(self, message: str, device_id: str, device: dict) -> str:
         from app.services.analyzer import run_checks
 
+        if str(device_id or "").startswith("nd_"):
+            return ("我是全局运维助手（当前绑定网络设备）。离线兜底模式仅支持深信服设备的固定意图查询，"
+                    "网络设备对话能力需要配置 LLM API Key 后使用（backend/.env 或『平台设置』中的 LLM_API_KEY）。")
+        if device_id == GLOBAL_DEVICE_ID:
+            return ("我是全局运维助手（全局模式）。离线兜底模式仅支持绑定具体深信服设备后的固定意图查询，"
+                    "完整全局对话能力需要配置 LLM API Key 后使用（backend/.env 或『平台设置』中的 LLM_API_KEY）。")
         client = await get_client(device_id)
         if True:
             m = message.lower()

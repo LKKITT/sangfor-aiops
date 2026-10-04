@@ -1,7 +1,8 @@
 """设备客户端工厂：按设备记录创建并缓存 DeviceClient 实例。
 
-- mode=simulator：内置模拟器（进程内 ASGI 直连，无需端口，联调/演示零依赖）
-- mode=real：真实设备 REST API（同一套 AfRestClient 代码路径）
+- mode=real：真实设备 REST API
+- mode=simulator：内置模拟器（进程内 ASGI 直连）——仅测试夹具使用，
+  用户侧演示设备已下线（API 不再接受该模式，启动时清理存量记录）
 
 真实设备限制 API 并发会话数：按 device_id 缓存已登录客户端并复用 token，
 避免每次请求都重新登录导致会话堆积超限；设备配置变更时自动重建。

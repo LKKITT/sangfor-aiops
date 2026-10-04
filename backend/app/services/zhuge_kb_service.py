@@ -4,8 +4,9 @@
 - 凭据链：『平台设置』界面(DB) → .env → 技能 CONFIG 内置账号兜底（BBSLogin 原生支持）；
 - 客户端为同步实现（requests + websocket-client），统一经 asyncio.to_thread 进线程池调用；
 - 每条产品线（AF/AC）各持一条登录会话并缓存复用（SSO JWT 约 7 天有效）；
-- 引用来源：官方回答 HTML 中的 <a> 超链接会被技能的 _clean_html 剥掉，这里从
-  answer_raw 中提取还原为 {title, url}，保证「官方参考」可点击；
+- 引用来源：官方后端随回答下发 references（dict 事件，条目带 linkUrl 链接）；
+  _clean_html 会剥掉回答 HTML 中的 <a> 标签与内联参考来源，这里从 answer_raw 中
+  提取 <a>/markdown 链接，按标题回填到缺失 url 的引用上，保证「官方参考」可点击；
 - 对外统一降级返回 {status, answer, references, reason}，任何失败不抛异常、不阻塞对话主流程。
 """
 import asyncio
@@ -33,7 +34,10 @@ MAX_REFS = 8
 # 官方回答 HTML 中的超链接（引用文档/下载地址），以及引用条目可能携带的 URL 字段
 _LINK_RE = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.I | re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
-URL_KEYS = ("url", "link", "href", "file_url", "doc_url", "jump_url", "web_url")
+# 回答正文中的 markdown 链接（参考来源以 [标题](url) 形式内联在消息流里）
+_MD_LINK_RE = re.compile(r'\[([^\]\n]{2,120})\]\((https?://[^)\s]{5,300})\)')
+URL_KEYS = ("url", "link", "href", "linkUrl", "link_url", "jumpUrl", "jump_url",
+            "file_url", "doc_url", "web_url")
 
 # 技能模块（进程内缓存）与会话池（产品线 → 会话）
 _mod = None
@@ -105,7 +109,8 @@ def product_from_device_type(device_type: str) -> str:
 
 
 def _extract_links(*html_sources) -> list[dict]:
-    """从官方回答的 HTML 中提取 <a> 超链接（_clean_html 会剥掉它们，这里找回）。"""
+    """从官方回答的 HTML/markdown 中提取超链接（_clean_html 会剥掉 <a> 标签，
+    参考来源的 markdown 链接与残留 <a> 在这里找回）。"""
     links, seen = [], set()
     for html in html_sources:
         if not html:
@@ -117,7 +122,50 @@ def _extract_links(*html_sources) -> list[dict]:
                 continue
             seen.add(url)
             links.append({"title": title[:120], "url": url})
+        for m in _MD_LINK_RE.finditer(html):
+            url = (m.group(2) or "").strip()
+            title = (m.group(1) or "").strip() or url
+            if url in seen:
+                continue
+            seen.add(url)
+            links.append({"title": title[:120], "url": url})
     return links
+
+
+def _norm_title(t: str) -> str:
+    return re.sub(r"\s+", "", str(t or "")).lower()
+
+
+def _bigrams(t: str) -> set[str]:
+    return {t[i:i + 2] for i in range(len(t) - 1)} if len(t) >= 2 else {t} if t else set()
+
+
+def _title_similar(a: str, b: str, threshold: float = 0.45) -> bool:
+    """标题相似判定：包含关系或字符二元组 Jaccard 相似度兜底
+    （同一文档在引用条目与回答链接里的措辞常有前缀差异，如
+    「客服知识库内容-SCP导入云图授权…」vs「深信服云管平台导入云图授权…」≈0.47；
+    不同文档实测 ≤0.42，取 0.45 分界）。"""
+    na, nb = _norm_title(a), _norm_title(b)
+    if not na or not nb:
+        return False
+    if na in nb or nb in na:
+        return True
+    ba, bb = _bigrams(na), _bigrams(nb)
+    if not ba or not bb:
+        return False
+    return len(ba & bb) / len(ba | bb) >= threshold
+
+
+def _backfill_ref_urls(refs: list[dict], links: list[dict]) -> None:
+    """按标题把回答中的链接回填到缺失 url 的引用条目上（官方引用与链接一一对应，
+    避免「官方参考」出现无链接条目）。未匹配上的链接由调用方决定是否追加。"""
+    for ref in refs:
+        if ref.get("url"):
+            continue
+        for link in links:
+            if link.get("url") and _title_similar(ref.get("title", ""), link.get("title", "")):
+                ref["url"] = link["url"]
+                break
 
 
 def _norm_ref(r) -> dict | None:
@@ -219,7 +267,9 @@ class _ZhugeSession:
                 elif et == "ask_user_question" and clarify_at is None:
                     clarify_at = time.time()
             if final:
-                return {"answer": client._clean_html("".join(answer_parts)).strip(),
+                raw = "".join(answer_parts)
+                return {"answer": client._clean_html(raw).strip(),
+                        "answer_raw": raw,
                         "references": refs, "complete": True}
             if clarify_at is not None and time.time() - clarify_at > self.CLARIFY_GRACE:
                 clar = self._clarification_text()
@@ -308,7 +358,9 @@ async def ask_official_kb(question: str, product: str = "AF", timeout: float = A
     answer = (data or {}).get("answer", "")
     if not answer:
         return {**base, "status": "error", "reason": "知识库未返回内容，请换个问法或稍后重试"}
-    # 引用规整 + 从引用内容与回答 HTML 中还原被剥离的超链接（去重、限量）
+    # 引用规整 + 从引用内容与回答原文中还原被 _clean_html 剥掉的超链接（去重、限量）。
+    # 引用条目自带 linkUrl 等字段时直接采用；缺失时用回答中的同标题链接回填，
+    # 保证「官方参考」每条引用尽量可点击（修复词条沉淀后引用链接丢失的问题）。
     refs: list[dict] = []
     seen_urls: set[str] = set()
     for raw_ref in (data or {}).get("references") or []:
@@ -324,7 +376,18 @@ async def ask_official_kb(question: str, product: str = "AF", timeout: float = A
             if link["url"] not in seen_urls:
                 seen_urls.add(link["url"])
                 refs.append(link)
-    for link in _extract_links((data or {}).get("answer_raw")):
+    answer_links = _extract_links((data or {}).get("answer_raw"))
+    _backfill_ref_urls(refs, answer_links)
+    for r in refs:
+        if r.get("url"):
+            seen_urls.add(r["url"])   # 回填后的链接同样去重，不重复追加为独立条目
+    for link in answer_links:
+        if len(refs) >= MAX_REFS:
+            break
+        if link["url"] not in seen_urls:
+            seen_urls.add(link["url"])
+            refs.append(link)
+    for link in _extract_links((data or {}).get("answer_raw_html")):
         if len(refs) >= MAX_REFS:
             break
         if link["url"] not in seen_urls:

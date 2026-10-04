@@ -14,9 +14,16 @@
       <div class="filter-bar">
         <el-input v-model="filters.keyword" clearable placeholder="搜索标题 / 消息内容"
                   class="fb-input" :prefix-icon="Search" @keyup.enter="applyFilters" @clear="applyFilters" />
-        <el-select v-model="filters.device_id" clearable placeholder="全部设备"
-                   style="width: 170px" @change="applyFilters">
-          <el-option v-for="d in store.devices" :key="d.id" :label="d.name" :value="d.id" />
+        <el-select v-model="filters.device_id" clearable placeholder="全部设备（含全局会话）"
+                   style="width: 190px" @change="applyFilters">
+          <el-option value="global" label="全局会话（未绑定设备）" />
+          <el-option-group label="深信服设备">
+            <el-option v-for="d in store.devices" :key="d.id" :label="d.name" :value="d.id" />
+          </el-option-group>
+          <el-option-group v-if="store.netdevDevices.length" label="网络设备">
+            <el-option v-for="d in store.netdevDevices" :key="d.id"
+                       :label="`${d.name}（${NETDEV_VENDOR_NAMES[d.vendor] || d.vendor}）`" :value="d.id" />
+          </el-option-group>
         </el-select>
         <el-date-picker v-model="filters.range" type="daterange" value-format="YYYY-MM-DD"
                         start-placeholder="开始日期" end-placeholder="结束日期"
@@ -109,7 +116,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import { apiGet } from '../api.js'
-import { store } from '../store.js'
+import { store, loadDevices, NETDEV_VENDOR_NAMES } from '../store.js'
 
 const md = new MarkdownIt({ breaks: true })
 const render = (text) => md.render(text || '')
@@ -170,7 +177,7 @@ async function showDetail(convId) {
   }
 }
 
-onMounted(loadLogs)
+onMounted(() => { if (!store.netdevDevices.length) loadDevices(); loadLogs() })
 </script>
 
 <style scoped>

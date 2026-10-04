@@ -11,6 +11,7 @@
         </el-button>
       </div>
     </div>
+    <el-alert v-if="netdevMode || globalMode" type="info" :closable="false" show-icon :title="guardText" />
 
     <div v-if="advice">
       <!-- 结论卡片 -->
@@ -143,7 +144,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { store, currentDevice } from '../store.js'
+import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
 import { Updates } from '../api.js'
 
 const advice = ref(null)
@@ -167,13 +168,18 @@ async function loadCookieState() {
   // Cookie 配置已改为 .env 通道，不再展示状态标签（保留函数以兼容 onMounted 调用序）
 }
 
+const netdevMode = computed(() => isNetDev(currentDevice()))
+const globalMode = computed(() => isGlobal(currentDevice()))
+const guardText = computed(() => netdevMode.value
+  ? '当前选中的是网络设备：升级建议仅支持深信服设备'
+  : '当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备')
 const riskType = computed(() => ({ high: 'danger', medium: 'warning', low: 'info' }[advice.value?.risk] || 'info'))
 const catIconName = cat => ({ 新增功能: 'CirclePlusFilled', 安全修复: 'WarningFilled', 已知问题修复: 'CircleCheckFilled', 优化: 'TopRight' }[cat] || 'InfoFilled')
 const catIcon = cat => ({ 新增功能: 'c-green', 安全修复: 'c-red', 已知问题修复: 'c-blue', 优化: 'c-orange' }[cat] || '')
 
 async function load() {
   const dev = currentDevice()
-  if (!dev) return
+  if (!dev || isNetDev(dev) || isGlobal(dev)) return
   try { advice.value = await Updates.advice(dev.id) } catch (e) { console.error(e) }
 }
 

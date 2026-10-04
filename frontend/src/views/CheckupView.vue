@@ -12,6 +12,7 @@
           </el-button>
         </div>
       </div>
+      <el-alert v-if="netdevMode || globalMode" type="info" :closable="false" show-icon :title="guardText" />
     </div>
 
     <div v-if="report" class="cols">
@@ -73,7 +74,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { store, currentDevice } from '../store.js'
+import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
 import { Devices } from '../api.js'
 
 const report = ref(null)
@@ -98,13 +99,18 @@ function animateScore(to) {
 }
 watch(() => report.value?.score, s => { if (s !== undefined) animateScore(s) })
 
+const netdevMode = computed(() => isNetDev(currentDevice()))
+const globalMode = computed(() => isGlobal(currentDevice()))
+const guardText = computed(() => netdevMode.value
+  ? '当前选中的是网络设备：配置体检仅支持深信服设备；网络设备健康可用 AI 对话（netdev_get_status）查询'
+  : '当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备')
 const sevName = s => ({ high: '高危', medium: '中危', low: '低危' }[s])
 const sevType = s => ({ high: 'danger', medium: 'warning', low: 'info' }[s])
 const sevItems = s => (report.value?.items || []).filter(i => i.severity === s)
 
 async function runCheckup() {
   const dev = currentDevice()
-  if (!dev) return
+  if (!dev || isNetDev(dev) || isGlobal(dev)) return
   running.value = true
   try {
     report.value = await Devices.checkup(dev.id)
@@ -115,7 +121,7 @@ async function runCheckup() {
 watch(() => store.currentDeviceId, () => { report.value = null })
 onMounted(async () => {
   const dev = currentDevice()
-  if (dev) {
+  if (dev && !isNetDev(dev) && !isGlobal(dev)) {
     const last = await Devices.lastCheckup(dev.id).catch(() => null)
     if (last && last.score !== undefined) report.value = last
   }

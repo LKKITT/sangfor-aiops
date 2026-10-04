@@ -1,7 +1,7 @@
 <template>
   <div class="chat-page">
     <!-- 无设备时的引导 -->
-    <div v-if="!store.devices.length" class="no-device-hero">
+    <div v-if="!hasAnyDevice" class="no-device-hero">
       <div class="hero-orb orb-a"></div>
       <div class="hero-orb orb-b"></div>
       <div class="hero-grid"></div>
@@ -21,7 +21,8 @@
       <h2 class="hero-title">接入你的第一台设备</h2>
       <p class="hero-desc">
         添加一台深信服设备（AF 防火墙 / AC 上网行为管理 / SCP 云计算平台），<br />
-        即可通过自然语言完成配置管理、体检、备份与升级建议。
+        或在「网络设备管理」页添加华为 / H3C / 锐捷交换机路由器，<br />
+        即可通过自然语言完成配置管理、体检、终端定位与升级建议。
       </p>
       <el-button type="primary" size="large" round @click="goToDevices">
         <el-icon><Plus /></el-icon>&nbsp;添加设备
@@ -33,8 +34,8 @@
       <div class="chat-scroll" ref="scrollRef">
         <div class="chat-col">
           <div class="chat-hero" v-if="messages.length <= 1">
-            <h2 class="ch-title">与你的设备对话</h2>
-            <p class="ch-desc">支持自然语言查询 / 修改配置 · 配置体检 · 备份恢复 · 升级建议，修改类操作会先生成确认卡片。</p>
+            <h2 class="ch-title">全局运维 AI 助手</h2>
+            <p class="ch-desc">统一对话管理深信服设备（AF/AC/SCP）与网络设备（华为/H3C/锐捷）· 查询与配置变更 · 批量操作 · 体检备份 · 终端定位 · 升级建议，修改类操作会先生成确认卡片。</p>
           </div>
 
           <div v-for="(m, i) in messages" :key="i" class="chat-row" :class="m.role">
@@ -186,6 +187,16 @@
                   <div v-if="m.confirm.after" class="diff-added">+ {{ fmtRule(m.confirm.after) }}</div>
                 </div>
 
+                <!-- 批量变更：逐台设备计划 -->
+                <div v-if="m.confirm.batch_devices?.length" class="cf-batch">
+                  <div class="cf-sec-label">批量下发（{{ m.confirm.batch_devices.length }} 台设备，确认后逐台执行）</div>
+                  <div v-for="(b, bi) in m.confirm.batch_devices" :key="bi" class="cf-batch-item">
+                    <el-tag size="small" type="info">{{ b.device }}</el-tag>
+                    <span class="cf-batch-title">{{ b.title }}</span>
+                    <div v-if="b.warning" class="cf-batch-warn">{{ b.warning }}</div>
+                  </div>
+                </div>
+
                 <!-- 恢复计划 -->
                 <div v-if="m.confirm.plan" class="cf-plan">
                   <div class="cf-plan-line">
@@ -279,13 +290,26 @@
               <el-icon class="ds-ico"><Monitor /></el-icon>
               <el-select v-model="store.currentDeviceId" size="small" class="ds-select"
                          @change="onDeviceChange" placeholder="选择目标设备">
-                <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
-                           :label="`${d.name}（${d.type === 'af' ? '防火墙' : d.type === 'scp' ? '云计算平台' : '上网行为管理'}）`">
-                  <span>{{ d.name }}</span>
-                  <span class="ds-opt-meta">
-                    {{ { af: 'AF', ac: 'AC', scp: 'SCP' }[d.type] || d.type }} | {{ d.mode === 'simulator' ? '模拟器' : '真实设备' }}
-                  </span>
+                <el-option :value="GLOBAL_DEVICE_ID" label="全局（所有设备）">
+                  <span>全局（所有设备）</span>
+                  <span class="ds-opt-meta">跨设备 · 批量</span>
                 </el-option>
+                <el-option-group label="深信服设备">
+                  <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
+                             :label="`${d.name}（${{ af: '防火墙', scp: '云计算平台', ac: '上网行为管理' }[d.type] || d.type}）`">
+                    <span>{{ d.name }}</span>
+                    <span class="ds-opt-meta">
+                      {{ { af: 'AF', ac: 'AC', scp: 'SCP' }[d.type] || d.type }} | 真实设备
+                    </span>
+                  </el-option>
+                </el-option-group>
+                <el-option-group v-if="netdevTargets.length" label="网络设备（华为/H3C/锐捷）">
+                  <el-option v-for="d in netdevTargets" :key="d.id" :value="d.id"
+                             :label="`${d.name}（网络设备·${vendorName(d.vendor)}）`">
+                    <span>{{ d.name }}</span>
+                    <span class="ds-opt-meta">{{ vendorName(d.vendor) }} | {{ d.host }}</span>
+                  </el-option>
+                </el-option-group>
               </el-select>
               <button class="icon-mini" @click="refreshDevices" title="刷新设备列表">
                 <el-icon><Refresh /></el-icon>
@@ -293,7 +317,7 @@
             </div>
           </div>
         </div>
-        <div class="composer-foot">修改类操作将生成确认卡片，确认后才会下发设备 · SFA Agent 由 LLM 驱动，结果请复核</div>
+        <div class="composer-foot">修改类操作将生成确认卡片，确认后才会下发设备 · 支持深信服设备与网络设备（华为/H3C/锐捷）批量操作 · 结果请复核</div>
       </div>
     </template>
   </div>
@@ -303,7 +327,7 @@
 import { ref, reactive, computed, nextTick, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
-import { store, currentDevice, loadDevices } from '../store.js'
+import { store, currentDevice, loadDevices, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from '../store.js'
 import { apiGet, chatStream, Devices } from '../api.js'
 
 // 会话缓存（模块级）：切视图/切设备不丢；页面刷新后由后端 last-conversation 接口兜底恢复
@@ -316,6 +340,10 @@ const confirming = ref(false)
 // 知识库检索开关：勾选后对话可调用官方知识库工具
 const useKnowledge = ref(false)
 
+const vendorName = (v) => NETDEV_VENDOR_NAMES[v] || v
+const hasAnyDevice = computed(() => !!(store.devices.length || aiNetdevs().length))
+const netdevTargets = computed(() => aiNetdevs())
+
 // 对话状态（组件级，缓存与持久化见模块级 convCache + 后端接口）
 const messages = ref([])
 // 当前对话ID（续接对话时使用）
@@ -327,6 +355,19 @@ const scrollRef = ref(null)
 const quickPrompts = computed(() => {
   const dev = currentDevice()
   if (!dev) return []
+  if (isGlobal(dev)) {
+    return [
+      '查看所有设备的运行状态', '把所有深信服设备都体检一遍',
+      '看看网络设备的健康状态', '查一下核心交换机的 ARP 表',
+      '定位终端 192.168.1.100 接在哪台交换机哪个口', '有新版本可以升级吗？'
+    ]
+  }
+  if (isNetDev(dev)) {
+    return [
+      '看看设备健康状态（CPU/内存/温度）', '查看接口概览', '查看路由表',
+      '查一下 ARP 表', '看看最近的日志有没有异常', '定位一下终端 192.168.1.100 接在哪台交换机哪个口'
+    ]
+  }
   if (dev.type === 'ac') {
     return [
       '查看设备运行状态', '体检一下设备配置有哪些风险', '看看在线用户',
@@ -364,7 +405,12 @@ const TOOL_NAMES = {
   create_network_object: '新建网络对象', update_network_object: '修改网络对象', delete_network_object: '删除网络对象',
   create_service: '新建自定义服务', update_service: '修改自定义服务', delete_service: '删除自定义服务',
   get_whiteblacklist: '查询黑白名单',
-  create_whiteblacklist: '添加黑白名单', update_whiteblacklist: '修改黑白名单', delete_whiteblacklist: '删除黑白名单'
+  create_whiteblacklist: '添加黑白名单', update_whiteblacklist: '修改黑白名单', delete_whiteblacklist: '删除黑白名单',
+  netdev_list_devices: '查询网络设备列表', netdev_get_status: '网络设备健康查询',
+  netdev_get_config: '网络设备配置查询', netdev_get_interfaces: '网络设备接口查询',
+  netdev_get_routes: '网络设备路由查询', netdev_get_arp: 'ARP 表项查询',
+  netdev_get_logs: '网络设备日志分析', netdev_locate_terminal: '终端定位',
+  netdev_apply_config: '下发网络设备配置', netdev_run_commands: '执行网络设备命令'
 }
 
 function cachePut(devId) {
@@ -483,6 +529,13 @@ function newConversation() {
 }
 
 const HELLO_BY_TYPE = {
+  global: {
+    label: '全局模式（所有设备）',
+    tips: ['"查看所有设备的运行状态"', '"把所有深信服设备都体检一遍"', '"看看网络设备的健康状态"',
+           '"查一下核心交换机的 ARP 表"', '"定位终端 192.168.1.100 接在哪"',
+           '"把这条策略在总部-AF 和分支-AC 上都停用"'],
+    note: '全局模式下我覆盖全部已添加设备：点名设备（或说"所有设备"）即可跨深信服设备与网络设备（华为/H3C/锐捷）查询与批量变更；也可以在下方选择器切换到具体设备。修改类操作会先生成确认卡片。'
+  },
   af: {
     label: '下一代防火墙 AF',
     tips: ['"查看 NAT 策略"', '"体检一下配置有哪些风险"', '"把 445 端口对公网暴露的策略停用"',
@@ -500,16 +553,26 @@ const HELLO_BY_TYPE = {
     tips: ['"查看平台版本和集群状态"', '"看看集群的计算和存储资源使用情况"', '"列出物理机及资源详情"',
            '"查询内存使用率超过 80% 的虚拟机"', '"立即创建一次备份"', '"有新版本可以升级吗？"'],
     note: 'SCP 为只读接入：可查询集群/物理机/虚拟机/存储与网口端口组信息，不支持配置变更。'
+  },
+  netdev: {
+    label: '网络设备（华为/H3C/锐捷）',
+    tips: ['"看看设备健康状态"', '"查看接口概览"', '"查看路由表"', '"查一下 ARP 表"',
+           '"看看最近日志有没有异常"', '"定位终端 192.168.1.100 接在哪"'],
+    note: '支持配置/健康/路由/接口/ARP 查询、终端定位与日志分析；接口等配置下发会先生成确认卡片，默认不保存配置。多台设备可直接说"在 A 和 B 上都查一下"。'
   }
 }
 
 function pushHello(devId) {
-  const dev = devId ? store.devices.find(d => d.id === devId) : currentDevice()
+  const dev = devId ? [...store.devices, ...store.netdevDevices, { id: GLOBAL_DEVICE_ID, name: '全局（所有设备）', type: 'global' }]
+    .find(d => d.id === devId) : currentDevice()
   if (!dev) return
-  const h = HELLO_BY_TYPE[dev.type] || HELLO_BY_TYPE.af
+  const h = isGlobal(dev) ? HELLO_BY_TYPE.global
+    : isNetDev(dev) ? HELLO_BY_TYPE.netdev
+      : (HELLO_BY_TYPE[dev.type] || HELLO_BY_TYPE.af)
+  const vendorText = isNetDev(dev) ? `，${vendorName(dev.vendor)} ${dev.host}` : ''
   messages.value = [{
     role: 'assistant',
-    text: `您好！我是深信服售后技术支持 Agent，当前目标设备：**${dev.name}**（${h.label}）。\n\n可以试试：\n- ${h.tips.join('\n- ')}\n\n${h.note}`,
+    text: `您好！我是全局运维 AI 助手，当前目标：**${dev.name}**（${h.label}${vendorText}）。\n\n可以试试：\n- ${h.tips.join('\n- ')}\n\n${h.note}`,
     trace: [], confirm: null
   }]
 }
@@ -517,6 +580,8 @@ function pushHello(devId) {
 const inputPlaceholder = computed(() => {
   const dev = currentDevice()
   if (!dev) return '请先选择设备'
+  if (isGlobal(dev)) return '全局模式：例如"查看所有设备的运行状态"，或点名任意一台设备/交换机'
+  if (isNetDev(dev)) return '例如：看看接口流量和最近日志，再把 GE1/0/1 口的终端定位出来'
   if (dev.type === 'scp') return '例如：看看集群的计算和存储资源使用情况，再列出内存使用率高的虚拟机'
   if (dev.type === 'ac') return '例如：看看在线用户，再把 192.168.1.100 做个 IP-MAC 绑定'
   return '例如：帮我看一下外网接口流量，再把 3389 对公网暴露的策略收紧'
@@ -964,6 +1029,13 @@ function allPlanItems(plan) {
 .cf-noconflict { font-size: 12px; color: #0E9F6E; margin-bottom: 8px; }
 .cf-form { background: #fff; border-radius: 9px; padding: 12px; border: 1px solid #F3DFB2; margin-bottom: 8px; }
 .cf-diff { font-size: 12px; background: #fff; border-radius: 9px; padding: 9px 11px; border: 1px solid #F3DFB2; }
+.cf-batch { margin-bottom: 10px; }
+.cf-batch-item {
+  font-size: 12px; background: #fff; border: 1px solid var(--sfa-border-soft);
+  border-radius: 8px; padding: 6px 9px; margin-bottom: 5px;
+}
+.cf-batch-title { margin-left: 6px; }
+.cf-batch-warn { color: #B88230; margin-top: 3px; }
 .cf-plan { font-size: 12.5px; }
 .cf-plan-tag { margin: 2px 3px; }
 .cf-plan-detail { margin-top: 6px; }

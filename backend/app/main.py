@@ -1,6 +1,7 @@
-"""后端入口：FastAPI 应用 + 定时任务（每日自动备份/更新信息刷新）+ 默认设备初始化。"""
+"""后端入口：FastAPI 应用 + 定时任务（每日自动备份/更新信息刷新）。"""
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,8 +9,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
 from app.adapters.factory import close_all_clients, start_keepalive
-from app.adapters.simulator.app import create_simulator_app
-from app.adapters.simulator.state import STATE
 from app.api import backups, chat, devices, updates
 from app.api import channel, knowledge, netdev, settings as settings_api
 from app.config import settings
@@ -42,7 +41,8 @@ async def scheduled_update_refresh() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    _ensure_default_device()
+    if not os.getenv("SF_SKIP_DEMO_CLEANUP"):   # 测试环境跳过（测试夹具依赖模拟器路由）
+        _remove_demo_devices()
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
     scheduler.add_job(scheduled_backup_all, "cron", hour=settings.auto_backup_hour, minute=0,
@@ -61,15 +61,15 @@ async def lifespan(app: FastAPI):
     await close_all_clients()
 
 
-def _ensure_default_device() -> None:
-    if not db.list_devices():
-        device = db.upsert_device({
-            "id": db.new_id("dev_"), "name": "演示-AF模拟器", "type": "af", "mode": "simulator",
-            "base_url": "", "username": settings.simulator_auth["username"],
-            "password": settings.simulator_auth["password"],
-            "readonly": 0, "settings_json": "{}", "created_at": db.now(),
-        })
-        log.info("已初始化默认模拟器设备：%s（%s）", device["name"], device["id"])
+def _remove_demo_devices() -> None:
+    """下线演示设备：清理存量模拟器设备记录（演示模式已移除，AI 助手面向真实设备）。"""
+    removed = []
+    for d in db.list_devices():
+        if d.get("mode") == "simulator":
+            db.delete_device(d["id"])
+            removed.append(d["name"])
+    if removed:
+        log.info("已下线演示设备（模拟器模式已移除）：%s", "、".join(removed))
 
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
@@ -83,8 +83,6 @@ app.include_router(knowledge.router)
 app.include_router(settings_api.router)
 app.include_router(channel.router)
 app.include_router(netdev.router)
-# 模拟器挂载到 /simulator 便于独立调试观察（演示时可展示设备端视角）
-app.mount("/simulator", create_simulator_app(STATE), name="simulator")
 
 
 @app.get("/api/health")

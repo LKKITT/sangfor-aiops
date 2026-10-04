@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS devices (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     type TEXT NOT NULL DEFAULT 'af',            -- af / ac（可扩展）
-    mode TEXT NOT NULL DEFAULT 'simulator',     -- simulator / real
+    mode TEXT NOT NULL DEFAULT 'real',          -- real（模拟器演示模式已下线）
     base_url TEXT NOT NULL,
     username TEXT NOT NULL DEFAULT '',
     password TEXT NOT NULL DEFAULT '',
@@ -427,8 +427,11 @@ def list_conversations_paged(page: int = 1, page_size: int = 20, keyword: str = 
                   (SELECT content_json FROM messages m
                     WHERE m.conv_id = c.id AND m.role = 'user' ORDER BY id DESC LIMIT 1) AS last_user_json,
                   (SELECT s.summary FROM conv_summaries s WHERE s.conv_id = c.id) AS summary,
-                  d.name AS device_name
-                FROM conversations c LEFT JOIN devices d ON d.id = c.device_id
+                  COALESCE(d.name, nd.name,
+                          CASE WHEN c.device_id = 'global' THEN '全局' END) AS device_name
+                FROM conversations c
+                LEFT JOIN devices d ON d.id = c.device_id
+                LEFT JOIN netdev_devices nd ON nd.id = c.device_id
                 WHERE {where} ORDER BY c.updated_at DESC LIMIT ? OFFSET ?""",
             args + [page_size, (page - 1) * page_size]).fetchall()
     items = []

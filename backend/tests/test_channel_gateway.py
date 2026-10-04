@@ -166,26 +166,39 @@ async def test_manage_commands(device_id, fake_stream):
     assert b["conv_id"] == "" and b["device_id"] == device_id
 
 
-def test_default_device_prefers_simulator():
-    real1, real2, sim = ({"id": "d1", "mode": "real"}, {"id": "d2", "mode": "real"},
-                         {"id": "d3", "mode": "simulator"})
-    assert channel_gateway._default_device([real1, sim]) is sim
-    assert channel_gateway._default_device([sim, real1]) is sim
-    assert channel_gateway._default_device([real1, real2]) is real1
+def test_default_binding_is_global(monkeypatch):
+    """企微默认对话为全局模式：绑定失效/为空回退 global（不再指向第一台设备）。"""
+    monkeypatch.setattr(channel_gateway.db, "list_devices", lambda: [])
+    monkeypatch.setattr(channel_gateway.db, "list_netdev_devices", lambda: [])
+    binding = {"channel": "wecom", "sender_id": "g_u1", "device_id": ""}
+    dev, device_id = channel_gateway._resolve_device(binding)
+    assert device_id == channel_gateway.GLOBAL_DEVICE_ID
+    assert dev["id"] == channel_gateway.GLOBAL_DEVICE_ID and dev["type"] == "global"
+    # 绑定的设备已被删除 → 回退全局
+    binding2 = {"channel": "wecom", "sender_id": "g_u2", "device_id": "dev_deleted"}
+    dev2, device_id2 = channel_gateway._resolve_device(binding2)
+    assert device_id2 == channel_gateway.GLOBAL_DEVICE_ID
+    # 显式绑定 global 也走全局上下文
+    dev3, device_id3 = channel_gateway._resolve_device(
+        {"channel": "wecom", "sender_id": "g_u3", "device_id": "global"})
+    assert device_id3 == channel_gateway.GLOBAL_DEVICE_ID and dev3["type"] == "global"
 
 
 @pytest.mark.asyncio
-async def test_fresh_sender_binds_demo_device(device_id, fake_stream):
-    """新发送方初始绑定默认指向演示设备（模拟器优先）。"""
-    set_events, _captured = fake_stream
+async def test_fresh_sender_binds_global(device_id, fake_stream):
+    """新发送方初始绑定默认为全局模式（对话覆盖全部设备）。"""
+    set_events, captured = fake_stream
     set_events([{"type": "token", "text": "ok"}, {"type": "done"}])
     r = await channel_gateway.run_channel_message("wecom", "fresh_u", "你好")
-    assert db.get_device(r["device_id"])["mode"] == "simulator"
+    assert r["device_id"] == channel_gateway.GLOBAL_DEVICE_ID
+    assert captured["device_id"] == channel_gateway.GLOBAL_DEVICE_ID
+    b = db.get_channel_binding("wecom", "fresh_u")
+    assert b["device_id"] == channel_gateway.GLOBAL_DEVICE_ID
 
 
 @pytest.mark.asyncio
-async def test_session_timeout_opens_new_conversation(device_id, fake_stream, monkeypatch):
-    """长时间未对话：下次消息自动开启新会话并提示。"""
+async def test_session_timeout_opens_global_conversation(device_id, fake_stream, monkeypatch):
+    """长时间未对话：自动开启新会话并回到全局模式（绑定设备复位）。"""
     from datetime import datetime, timedelta
     monkeypatch.setattr(settings, "channel_session_timeout_min", 30)
     set_events, captured = fake_stream
@@ -200,8 +213,11 @@ async def test_session_timeout_opens_new_conversation(device_id, fake_stream, mo
 
     r = await channel_gateway.run_channel_message("wecom", "stale_u", "继续问")
     assert r["conv_id"] != old_conv["id"] and captured["conv_id"] == r["conv_id"]
-    assert "自动开启新会话" in r["replies"][0]
-    assert db.get_channel_binding("wecom", "stale_u")["conv_id"] == r["conv_id"]
+    assert "自动开启新会话" in r["replies"][0] and "全局" in r["replies"][0]
+    # 新会话归属全局模式，绑定设备复位
+    assert db.get_conversation(r["conv_id"])["device_id"] == channel_gateway.GLOBAL_DEVICE_ID
+    assert captured["device_id"] == channel_gateway.GLOBAL_DEVICE_ID
+    assert db.get_channel_binding("wecom", "stale_u")["device_id"] == channel_gateway.GLOBAL_DEVICE_ID
     # 刚活跃过则续接同一会话，不再提示
     r2 = await channel_gateway.run_channel_message("wecom", "stale_u", "再问一条")
     assert r2["conv_id"] == r["conv_id"] and "自动开启" not in r2["replies"][0]
