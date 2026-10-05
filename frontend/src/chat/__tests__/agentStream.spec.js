@@ -90,6 +90,17 @@ describe('applyEvent: confirm / meta', () => {
     expect(onConfirm).toHaveBeenCalledTimes(1)
   })
 
+  it('confirm_result 经 onConfirmResult 回传回退点 id（不改动消息本体）', () => {
+    const m = msg()
+    const onConfirmResult = vi.fn()
+    applyEvent(m, { type: 'confirm_result', action_id: 'act_1', approved: true,
+                    safety_backup_id: 'bk_abc' }, { onConfirmResult })
+    expect(onConfirmResult).toHaveBeenCalledWith(expect.objectContaining({
+      action_id: 'act_1', safety_backup_id: 'bk_abc',
+    }))
+    expect(m.text).toBe('')
+  })
+
   it('meta 经 onMeta 回调回写会话 ID', () => {
     const onMeta = vi.fn()
     applyEvent(msg(), { type: 'meta', conv_id: 'conv_x' }, { onMeta })

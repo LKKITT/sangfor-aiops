@@ -81,6 +81,10 @@
     </div>
     <div v-else-if="confirm.status === 'executed'" class="cf-status ok">
       <el-icon><CircleCheckFilled /></el-icon> 已执行
+      <el-button v-if="confirm.safety_backup_id" size="small" text type="primary"
+                 @click="router.push('/backup')">
+        查看回退点（变更前备份 {{ confirm.safety_backup_id }}）
+      </el-button>
     </div>
     <div v-else-if="confirm.status === 'rejected'" class="cf-status dim">已拒绝</div>
     <div v-else class="cf-status dim">{{ confirm.status }}</div>
@@ -104,6 +108,8 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+const router = useRouter()
 import BindingForm from './forms/BindingForm.vue'
 import RuleForm from './forms/RuleForm.vue'
 import ObjectForm from './forms/ObjectForm.vue'

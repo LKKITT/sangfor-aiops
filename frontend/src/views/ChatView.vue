@@ -94,9 +94,15 @@
           <div v-if="messages.length <= 1 && quickPrompts.length" class="quick">
             <button v-for="q in quickPrompts" :key="q" class="quick-chip" :disabled="streaming" @click="send(q)">{{ q }}</button>
           </div>
+          <div v-if="queuedText" class="queued-hint">
+            <el-icon><Clock /></el-icon>&nbsp;已排队：{{ queuedText.slice(0, 40) }}{{ queuedText.length > 40 ? '…' : '' }}
+            <el-button text size="small" type="danger" @click="queuedText = ''">取消</el-button>
+          </div>
           <div class="input-row">
-            <el-input v-model="input" :placeholder="inputPlaceholder" size="large" @keyup.enter="send()" :disabled="streaming" />
-            <button v-if="!streaming" class="send-btn" :class="{ ready: !!input.trim() }" @click="send()" title="发送（Enter）">
+            <el-input v-model="input" type="textarea" :autosize="{ minRows: 1, maxRows: 6 }"
+                      :placeholder="inputPlaceholder" resize="none"
+                      @keydown.enter.exact.prevent="send()" />
+            <button v-if="!streaming" class="send-btn" :class="{ ready: !!input.trim() }" @click="send()" title="发送（Enter 发送 / Shift+Enter 换行）">
               <el-icon :size="17"><Promotion /></el-icon>
             </button>
             <el-button v-else type="danger" size="large" @click="stopChat">
@@ -209,6 +215,7 @@ const messages = ref([])
 let currentConvId = null
 // 终止对话：AbortController
 let abortController = null
+const queuedText = ref('')   // 流式期间排队的待发送消息
 
 const scrollRef = ref(null)
 const quickPrompts = computed(() => {
@@ -498,6 +505,12 @@ function send(preset) {
   if (!text) return
   const dev = currentDevice()
   if (!dev) return ElMessage.warning('请先选择设备')
+  if (streaming.value) {   // 流式期间可继续输入，发送改为排队（回答结束自动发出）
+    queuedText.value = text
+    input.value = ''
+    ElMessage.info('已排队：当前回答结束后自动发送')
+    return
+  }
   if (preset) input.value = ''
   else input.value = ''
   lastUserText.value = text
@@ -516,7 +529,16 @@ function send(preset) {
       aiMsg.failed = e.message
       aiMsg.text += `\n\n**连接失败**：${e.message}`
     })
-    .finally(() => { streaming.value = false; abortController = null; scrollBottom() })
+    .finally(() => {
+      streaming.value = false
+      abortController = null
+      scrollBottom()
+      if (queuedText.value) {   // 排队消息自动发出
+        const t = queuedText.value
+        queuedText.value = ''
+        nextTick(() => send(t))
+      }
+    })
 }
 
 async function stopChat() {
@@ -560,6 +582,7 @@ async function confirmAction(msg, approved, edited) {
   }, ev => applyEvent(contMsg, ev, {
     onMeta: (convId) => { if (convId) currentConvId = convId },
     onConfirm: () => scrollBottom(),
+    onConfirmResult: (r) => { if (r.safety_backup_id && msg.confirm) msg.confirm.safety_backup_id = r.safety_backup_id },
   }))
     .catch(e => { contMsg.failed = e.message; contMsg.text += `\n\n**连接失败**：${e.message}` })
     .finally(() => {
@@ -751,6 +774,11 @@ function allPlanItems(plan) {
 }
 
 .retry-row { margin-top: 8px; }
+.queued-hint {
+  display: flex; align-items: center; gap: 4px; margin-bottom: 6px;
+  font-size: 12px; color: var(--sfa-warning, #B88230); background: #FFF7E8;
+  border: 1px dashed #F3DFB2; border-radius: 8px; padding: 4px 9px;
+}
 
 /* ===== 历史会话抽屉 ===== */
 .his-search { display: flex; gap: 8px; margin-bottom: 10px; }

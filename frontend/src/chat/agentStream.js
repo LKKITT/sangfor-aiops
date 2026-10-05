@@ -1,4 +1,6 @@
 // AI 对话 SSE 事件归约（纯逻辑，与视图解耦，供 ChatView 与单测共用）。
+// 事件契约单一来源：docs/sse-events.schema.json（后端 app/agent/events.py 导出，
+// 测试守卫漂移）。修改事件字段需同步两端。
 // 归约只操作传入的 aiMsg 对象，不依赖 Vue 响应式——reactive 与否由调用方决定。
 
 export const TOOL_NAMES = {
@@ -69,6 +71,9 @@ export function applyEvent(aiMsg, ev, handlers = {}) {
     case 'confirm_required':
       aiMsg.confirm = { ...ev.action, status: 'pending' }
       handlers.onConfirm?.()
+      break
+    case 'confirm_result':
+      handlers.onConfirmResult?.(ev)
       break
     case 'offline_notice':
       aiMsg.text += `\n\n> ${ev.text}`

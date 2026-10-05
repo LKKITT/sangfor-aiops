@@ -12,24 +12,15 @@ async function readError(resp) {
   return (await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`
 }
 
-export async function apiGet(path, timeout = 45000) {
-  const { signal, done } = timeoutSignal(timeout)
-  try {
-    const resp = await fetch(BASE + path, { signal })
-    if (!resp.ok) throw new Error(await readError(resp))
-    return resp.json()
-  } finally {
-    done()
-  }
-}
-
-export async function apiPost(path, body = {}, timeout = 45000) {
+// 请求内核：超时注册 + !ok 抛错（readError 优先取后端 detail）+ JSON 解析
+async function request(method, path, body, timeout = 45000) {
   const { signal, done } = timeoutSignal(timeout)
   try {
     const resp = await fetch(BASE + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      method,
+      ...(body !== undefined
+        ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+        : {}),
       signal
     })
     if (!resp.ok) throw new Error(await readError(resp))
@@ -39,16 +30,9 @@ export async function apiPost(path, body = {}, timeout = 45000) {
   }
 }
 
-export async function apiDelete(path, timeout = 45000) {
-  const { signal, done } = timeoutSignal(timeout)
-  try {
-    const resp = await fetch(BASE + path, { method: 'DELETE', signal })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    return resp.json()
-  } finally {
-    done()
-  }
-}
+export const apiGet = (path, timeout = 45000) => request('GET', path, undefined, timeout)
+export const apiPost = (path, body = {}, timeout = 45000) => request('POST', path, body, timeout)
+export const apiDelete = (path, timeout = 45000) => request('DELETE', path, undefined, timeout)
 
 /**
  * SSE 流式对话。onEvent(event) 回调每个事件对象。
@@ -83,37 +67,8 @@ export async function chatStream(path, body, onEvent, signal) {
 
 // ---------- 业务 API ----------
 
-export async function apiPut(path, body = {}, timeout = 45000) {
-  const { signal, done } = timeoutSignal(timeout)
-  try {
-    const resp = await fetch(BASE + path, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    return resp.json()
-  } finally {
-    done()
-  }
-}
-
-export async function apiPatch(path, body = {}, timeout = 45000) {
-  const { signal, done } = timeoutSignal(timeout)
-  try {
-    const resp = await fetch(BASE + path, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal
-    })
-    if (!resp.ok) throw new Error(await readError(resp))
-    return resp.json()
-  } finally {
-    done()
-  }
-}
+export const apiPut = (path, body = {}, timeout = 45000) => request('PUT', path, body, timeout)
+export const apiPatch = (path, body = {}, timeout = 45000) => request('PATCH', path, body, timeout)
 
 export const Health = { get: () => apiGet('/api/health') }
 export const Settings = {
