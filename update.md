@@ -3,6 +3,41 @@
 本项目所有代码提交的更新记录，按时间倒序排列。
 
 ---
+## 2026-10-05
+
+### feat: 交互与架构 P1 批次落地（路由化/确认卡片组件化/失败重试/历史会话/前端测试 0→1）
+
+**ARC-1 前端视图路由化**：引入 vue-router（hash 模式，前端独立部署无 SPA fallback 依赖），
+9 个视图路由级懒加载；侧栏导航与活跃态由路由驱动，移除 store.view；URL 可寻址——
+刷新保持当前页、支持分享/收藏指定页面（依赖 vue-router@4）
+
+**HCI-2/FE-2 确认卡片组件化 + 表单校验**：新增 components/chat/ConfirmCard.vue（卡片
+整体内聚：头部/高危标识/冲突核实/diff/批量计划/恢复清单/高危二次确认弹窗），5 类交互
+表单拆分为 forms/（BindingForm/RuleForm[NAT+ACL]/ObjectForm/ServiceForm）并接入 el-form
+校验：IP/网段/范围/MAC/端口严格校验（形似即校验、组名放行口径与后端一致），校验失败
+阻断提交；ChatView 1070→671 行，确认卡片区约 180 行模板与 120 行脚本外移
+
+**HCI-3 失败重试路径**：error/网络失败事件标记 aiMsg.failed，最后一条助手消息渲染
+'重试上一条提问'（保留 lastUserText），失败后一键重发不再重新打字
+
+**chat/agentStream.js 事件归约抽离**：SSE 事件归约纯逻辑（token 累加/trace 按名配对/
+confirm 挂起/error 标记），视图副作用经 handlers 回调——对应后端事件契约，可单测直测
+
+**UX-1 对话页历史会话**：输入台新增'历史会话'抽屉——按当前设备（全局模式为全部设备）
+分页拉取会话（标题/最后消息/设备名/时间），关键词搜索 + 加载更多；点击续接自动加载
+该会话最近 200 条并切换到会话原设备上下文（跨设备续接不串上下文）；流式进行中禁止切换
+
+**ARC-2/FE-6 前端测试 0→1**：Vitest（jsdom 环境）4 套件 29 项——agentStream 事件归约
+矩阵（含并行轮次乱序配对）、api 统一封装（readError detail 优先/fake timers 超时中止/
+PATCH JSON body）、store 设备失效回退全局与网络设备接口降级、表单校验器（999.1.1.1
+类非法输入拦截口径锁定）；package.json 增加 npm test，CI 前端 job 增加 Vitest 步骤
+
+**快速项**：X-1 .env.example 超时默认值与 config.py 校对一致（10→30，补 LOGIN_TIMEOUT）；
+BE-4 README 声明后端单进程部署约束（取消信号/客户端缓存/保活为进程内单例）
+
+**验证**：后端 ruff 全过 + pytest 245/245；前端 Vitest 29/29 + 构建通过
+
+---
 
 ## 2026-10-04
 
