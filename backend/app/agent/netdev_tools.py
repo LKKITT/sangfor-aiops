@@ -9,6 +9,8 @@
   （ARP/MAC 缓存 + search_asset 终端定位）；
 - 写操作（配置下发/任意命令）走统一确认卡片流程，配置默认不保存（可显式要求 save）。
 """
+import re
+
 from app import db
 from app.agent.tools import Tool
 from app.services import netdev_service
@@ -46,10 +48,31 @@ ARP_CMD = {"huawei": "display arp", "h3c": "display arp", "ruijie": "show arp"}
 # 接口视图配置查看（dis this 模式）：进入接口视图看"当前视图生效配置"，再返回用户视图。
 # 进入视图/return 均为查看动作，不修改任何配置
 IF_VIEW_CONFIG = {
-    "huawei": ["interface {name}", "display this", "return"],
-    "h3c": ["interface {name}", "display this", "return"],
-    "ruijie": ["show running-config interface {name}"],
+    # 注意：H3C/华为的 interface 命令必须先 system-view（用户视图下不可用）；
+    # 序列同时取接口详情（状态/计数）与视图内 display this（生效配置），一次拿全
+    "huawei": ["display interface {name}", "system-view", "interface {name}",
+               "display this", "return"],
+    "h3c": ["display interface {name}", "system-view", "interface {name}",
+            "display this", "return"],
+    "ruijie": ["show interfaces {name}", "show running-config interface {name}"],
 }
+# 接口名缩写 → 厂商全名（端口编号部分原样保留，大小写不敏感匹配前缀）
+IFNAME_EXPANSIONS = [
+    ("hge", "HundredGigE"), ("twe", "Twenty-Five-GigE"), ("fge", "FortyGigE"),
+    ("xge", "Ten-GigabitEthernet"), ("te", "Ten-GigabitEthernet"),
+    ("ge", "GigabitEthernet"), ("gi", "GigabitEthernet"),
+    ("bagg", "Bridge-Aggregation"), ("ragg", "Route-Aggregation"),
+    ("vlan-int", "Vlan-interface"), ("ve", "Vlan-interface"),
+]
+
+def expand_ifname(name: str) -> str:
+    """接口缩写展开：GE1/0/21 → GigabitEthernet1/0/21 等；已是全名/无法识别则原样返回。"""
+    s = str(name or "").strip()
+    low = s.lower()
+    for abbr, full in IFNAME_EXPANSIONS:
+        if low.startswith(abbr) and len(s) > len(abbr) and s[len(abbr)].isdigit():
+            return full + s[len(abbr):]
+    return s
 LOG_CMD = {"huawei": "display logbuffer", "h3c": "display logbuffer", "ruijie": "show logging"}
 
 # 配置模式包装：进入/退出全局配置视图
@@ -208,10 +231,11 @@ async def _h_get_interfaces(client, args: dict, device: dict) -> dict:
     if msg := _vendor_check(devices):
         return {"error": msg}
     name = str(args.get("interface") or "").strip()
+    full = expand_ifname(name) if name else ""
 
     def _cmds(d):
         if name:
-            return [IF_DETAIL_CMD[d["vendor"]].format(name=name)]
+            return [IF_DETAIL_CMD[d["vendor"]].format(name=full)]
         return IF_BRIEF_CMDS[d["vendor"]]
     return await _run_on_targets(devices, _cmds, timeout=45)
 
@@ -245,8 +269,15 @@ async def _h_get_arp(client, args: dict, device: dict) -> dict:
     return await _run_on_targets(devices, _cmds, timeout=45)
 
 
+_IF_BAD_OUTPUT = re.compile(
+    r"(Unrecognized|Incomplete command|Invalid|参数错误|不存在的接口|找不到该接口|Wrong param)", re.I)
+
+
 async def _h_get_interface_config(client, args: dict, device: dict) -> dict:
-    """接口配置查看：进入接口视图 display this（华为/H3C）或 show run interface（锐捷）。"""
+    """接口配置查看（一次性）：接口详情（状态/计数）+ 接口视图 display this（生效配置）。
+
+    接口名支持常用缩写（GE1/0/21 等）：自动展开为厂商全名，失败再回退原名重试。
+    """
     devices, err = _resolve_targets(args, device)
     if err:
         return {"error": err}
@@ -255,11 +286,51 @@ async def _h_get_interface_config(client, args: dict, device: dict) -> dict:
     name = str(args.get("interface") or "").strip()
     if not name:
         return {"error": "请提供接口名（interface 参数，如 GigabitEthernet1/0/1，"
-                         "也支持常用缩写如 GE1/0/1、Ten-GigabitEthernet1/0/21 → Ten-G 1/0/21）"}
+                         "也支持常用缩写如 GE1/0/1、XGE1/0/21、BAgg1 等）"}
 
-    def _cmds(d):
-        return [c.format(name=name) for c in IF_VIEW_CONFIG[d["vendor"]]]
-    return await _run_on_targets(devices, _cmds, timeout=45)
+    results, ok_count = [], 0
+    for d in devices:
+        candidates, seen = [], set()
+        for cand in (expand_ifname(name), name):
+            if cand and cand not in seen:
+                seen.add(cand)
+                candidates.append(cand)
+        chosen = None
+        for cand in candidates:
+            cmds = [c.format(name=cand) for c in IF_VIEW_CONFIG[d["vendor"]]]
+            r = await netdev_service.run_commands(d, cmds, timeout=45)
+            if not r.get("ok"):
+                chosen = (cand, cmds, r, True)
+                break
+            out = r.get("output", "")
+            body = out[len(out) // 3:]   # 跳过命令回显行，检查正文是否有报错特征
+            if _IF_BAD_OUTPUT.search(body):
+                continue   # 该形态接口名不被识别：换下一个候选（缩写↔全名）
+            chosen = (cand, cmds, r, False)
+            break
+        if chosen is None:   # 所有候选都报错：回传最后一次尝试
+            cmds = [c.format(name=candidates[-1]) for c in IF_VIEW_CONFIG[d["vendor"]]]
+            r = await netdev_service.run_commands(d, cmds, timeout=45)
+            chosen = (candidates[-1], cmds, r, False)
+        cand, cmds, r, conn_failed = chosen
+        if conn_failed:
+            results.append({"device": d["name"], "host": d["host"],
+                            "vendor": _vendor_display(d.get("vendor", "")),
+                            "ok": False, "commands": cmds,
+                            "error": r.get("error", "执行失败")})
+            continue
+        ok_count += 1
+        results.append({"device": d["name"], "host": d["host"],
+                        "vendor": _vendor_display(d.get("vendor", "")),
+                        "ok": True, "commands": cmds, "interface": cand,
+                        "output": _clip(r.get("output", ""), OUTPUT_CAP_PER_DEVICE)})
+    summary = (f"已查看 {ok_count}/{len(devices)} 台设备的接口配置（含接口状态与视图内生效配置）。"
+               if len(devices) > 1 else
+               ("接口配置已返回（含 display this 视图配置与接口状态计数）。" if ok_count
+                else "接口查询失败，请确认接口名。"))
+    return {"targets": len(devices), "succeeded": ok_count, "results": results,
+            "_llm_summary": summary + " 请基于回显原文作答：配置项取自 display this 段，"
+                                       "状态/错包计数取自 display interface 段，注明接口名。"}
 
 
 async def _h_query(client, args: dict, device: dict) -> dict:
@@ -371,7 +442,11 @@ async def _h_locate_terminal(client, args: dict, device: dict) -> dict:
     result = {"kind": best.get("kind"), "query": query, "groups": hits,
               "_llm_summary": (f"{line}。请向用户报告：接入设备、端口、MAC/IP（如返回），"
                                f"并说明判定来源（MAC 表=权威接入点，ARP=学习口参考）；"
-                               f"多分组命中时按组分别列出。{collected}")}
+                               f"多分组命中时按组分别列出。{collected} "
+                               "若用户接着要查该接口配置，直接调用 netdev_get_interface_config"
+                               "（devices=[接入设备], interface=端口名，缩写自动展开），"
+                               "不要用 netdev_get_config 的 keyword 过滤（include 只返回匹配行，"
+                               "拿不到配置块）。")}
     return result
 
 
@@ -508,7 +583,7 @@ NETDEV_TOOLS: list[Tool] = [
     Tool("netdev_get_status", "网络设备健康查询（华为/H3C/锐捷）：版本、CPU、内存、环境（温度/风扇/电源）等运行状态。",
          {"type": "object", "properties": {"devices": _NETDEV_DEVICES_DESC}},
          _h_get_status, device_type="netdev", needs_device=False),
-    Tool("netdev_get_config", "网络设备配置查询（华为/H3C/锐捷）：查看当前运行配置，可用 keyword 过滤（如 acl / ospf / 某接口）。",
+    Tool("netdev_get_config", "网络设备配置查询（华为/H3C/锐捷）：查看当前运行配置全文，keyword 过滤基于 | include（只返回包含关键词的行，不返回配置块）——适合 acl/ospf/ntp 等特性级检索；查单个接口的完整配置请改用 netdev_get_interface_config。",
          {"type": "object",
           "properties": {"keyword": {"type": "string", "description": "可选：配置过滤关键词（管道 include）"},
                          "devices": _NETDEV_DEVICES_DESC}},

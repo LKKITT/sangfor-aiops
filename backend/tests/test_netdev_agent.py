@@ -498,19 +498,45 @@ def test_chat_api_accepts_netdev_device(nd_h3c):
 # ---------- 接口配置查看（dis this 模式）与只读自由查询 ----------
 
 def test_interface_config_dis_this(nd_h3c, nd_huawei, fake_run):
-    """H3C/华为：进入接口视图 → display this → return；锐捷：show run interface 单命令。"""
+    """H3C/华为一次性序列：接口详情 → system-view 进接口视图 → display this → return。"""
     from app.agent.netdev_tools import _h_get_interface_config
     r = asyncio.run(_h_get_interface_config(
         None, {"interface": "GigabitEthernet1/0/1", "devices": ["AI核心交换机"]}, {}))
     assert r["succeeded"] == 1
     cmds = fake_run[0][1]
-    assert cmds[0] == "interface GigabitEthernet1/0/1"
-    assert cmds[1] == "display this"
-    assert cmds[-1] == "return"
+    assert cmds == ["display interface GigabitEthernet1/0/1", "system-view",
+                    "interface GigabitEthernet1/0/1", "display this", "return"]
     r2 = asyncio.run(_h_get_interface_config(
         None, {"interface": "GigabitEthernet0/1", "devices": ["AI接入交换机"]}, {}))
     assert r2["succeeded"] == 1
-    assert fake_run[-1][1] == ["interface GigabitEthernet0/1", "display this", "return"]
+    assert fake_run[-1][1] == ["display interface GigabitEthernet0/1", "system-view",
+                               "interface GigabitEthernet0/1", "display this", "return"]
+
+
+def test_interface_config_abbr_expand_and_retry(nd_h3c, monkeypatch):
+    """缩写自动展开（GE1/0/21 → GigabitEthernet1/0/21）；形态不被识别时回退候选重试。"""
+    from app.agent.netdev_tools import _h_get_interface_config, expand_ifname
+    assert expand_ifname("GE1/0/21") == "GigabitEthernet1/0/21"
+    assert expand_ifname("XGE1/0/21") == "Ten-GigabitEthernet1/0/21"
+    assert expand_ifname("BAgg1") == "Bridge-Aggregation1"
+    assert expand_ifname("GigabitEthernet1/0/21") == "GigabitEthernet1/0/21"
+
+    calls = []
+
+    async def fake_run(device, commands, timeout=30, **kw):
+        calls.append((device["name"], list(commands)))
+        # 原样缩写（display interface GE1/0/21）报参数错误；展开后的全名成功
+        if any("GE1/0/21" in c for c in commands):
+            return {"ok": True, "output": " % Unrecognized command found", "duration": 0.1}
+        return {"ok": True, "output": "<dev> display this 成功回显", "duration": 0.1}
+
+    monkeypatch.setattr(netdev_service, "run_commands", fake_run)
+    r = asyncio.run(_h_get_interface_config(
+        None, {"interface": "GE1/0/21", "devices": ["AI核心交换机"]}, {}))
+    assert r["succeeded"] == 1
+    assert r["results"][0]["interface"] == "GigabitEthernet1/0/21", "应回退到展开后的全名"
+    # 首选展开名（避免注定失败的设备往返）；仅当展开形态报错才回退原名
+    assert any("GigabitEthernet1/0/21" in c for _, cs in calls for c in cs)
 
 
 def test_interface_config_requires_name(nd_h3c, fake_run):
