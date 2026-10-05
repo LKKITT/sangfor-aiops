@@ -247,23 +247,25 @@ const queuedText = ref('')   // 流式期间排队的待发送消息
 // ---- 扩展能力选用（MCP 服务 / Agent Skills；null=全部已启用） ----
 const extMcps = ref([])      // 全部已启用服务 [{id, name}]
 const extSkills = ref([])    // 全部已启用技能 [{folder, name}]
-const selMcps = ref(null)    // 选中的服务 id 列表（null=全部）
-const selSkills = ref(null)  // 选中的技能 folder 列表（null=全部）
+const selMcps = ref([])      // 选中的服务 id 列表（全选=默认；清空=本次不使用）
+const selSkills = ref([])    // 选中的技能 folder 列表
 const extDeselected = computed(() =>
-  (Array.isArray(selMcps.value) && selMcps.value.length < extMcps.value.length)
-  || (Array.isArray(selSkills.value) && selSkills.value.length < extSkills.value.length))
+  selMcps.value.length < extMcps.value.length
+  || selSkills.value.length < extSkills.value.length)
 
 async function loadExtCapabilities() {
   try {
     const [m, s] = await Promise.all([Settings.mcpList(), Settings.skillsList()])
     extMcps.value = (m.servers || []).filter(x => x.enabled).map(x => ({ id: x.id, name: x.name }))
     extSkills.value = (s.skills || []).filter(x => x.enabled).map(x => ({ folder: x.folder, name: x.name }))
+    selMcps.value = extMcps.value.map(x => x.id)       // 默认全选
+    selSkills.value = extSkills.value.map(x => x.folder)
   } catch { /* 设置接口异常不影响对话 */ }
 }
 
 function resetExt() {
-  selMcps.value = null
-  selSkills.value = null
+  selMcps.value = extMcps.value.map(x => x.id)
+  selSkills.value = extSkills.value.map(x => x.folder)
 }
 
 const scrollRef = ref(null)

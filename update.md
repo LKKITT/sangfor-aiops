@@ -4,6 +4,14 @@
 
 ---
 ## 2026-10-05
+### fix: 扩展能力选择器无法勾选修复
+
+根因：el-checkbox-group 的 v-model 初始化为 null（非数组）——Element Plus 的 group
+要求 model 为数组，null 时点击复选框不生效。修复：selMcps/selSkills 初始化并加载后
+默认全选（数组），「恢复全部」= 重新全选；语义约定 [] = 本次对话明确不使用任何
+ MCP 服务/技能（后端 None=全部、[]=无 的区分保持不变）。浏览器实测勾选/取消/复勾正常
+
+---
 ### feat: 对话级 MCP/Skills 选用——输入台扩展能力选择器
 
 AI 对话输入台新增「扩展能力」选择器（popover）：分 MCP 服务 / Agent Skills 两组勾选，
