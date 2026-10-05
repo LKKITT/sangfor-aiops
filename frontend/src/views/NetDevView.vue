@@ -654,7 +654,7 @@ onMounted(async () => {
 
 /* 顶部统计 */
 .nd-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-.sfa-stat.nd-ok .num { color: #0C8F7F; }
+.sfa-stat.nd-ok .num { color: var(--sfa-ok-ink); }
 .nd-sub { color: var(--sfa-text-3); font-size: 12px; }
 
 /* 筛选行 */

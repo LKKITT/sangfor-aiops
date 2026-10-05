@@ -215,12 +215,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import * as echarts from 'echarts'
 import { store } from '../store.js'
 import AsyncSection from '../components/AsyncSection.vue'
+import { useTheme } from '../composables/useTheme'
 import { router } from '../router'
 import { KB } from '../api.js'
 
@@ -311,13 +312,14 @@ function renderCharts() {
   const { graph, categories, timeline } = stats.value
   if (graphRef.value) {
     if (!graphChart) {
-      graphChart = echarts.init(graphRef.value)
+      graphChart = echarts.init(graphRef.value, theme.value === 'dark' ? 'dark' : undefined)
       // 点击图谱节点 → 打开对应词条详情
       graphChart.on('click', (p) => { if (p.dataType === 'node' && p.data?.id) openEntryById(p.data.id) })
     }
     graphChart.setOption({
+      backgroundColor: 'transparent',
       tooltip: { formatter: (p) => p.dataType === 'node' ? `${p.data.category || ''} · ${p.name}` : '' },
-      legend: [{ data: graph.categories, bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#667085' } }],
+      legend: [{ data: graph.categories, bottom: 0, type: 'scroll', textStyle: { fontSize: 11 } }],
       series: [{
         type: 'graph', layout: 'force', roam: true, draggable: true,
         data: graph.nodes.map(n => ({
@@ -335,9 +337,10 @@ function renderCharts() {
     })
   }
   if (catRef.value) {
-    catChart = catChart || echarts.init(catRef.value)
+    catChart = catChart || echarts.init(catRef.value, theme.value === 'dark' ? 'dark' : undefined)
     const cats = [...categories].sort((a, b) => a.value - b.value)
     catChart.setOption({
+      backgroundColor: 'transparent',
       tooltip: {},
       grid: { left: 80, right: 24, top: 10, bottom: 24 },
       xAxis: { type: 'value', minInterval: 1 },
@@ -346,8 +349,9 @@ function renderCharts() {
     })
   }
   if (timeRef.value) {
-    timeChart = timeChart || echarts.init(timeRef.value)
+    timeChart = timeChart || echarts.init(timeRef.value, theme.value === 'dark' ? 'dark' : undefined)
     timeChart.setOption({
+      backgroundColor: 'transparent',
       tooltip: {},
       grid: { left: 36, right: 16, top: 14, bottom: 26 },
       xAxis: { type: 'category', data: timeline.map(t => t.day.slice(5)), axisLabel: { fontSize: 10 } },
@@ -360,6 +364,14 @@ function renderCharts() {
 function resizeAll() {
   graphChart?.resize(); catChart?.resize(); timeChart?.resize()
 }
+
+// 主题切换：echarts 的文字/轴色注册在 init，需销毁重建（renderCharts 内部懒加载重建）
+const { theme } = useTheme()
+watch(theme, () => {
+  graphChart?.dispose(); catChart?.dispose(); timeChart?.dispose()
+  graphChart = catChart = timeChart = null
+  if (stats.value) nextTick(renderCharts)
+})
 
 // ---------- 数据加载 ----------
 async function loadAll() {
@@ -498,8 +510,8 @@ onBeforeUnmount(() => {
 .kb-sub { color: var(--sfa-text-3); font-size: 12px; margin-left: 8px; }
 
 .kb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
-.sfa-stat.stat-warn { background: linear-gradient(180deg, #FFF9EE, #FEF3DC); border-color: #F6E3B4; }
-.sfa-stat.stat-warn .num { color: #C4870A; }
+.sfa-stat.stat-warn { background: var(--sfa-warn-bg); border-color: var(--sfa-warn-border); }
+.sfa-stat.stat-warn .num { color: var(--sfa-warn-ink); }
 
 .kb-charts { display: flex; gap: 16px; margin-top: 16px; }
 .chart-card { padding: 14px 16px; }
@@ -538,6 +550,6 @@ onBeforeUnmount(() => {
   transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1);
 }
 .ref-plain.is-seed .seed-ico { font-size: 13px; color: var(--sfa-primary); flex-shrink: 0; }
-.ref-plain.is-seed:hover { background: #F3F6FF; color: var(--sfa-primary); }
+.ref-plain.is-seed:hover { background: var(--sfa-tint-primary); color: var(--sfa-primary); }
 .ref-plain.is-seed:active { transform: scale(.99); }
 </style>

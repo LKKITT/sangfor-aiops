@@ -224,7 +224,7 @@ onMounted(() => { load(); loadSoftwareList(); loadCookieState() })
   border: 1px solid var(--sfa-border); border-radius: 8px; padding: 3.5px 10px;
 }
 .path-hop.latest {
-  background: #EAF8F4; border-color: #BDEAE0; color: #0C8F7F;
+  background: var(--sfa-ok-bg); border-color: var(--sfa-ok-border); color: var(--sfa-ok-ink);
   box-shadow: 0 0 0 3px rgba(15, 185, 164, .1);
 }
 .path-sep { color: var(--sfa-text-4); font-size: 12px; }

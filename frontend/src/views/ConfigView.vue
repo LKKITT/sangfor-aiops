@@ -702,7 +702,7 @@ onMounted(() => { load() })
   border-image: linear-gradient(180deg, var(--sfa-primary), #8FA9FF) 1;
 }
 .stat {
-  background: linear-gradient(180deg, #FBFCFE, #F5F7FC);
+  background: linear-gradient(180deg, var(--sfa-panel-soft), var(--sfa-panel-soft));
   border: 1px solid var(--sfa-border-soft); border-radius: var(--sfa-r-md);
   padding: 13px 15px; min-height: 92px;
   transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2);
@@ -716,7 +716,7 @@ onMounted(() => { load() })
 .rank-grid { display: flex; flex-direction: column; gap: 10px; }
 .rank-card {
   display: flex; align-items: flex-start; gap: 13px;
-  background: linear-gradient(180deg, #FBFCFE, #F5F7FC);
+  background: linear-gradient(180deg, var(--sfa-panel-soft), var(--sfa-panel-soft));
   border: 1px solid var(--sfa-border-soft); border-radius: var(--sfa-r-md);
   padding: 12px 15px; transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2);
 }
@@ -729,7 +729,7 @@ onMounted(() => { load() })
 .rank-body { flex: 1; min-width: 0; }
 .rank-name { font-weight: 650; font-size: 13.5px; }
 .rank-sub { color: var(--sfa-text-4); font-size: 11.5px; margin-bottom: 4px; font-family: var(--sfa-mono); }
-.rank-bar-wrap { height: 7px; background: #E3E8F2; border-radius: 999px; margin: 7px 0; overflow: hidden; }
+.rank-bar-wrap { height: 7px; background: var(--sfa-bar-track); border-radius: 999px; margin: 7px 0; overflow: hidden; }
 .rank-bar {
   height: 100%; border-radius: 999px;
   background: linear-gradient(90deg, #3B63FF, #6A87FF 60%, #0FB9A4);

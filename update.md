@@ -4,6 +4,25 @@
 
 ---
 ## 2026-10-05
+### fix: 暗色主题全站细修（语义状态 token + echarts 主题化 + 表格/表头清扫）
+
+**语义状态 token**：style.css 新增 16 个 --sfa-tint-*/chip-border/hover-soft/panel-soft/
+bar-track/code-bg/warn-*/ok-* 语义 token（亮色值=现行字面量，暗色=深色等价），
+37 处视图硬编码亮色字面量（#F3F6FF/#EEF1FF/#FAFBFD/#FFF7E8 等）批量替换——
+主色悬浮底/选中底/着色面板在两主题下各自有正确对应
+
+**统计卡片与表格**：.sfa-stat 基类渐变改 token（原白底渐变在暗色下刺眼白块）、
+stat-warn 变体改 warn token；el-table 表头/行悬浮、.md-body th、el-dialog 关闭钮
+悬浮等 style.css 残留字面量全部 token 化（此前对话日志/网络设备表头为浅色条带）
+
+**echarts 主题化**：知识库 3 图（知识图谱/分类分布/沉淀时间线）与网络拓扑图
+按主题注册 dark（文字/轴色随主题），选项加透明背景；主题切换时销毁重建实例
+（颜色注册在 init，setOption 改不了）；拓扑 tooltip 暗色深底、节点标签随主题取色
+
+**验证**：逐页截图（对话/知识库/对话日志/网络设备/备份/配置可视化/软件更新）暗色
+渲染正常，亮色回归无差异（统计卡片渐变观感保持）；后端 252/252、前端 35/35、构建通过
+
+---
 ### feat: 第 2.5 批（N-1~N-7）——交互闭环收尾、上下文条、四态组件、暗色主题、响应契约
 
 **N-1 HCI-1 收尾**：ChatView onBeforeUnmount 中止进行中的流（先 POST 取消端点再本地

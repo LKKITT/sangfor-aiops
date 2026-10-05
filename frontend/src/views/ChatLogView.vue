@@ -234,5 +234,5 @@ onMounted(() => { if (!store.netdevDevices.length) loadDevices(); loadLogs() })
 .tool-content pre { background: #0D1424; color: #BFC9E4; padding: 10px 12px; border-radius: 9px; white-space: pre-wrap; word-break: break-all; margin-top: 6px; font-family: var(--sfa-mono); }
 .md-body { line-height: 1.7; }
 .md-body :deep(p) { margin: 4px 0; }
-.md-body :deep(code) { background: #EEF1FA; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.md-body :deep(code) { background: var(--sfa-code-bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 </style>

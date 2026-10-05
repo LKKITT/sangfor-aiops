@@ -101,6 +101,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import { NetDev } from '../api.js'
+import { useTheme } from '../composables/useTheme'
 
 const emit = defineEmits(['edit', 'console'])
 
@@ -165,9 +166,11 @@ function nodeStyle(n, hitSet) {
       shadowColor: hit ? 'rgba(15,185,164,.65)' : n.core ? 'rgba(245,169,11,.5)' : 'rgba(16,24,40,.18)',
       opacity: hitSet && !hitSet.has(n.id) ? .12 : 1,
     },
-    label: { color: '#101828', fontWeight: 600 },
+    label: { color: theme.value === 'dark' ? '#E4E9F4' : '#101828', fontWeight: 600 },
   }
 }
+
+const { theme } = useTheme()
 
 function buildOption(hitSet) {
   const positions = graph.value.positions || {}
@@ -184,7 +187,7 @@ function buildOption(hitSet) {
           : n.cross ? `{name|${n.name}}\n{port|跨分组 · ${n.group || '未分组'}}`
           : n.name,
       rich: { name: { fontWeight: 650, fontSize: 11.5, color: '#101828', lineHeight: 16 },
-              port: { fontSize: 10.5, color: '#0C8F7F', fontFamily: 'JetBrains Mono, Consolas, monospace' },
+              port: { fontSize: 10.5, color: 'var(--sfa-ok-ink)', fontFamily: 'JetBrains Mono, Consolas, monospace' },
               core: { fontSize: 10, color: '#C4870A', fontWeight: 650, lineHeight: 14 } },
     },
   }))
@@ -207,9 +210,12 @@ function buildOption(hitSet) {
     }
   })
   return {
+    backgroundColor: 'transparent',
     tooltip: { trigger: 'item', confine: true,
-               textStyle: { fontSize: 12 }, backgroundColor: 'rgba(255,255,255,.96)',
-               borderColor: '#E4E8F1', extraCssText: 'box-shadow: 0 8px 24px -8px rgba(16,24,40,.2);' },
+               textStyle: { fontSize: 12 },
+               backgroundColor: theme.value === 'dark' ? 'rgba(24, 32, 54, .96)' : 'rgba(255,255,255,.96)',
+               borderColor: theme.value === 'dark' ? '#33406A' : '#E4E8F1',
+               extraCssText: 'box-shadow: 0 8px 24px -8px rgba(16,24,40,.2);' },
     series: [{
       type: 'graph', layout: layoutMode.value === 'manual' ? 'none' : 'force',
       data: nodes, links: edges, roam: true,
@@ -245,10 +251,19 @@ async function loadGraph(force = false) {
   }
 }
 
+// 主题切换：echarts 文字/轴色注册在 init，销毁重建（renderChart 懒加载恢复）
+let _lastHitSet = null
+watch(theme, () => {
+  chart?.dispose()
+  chart = null
+  if (graph.value?.nodes?.length) nextTick(() => renderChart(_lastHitSet))
+})
+
 function renderChart(hitSet = null) {
+  _lastHitSet = hitSet
   if (!chartRef.value) return
   if (!chart) {
-    chart = echarts.init(chartRef.value)
+    chart = echarts.init(chartRef.value, theme.value === 'dark' ? 'dark' : undefined)
     chart.getZr().on('dragend', () => {
       if (layoutMode.value === 'manual') scheduleSave()
     })
@@ -266,7 +281,7 @@ function renderChart(hitSet = null) {
     // 画布空白处点击清除选中
     chart.getZr().on('click', ev => { if (!ev.target) selected.value = null })
   }
-  chart.setOption(buildOption(hitSet), true)
+  chart.setOption({ backgroundColor: 'transparent', ...buildOption(hitSet) }, true)
   // 手动 kick 一次渲染循环：防御 zrender 动画帧未启动导致的空白
   requestAnimationFrame(() => {
     try { chart?.getZr()?.refresh() } catch { /* 忽略 */ }
@@ -421,21 +436,21 @@ defineExpose({ reload: loadGraph })
 .nt-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 2px; }
 .nt-chip {
   font-size: 11.5px; padding: 2.5px 10px; border-radius: 999px;
-  background: #EEF1FF; color: var(--sfa-primary); font-weight: 600;
+  background: var(--sfa-tint-primary-2); color: var(--sfa-primary); font-weight: 600;
   font-feature-settings: "tnum" 1;
 }
 .nt-chip.dim { background: var(--sfa-bg-deep); color: var(--sfa-text-3); font-weight: 500; }
 .nt-hint { color: var(--sfa-text-4); font-size: 11px; margin-left: auto; }
 
 .nt-hits { padding: 10px 14px; }
-.nt-hits-title { display: flex; align-items: center; gap: 6px; font-weight: 650; font-size: 12.5px; color: #0C8F7F; margin-bottom: 7px; }
+.nt-hits-title { display: flex; align-items: center; gap: 6px; font-weight: 650; font-size: 12.5px; color: var(--sfa-ok-ink); margin-bottom: 7px; }
 .nt-hits-sub { color: var(--sfa-text-2); font-weight: 500; margin-left: 6px; }
 .nt-hits-sub b { color: var(--sfa-text); }
 .nt-port-tag { margin-left: 4px; font-family: var(--sfa-mono); }
 
 .nt-hit { display: inline-flex; align-items: center; gap: 7px; margin: 2px 14px 2px 0; cursor: pointer;
           padding: 3px 9px; border-radius: 8px; transition: background var(--dur-1) var(--ease-out); }
-.nt-hit:hover { background: #F3F6FF; }
+.nt-hit:hover { background: var(--sfa-tint-primary); }
 .nt-hit-primary {
   display: flex; width: fit-content; align-items: center; gap: 9px;
   background: linear-gradient(90deg, #EDFBEF, #F4FCF6); border: 1px solid #CBEED8;
@@ -445,7 +460,7 @@ defineExpose({ reload: loadGraph })
 .nt-hit-star { color: #0E9F6E; font-size: 16px; }
 .nt-hit-name { font-weight: 650; font-size: 13px; }
 .nt-hit-attr { color: var(--sfa-text-3); font-size: 11.5px; }
-.nt-hit-via { font-size: 10.5px; color: #0C8F7F; background: #E6F7F0; border-radius: 999px; padding: 1.5px 8px; }
+.nt-hit-via { font-size: 10.5px; color: var(--sfa-ok-ink); background: var(--sfa-ok-bg); border-radius: 999px; padding: 1.5px 8px; }
 .nt-hits-more { display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; }
 .nt-more-label { color: var(--sfa-text-4); font-size: 11px; }
 .nt-hit.dim { color: var(--sfa-text-3); font-size: 12px; padding: 2px 7px; }
@@ -471,7 +486,7 @@ defineExpose({ reload: loadGraph })
   display: inline-flex; align-items: center; justify-content: center;
   transition: all var(--dur-1) var(--ease-out);
 }
-.nt-pop-close:hover { background: #F0F3FA; color: var(--sfa-text); }
+.nt-pop-close:hover { background: var(--sfa-hover-soft); color: var(--sfa-text); }
 .nt-pop-body { padding: 8px 14px 4px; }
 .nt-pop-row { font-size: 12px; color: var(--sfa-text-2); padding: 3.5px 0; display: flex; gap: 10px; }
 .nt-pop-row .k { color: var(--sfa-text-4); width: 52px; flex-shrink: 0; }

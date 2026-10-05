@@ -230,7 +230,7 @@ async function applyRestore() {
 
 .bk-card {
   border: 1px solid var(--sfa-border); border-radius: var(--sfa-r-md);
-  padding: 10px 13px; background: #FBFCFE;
+  padding: 10px 13px; background: var(--sfa-panel-soft);
   transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2), border-color var(--dur-2);
 }
 .bk-card:hover { transform: translateY(-1px); box-shadow: var(--sfa-shadow-2); border-color: #D6DDF0; }

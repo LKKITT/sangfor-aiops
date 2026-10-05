@@ -224,7 +224,7 @@ function doSecondConfirm() {
 /* ===== 确认卡片内部 ===== */
 .cf-head { display: flex; align-items: center; gap: 7px; font-weight: 650; margin-bottom: 8px; font-size: 13.5px; }
 .cf-ico { color: #D08700; font-size: 16px; }
-.cf-warning { color: #B88230; margin-bottom: 8px; font-size: 12.5px; }
+.cf-warning { color: var(--sfa-warn-ink); margin-bottom: 8px; font-size: 12.5px; }
 .cf-highrisk {
   margin-bottom: 10px; padding: 7px 11px; border-radius: 8px;
   background: #FDEEEF; border: 1px solid #FBD8D9; font-size: 12px; color: #D33A40;
@@ -239,15 +239,15 @@ function doSecondConfirm() {
 .cf-conflict-text { margin-left: 4px; }
 .cf-conflict-sug { color: var(--sfa-text-3); margin-top: 3px; padding-left: 2px; }
 .cf-noconflict { font-size: 12px; color: #0E9F6E; margin-bottom: 8px; }
-.cf-form { background: var(--sfa-surface); border-radius: 9px; padding: 12px; border: 1px solid #F3DFB2; margin-bottom: 8px; }
-.cf-diff { font-size: 12px; background: var(--sfa-surface); border-radius: 9px; padding: 9px 11px; border: 1px solid #F3DFB2; }
+.cf-form { background: var(--sfa-surface); border-radius: 9px; padding: 12px; border: 1px solid var(--sfa-warn-border); margin-bottom: 8px; }
+.cf-diff { font-size: 12px; background: var(--sfa-surface); border-radius: 9px; padding: 9px 11px; border: 1px solid var(--sfa-warn-border); }
 .cf-batch { margin-bottom: 10px; }
 .cf-batch-item {
   font-size: 12px; background: var(--sfa-surface); border: 1px solid var(--sfa-border-soft);
   border-radius: 8px; padding: 6px 9px; margin-bottom: 5px;
 }
 .cf-batch-title { margin-left: 6px; }
-.cf-batch-warn { color: #B88230; margin-top: 3px; }
+.cf-batch-warn { color: var(--sfa-warn-ink); margin-top: 3px; }
 .cf-plan { font-size: 12.5px; }
 .cf-plan-tag { margin: 2px 3px; }
 .cf-plan-detail { margin-top: 6px; }
