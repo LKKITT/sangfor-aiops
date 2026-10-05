@@ -2,7 +2,6 @@
 import json
 import pathlib
 
-import pytest
 
 from app import db
 from app.agent import events
