@@ -82,8 +82,8 @@
     <div v-else-if="confirm.status === 'executed'" class="cf-status ok">
       <el-icon><CircleCheckFilled /></el-icon> 已执行
       <el-button v-if="confirm.safety_backup_id" size="small" text type="primary"
-                 @click="router.push('/backup')">
-        查看回退点（变更前备份 {{ confirm.safety_backup_id }}）
+                 @click="router.push({ path: '/backup', query: { highlight: confirm.safety_backup_id } })">
+        查看回退点（变更前备份 {{ confirm.safety_backup_id.slice(0, 12) }}…）
       </el-button>
     </div>
     <div v-else-if="confirm.status === 'rejected'" class="cf-status dim">已拒绝</div>

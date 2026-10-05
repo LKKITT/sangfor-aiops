@@ -19,7 +19,7 @@
         <el-timeline>
           <el-timeline-item v-for="b in backups" :key="b.id" :timestamp="b.created_at"
                              :type="b.kind === 'pre_change' ? 'warning' : b.kind === 'scheduled' ? 'info' : 'primary'">
-            <div class="bk-card">
+            <div class="bk-card" :class="{ 'bk-highlight': b.id === highlightId }">
               <div style="font-weight: 600">{{ b.label }}</div>
               <div class="bk-meta">
                 <el-tag size="small">{{ b.sw_version }}</el-tag>
@@ -29,7 +29,9 @@
               <div class="bk-actions">
                 <el-button size="small" text type="primary" @click="generateReport(b)">生成报告</el-button>
                 <el-button size="small" text type="success" @click="exportSnapshot(b)">导出快照 JSON</el-button>
-                <el-button size="small" text type="warning" @click="previewRestore(b)">恢复此备份</el-button>
+                <el-button size="small" text type="warning" @click="previewRestore(b)">
+                  {{ b.id === highlightId ? '从此回退点恢复' : '恢复此备份' }}
+                </el-button>
                 <el-button size="small" text type="danger" @click="removeBackup(b)">删除</el-button>
               </div>
             </div>
@@ -106,8 +108,9 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute } from 'vue-router'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
 import { Backups } from '../api.js'
 
@@ -120,6 +123,10 @@ const restoreDialog = ref(false)
 const restorePlan = ref(null)
 const restoreTarget = ref(null)
 const restoring = ref(false)
+
+const route = useRoute()
+// 回退点深链高亮：确认卡片"查看回退点"带 ?highlight=bk_x 跳转，直达对应备份行
+const highlightId = ref('')
 
 const netdevMode = computed(() => isNetDev(currentDevice()))
 const globalMode = computed(() => isGlobal(currentDevice()))
@@ -142,7 +149,19 @@ async function load() {
 }
 
 watch(() => store.currentDeviceId, () => { diff.value = null; diffA.value = ''; diffB.value = ''; load() })
-onMounted(load)
+onMounted(async () => {
+  await load()
+  highlightId.value = String(route.query.highlight || '')
+  if (highlightId.value) {
+    const hit = backups.value.find(b => b.id === highlightId.value)
+    if (!hit) {
+      ElMessage.warning('该回退点属于其他设备：请先在侧栏切换到对应设备，再打开此链接')
+    } else {
+      await nextTick()
+      document.querySelector('.bk-highlight')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }
+})
 
 async function createBackup() {
   const dev = currentDevice()
@@ -224,4 +243,16 @@ async function applyRestore() {
 .diff-sec { margin-bottom: 14px; }
 .diff-sec-title { font-weight: 650; margin-bottom: 6px; font-size: 12.5px; color: var(--sfa-text-2); }
 .diff-line { padding: 2.5px 0; font-size: 12px; }
+
+/* 回退点深链高亮：确认卡片跳转直达的备份行 */
+.bk-highlight {
+  outline: 2px solid var(--sfa-warning, #F6C344);
+  outline-offset: 2px;
+  border-radius: 10px;
+  animation: bk-glow 1.2s ease-in-out 3;
+}
+@keyframes bk-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(246, 195, 68, 0); }
+  50% { box-shadow: 0 0 14px 2px rgba(246, 195, 68, .45); }
+}
 </style>

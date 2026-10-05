@@ -187,7 +187,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, nextTick, watch, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { store, currentDevice, loadDevices, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from '../store.js'
@@ -330,6 +330,21 @@ watch(() => store.currentDeviceId, (newId, oldId) => {
     cachePut(oldId)
     loadMessages(newId)
   }
+})
+
+// 切视图 = 终止：路由切换会重建组件，卸载时中止进行中的流（通知后端取消 + 本地断开），
+// 避免 token 空耗与状态竞态；半截内容经 cachePut 留档，切回可见（确认流挂起态不受影响——
+// confirm_required 时生成器已 return，此处 abortController 为 null）
+onBeforeUnmount(() => {
+  if (!abortController) return
+  if (currentConvId) {
+    fetch(`/api/chat/${currentConvId}/cancel`, { method: 'POST' }).catch(() => { /* ignore */ })
+  }
+  const last = messages.value[messages.value.length - 1]
+  if (last && last.role === 'assistant') last.text += '\n\n*对话已终止*'
+  abortController.abort()
+  abortController = null
+  cachePut(store.currentDeviceId)
 })
 
 function onDeviceChange() {
