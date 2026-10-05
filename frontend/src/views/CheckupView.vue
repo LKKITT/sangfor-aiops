@@ -1,5 +1,6 @@
 <template>
   <div class="checkup-page">
+    <ContextBar />
     <div class="page-card hero-card">
       <div class="page-head">
         <div>
@@ -75,6 +76,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import ContextBar from '../components/ContextBar.vue'
 import { Devices } from '../api.js'
 
 const report = ref(null)

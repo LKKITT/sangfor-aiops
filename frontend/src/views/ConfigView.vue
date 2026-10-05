@@ -1,5 +1,6 @@
 <template>
   <div class="config-page">
+    <ContextBar />
     <div class="page-head">
       <div>
         <h2 class="ph-title">配置可视化</h2>
@@ -495,6 +496,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import ContextBar from '../components/ContextBar.vue'
 
 const tab = ref('status')
 const status = ref(null)

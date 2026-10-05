@@ -75,7 +75,7 @@
     </div>
 
     <el-empty v-if="loaded && !stats.total" description="知识库还是空的"
-              style="background: #fff; border-radius: 8px; padding: 40px 0">
+              style="background: var(--sfa-surface); border-radius: 8px; padding: 40px 0">
       <template #image><el-icon style="font-size: 64px; color: #c0c4cc"><Collection /></el-icon></template>
       <p class="kb-sub" style="margin-bottom: 12px">
         到「AI 对话」勾选「查询知识库」向 Agent 提问深信服技术问题，<br/>
@@ -146,6 +146,8 @@
                     @keyup.enter="loadEntries" @clear="loadEntries" />
           <el-button size="small" text type="primary" @click="loadEntries">搜索</el-button>
         </div>
+        <AsyncSection :load="fetchEntriesForSection" :empty-when="a => !a?.length" empty-text="没有匹配的词条" @loaded="a => (entries = a)">
+        <template #default>
         <div class="entry-grid">
           <div v-for="e in entries" :key="e.id" class="entry-card" :style="{ '--cat-accent': catAccent(e.category) }" @click="detail = e">
             <div class="entry-top">
@@ -163,6 +165,8 @@
           </div>
           <el-empty v-if="!entries.length" description="没有匹配的词条" style="grid-column: 1 / -1" />
         </div>
+        </template>
+        </AsyncSection>
       </div>
     </template>
 
@@ -216,6 +220,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import * as echarts from 'echarts'
 import { store } from '../store.js'
+import AsyncSection from '../components/AsyncSection.vue'
 import { router } from '../router'
 import { KB } from '../api.js'
 
@@ -367,8 +372,13 @@ async function loadAll() {
 async function loadStats() {
   try { stats.value = await KB.stats() } catch (e) { ElMessage.error(String(e.message || e)) }
 }
+async function fetchEntriesForSection() {
+  const arr = await KB.entries(filterCategory.value, keyword.value, entryOrder.value)
+  entries.value = arr   // 父级仍持有数据（头部计数/筛选联动），容器只负责四态
+  return arr
+}
 async function loadEntries() {
-  try { entries.value = await KB.entries(filterCategory.value, keyword.value, entryOrder.value) } catch (e) { ElMessage.error(String(e.message || e)) }
+  try { await fetchEntriesForSection() } catch (e) { ElMessage.error(String(e.message || e)) }
 }
 async function loadReflections() {
   try { reflections.value = await KB.reflections() } catch { /* 静默 */ }
@@ -502,7 +512,7 @@ onBeforeUnmount(() => {
   --cat-accent: #667085;
   position: relative; overflow: hidden;
   border: 1px solid var(--sfa-border); border-radius: var(--sfa-r-md);
-  padding: 12px 14px 12px 17px; cursor: pointer; background: #fff;
+  padding: 12px 14px 12px 17px; cursor: pointer; background: var(--sfa-surface);
   transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2), border-color var(--dur-2);
 }
 .entry-card::before {

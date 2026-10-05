@@ -694,7 +694,7 @@ function allPlanItems(plan) {
   transition: all var(--dur-1) var(--ease-out);
 }
 .ba-btn .el-icon { font-size: 12px; }
-.ba-btn:hover { color: var(--sfa-primary); border-color: #B9C7FF; background: #fff; }
+.ba-btn:hover { color: var(--sfa-primary); border-color: #B9C7FF; background: var(--sfa-surface); }
 .ba-btn:active { transform: scale(.95); }
 
 /* ===== 输入台 ===== */
@@ -756,7 +756,7 @@ function allPlanItems(plan) {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 12px; font-family: var(--sfa-font); cursor: pointer;
   padding: 4.5px 11px; border-radius: 999px;
-  border: 1px solid var(--sfa-border); background: #fff; color: var(--sfa-text-3);
+  border: 1px solid var(--sfa-border); background: var(--sfa-surface); color: var(--sfa-text-3);
   transition: all var(--dur-1) var(--ease-out);
 }
 .kb-toggle .el-icon, .ghost-act .el-icon { font-size: 12.5px; }

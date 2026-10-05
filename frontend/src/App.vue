@@ -77,6 +77,10 @@
       </nav>
 
       <footer class="side-foot">
+        <button class="theme-toggle" @click="toggleTheme" :title="theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'">
+          <el-icon><component :is="theme === 'dark' ? 'Sunny' : 'Moon'" /></el-icon>
+          <span>{{ theme === 'dark' ? '亮色模式' : '暗色模式' }}</span>
+        </button>
         <div class="health-line" :title="store.health.llm_configured ? '大模型已接入' : '未配置 LLM，使用离线兜底模式'">
           <span class="pulse-dot" :class="store.health.llm_configured ? 'ok' : 'warn'"></span>
           <span class="health-text">{{ store.health.llm_configured ? '智能体在线' : '离线兜底模式' }}</span>
@@ -210,6 +214,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { router } from './router'
+import { useTheme } from './composables/useTheme'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { store, loadDevices, loadHealth, currentDevice, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from './store.js'
 import { Devices } from './api.js'
@@ -239,6 +244,7 @@ const navGroups = [
 
 const mobileOpen = ref(false)
 const route = useRoute()
+const { theme, toggle: toggleTheme } = useTheme()
 const showAdd = ref(false)
 const form = ref({ name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false })
 const device = computed(currentDevice)
@@ -577,7 +583,7 @@ async function confirmDeleteDevice() {
   .mt-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sfa-accent); margin-left: auto; }
   .hamburger {
     width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--sfa-border);
-    background: #fff; cursor: pointer; padding: 0;
+    background: var(--sfa-surface); cursor: pointer; padding: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
   }
   .hamburger span { width: 15px; height: 1.8px; border-radius: 2px; background: var(--sfa-text-2); }
@@ -588,4 +594,12 @@ async function confirmDeleteDevice() {
 <style>
 /* 设备下拉（深色面板配套，非 scoped） */
 .sfa-device-popper .el-select-dropdown__item { font-size: 12.5px; }
+.theme-toggle {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 7px 10px; margin-bottom: 8px; border-radius: 9px; cursor: pointer;
+  background: transparent; border: 1px solid var(--side-line);
+  color: var(--side-text); font-size: 12.5px;
+  transition: color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.theme-toggle:hover { color: #fff; border-color: var(--side-text-dim); }
 </style>

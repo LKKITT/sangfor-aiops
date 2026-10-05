@@ -1,5 +1,6 @@
 <template>
   <div class="backup-page">
+    <ContextBar />
     <div class="page-head">
       <div>
         <h2 class="ph-title">备份与恢复</h2>
@@ -112,6 +113,7 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import ContextBar from '../components/ContextBar.vue'
 import { Backups } from '../api.js'
 
 const backups = ref([])

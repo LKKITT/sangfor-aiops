@@ -1,5 +1,6 @@
 <template>
   <div class="updates-page">
+    <ContextBar />
     <div class="page-head">
       <div>
         <h2 class="ph-title">软件更新建议</h2>
@@ -145,6 +146,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import ContextBar from '../components/ContextBar.vue'
 import { Updates } from '../api.js'
 
 const advice = ref(null)

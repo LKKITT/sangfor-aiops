@@ -233,17 +233,17 @@ function doSecondConfirm() {
 .cf-conflicts { margin-bottom: 10px; }
 .cf-sec-label { font-size: 12px; color: var(--sfa-text-3); margin-bottom: 6px; }
 .cf-conflict-item {
-  font-size: 12px; background: #fff; border-left: 3px solid var(--sfa-warning);
+  font-size: 12px; background: var(--sfa-surface); border-left: 3px solid var(--sfa-warning);
   padding: 5px 9px; margin-bottom: 5px; border-radius: 0 7px 7px 0;
 }
 .cf-conflict-text { margin-left: 4px; }
 .cf-conflict-sug { color: var(--sfa-text-3); margin-top: 3px; padding-left: 2px; }
 .cf-noconflict { font-size: 12px; color: #0E9F6E; margin-bottom: 8px; }
-.cf-form { background: #fff; border-radius: 9px; padding: 12px; border: 1px solid #F3DFB2; margin-bottom: 8px; }
-.cf-diff { font-size: 12px; background: #fff; border-radius: 9px; padding: 9px 11px; border: 1px solid #F3DFB2; }
+.cf-form { background: var(--sfa-surface); border-radius: 9px; padding: 12px; border: 1px solid #F3DFB2; margin-bottom: 8px; }
+.cf-diff { font-size: 12px; background: var(--sfa-surface); border-radius: 9px; padding: 9px 11px; border: 1px solid #F3DFB2; }
 .cf-batch { margin-bottom: 10px; }
 .cf-batch-item {
-  font-size: 12px; background: #fff; border: 1px solid var(--sfa-border-soft);
+  font-size: 12px; background: var(--sfa-surface); border: 1px solid var(--sfa-border-soft);
   border-radius: 8px; padding: 6px 9px; margin-bottom: 5px;
 }
 .cf-batch-title { margin-left: 6px; }

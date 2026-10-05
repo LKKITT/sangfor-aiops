@@ -444,3 +444,82 @@ body {
   border-radius: 8px; display: flex; align-items: center; justify-content: center;
   background: #EEF1FF; color: var(--sfa-primary);
 }
+
+
+/* ============================================================
+   暗色主题「深夜控制台」：html[data-theme='dark'] 覆盖中性色阶与
+   Element Plus 亮色 ramp 字面量（html.dark 同步开启 EP 官方暗色变量）
+   ============================================================ */
+html[data-theme='dark'] {
+  --sfa-text: #E4E9F4;
+  --sfa-text-2: #B4BDD3;
+  --sfa-text-3: #8B96B0;
+  --sfa-text-4: #66718C;
+  --sfa-border: #26304A;
+  --sfa-border-soft: #1E2740;
+  --sfa-surface: #131A2E;
+  --sfa-bg: #0D1425;
+  --sfa-bg-deep: #0A0F1E;
+  --sfa-shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+  --sfa-shadow-2: 0 2px 6px rgba(0, 0, 0, .45), 0 12px 32px -12px rgba(0, 0, 0, .6);
+  --sfa-shadow-3: 0 24px 64px -16px rgba(0, 0, 0, .7);
+
+  --el-text-color-primary: var(--sfa-text);
+  --el-text-color-regular: #C6CEE2;
+  --el-text-color-secondary: var(--sfa-text-2);
+  --el-text-color-placeholder: #55607A;
+  --el-text-color-disabled: #47506B;
+
+  --el-border-color: var(--sfa-border);
+  --el-border-color-light: var(--sfa-border-soft);
+  --el-border-color-lighter: #1A2338;
+  --el-border-color-hover: #33406A;
+
+  --el-fill-color: #1A2338;
+  --el-fill-color-light: #171F33;
+  --el-fill-color-lighter: #141B2D;
+  --el-fill-color-blank: var(--sfa-surface);
+  --el-bg-color: var(--sfa-surface);
+  --el-bg-color-page: var(--sfa-bg);
+  --el-bg-color-overlay: #182036;
+  --el-disabled-bg-color: #1A2338;
+  --el-disabled-text-color: #47506B;
+
+  --el-color-primary-light-3: #24357C;
+  --el-color-primary-light-5: #1E2C66;
+  --el-color-primary-light-7: #192452;
+  --el-color-primary-light-8: #161F47;
+  --el-color-primary-light-9: #131A3A;
+  --el-color-primary-dark-2: #6A87FF;
+
+  --el-color-success-light-3: #0C7A6C;
+  --el-color-success-light-5: #0A6055;
+  --el-color-success-light-7: #084B43;
+  --el-color-success-light-8: #073E38;
+  --el-color-success-light-9: #062F2B;
+  --el-color-success-dark-2: #4FCCBB;
+
+  --el-color-warning-light-3: #7A5A10;
+  --el-color-warning-light-5: #61470D;
+  --el-color-warning-light-7: #4C380A;
+  --el-color-warning-light-8: #3D2E08;
+  --el-color-warning-light-9: #2A2006;
+  --el-color-warning-dark-2: #F8C24D;
+
+  --el-color-danger-light-3: #8A2E32;
+  --el-color-danger-light-5: #6D2427;
+  --el-color-danger-light-7: #551C1F;
+  --el-color-danger-light-8: #441619;
+  --el-color-danger-light-9: #2E0F11;
+  --el-color-danger-dark-2: #EC7A7E;
+
+  --el-color-info-light-3: #3A4256;
+  --el-color-info-light-5: #2E3546;
+  --el-color-info-light-7: #242A38;
+  --el-color-info-light-8: #1F2530;
+  --el-color-info-light-9: #171C26;
+  --el-color-info-dark-2: #949DAE;
+
+  --el-box-shadow: var(--sfa-shadow-2);
+  --el-box-shadow-light: 0 4px 20px -4px rgba(0, 0, 0, .5);
+}
