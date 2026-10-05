@@ -4,6 +4,30 @@
 
 ---
 ## 2026-10-05
+### feat: 平台设置扩展 MCP/Skills 管理 + AI 对话接入外部能力（MCP/Agent Skills）
+
+**平台设置重构为三标签**：基本配置（原 BBS/LLM/企微原样迁入）｜MCP 配置｜Skills 配置
+
+**MCP 配置**：服务列表（启停开关/编辑/删除/连接测试并列出工具清单）、自定义新增
+（stdio 本机子进程：command+args+env；http 远端：url+headers）、从 MCP 官方注册表
+（registry.modelcontextprotocol.io）搜索并一键安装（http 远端直装；npm/pypi 包自动映射
+ npx/uvx 启动命令）、粘贴 Claude Desktop/Cursor 格式 mcpServers JSON 批量导入（默认停用）
+
+**Skills 配置**：自动扫描本机已安装（~/.agents/skills、~/.claude/skills、应用导入目录，
+真机发现 20 个技能）、GitHub 仓库文件夹 URL 导入（校验 SKILL.md 规范）、开关/删除
+（删除仅限导入目录，外部目录只开关）
+
+**AI 对话接入**：① 已启用 MCP 服务的原生工具自动注入编排器（名称前缀 mcp_<服务>_，
+schema 透传，调用转发会话；会话 AsyncExitStack 常驻 + 懒连接 + 配置变更热重建，单服务
+失联不拖垮其它）；② 新增 load_skill 工具 + 已启用技能清单注入系统提示——模型按需加载
+ SKILL.md 说明并遵循执行（Agent Skills 运行时入口）
+
+**依赖与验证**：requirements 增加 mcp>=1.2（官方 SDK，stdio/streamable-http 双传输）；
+新增 7 项测试（配置 CRUD/函数名清洗/Claude JSON 导入/注册表安装映射/技能扫描开关/
+删除保护/load_skill），后端 272/272、前端 35/35、构建通过；真机验证 Skills 扫描
+（20 个）与 MCP 表单
+
+---
 ### feat: 网络拓扑四项优化——缓存直读、链路合并、现代图标、手动布局修复
 
 **T1 缓存直读**：topology_payload 默认只读缓存（进页面零 SSH 采集，实测 0.13s 出图，

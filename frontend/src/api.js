@@ -73,7 +73,23 @@ export const apiPatch = (path, body = {}, timeout = 45000) => request('PATCH', p
 export const Health = { get: () => apiGet('/api/health') }
 export const Settings = {
   get: () => apiGet('/api/settings'),
-  save: (d) => apiPost('/api/settings', d)
+  save: (d) => apiPost('/api/settings', d),
+  // ---- MCP 服务管理 ----
+  mcpList: () => apiGet('/api/settings/mcp'),
+  mcpSave: (server) => apiPut('/api/settings/mcp', server),
+  mcpDelete: (id) => apiDelete(`/api/settings/mcp/${id}`),
+  mcpTest: (server) => apiPost('/api/settings/mcp/test', server, 60000),
+  mcpImport: (text, enabled = false) => apiPost('/api/settings/mcp/import', { text, enabled }),
+  mcpRegistry: (search) => apiGet(`/api/settings/mcp/registry?search=${encodeURIComponent(search)}`, 30000),
+  mcpRegistryInstall: (item, enabled = true) =>
+    apiPost('/api/settings/mcp/registry/install', { item, enabled }),
+  // ---- Agent Skills 管理 ----
+  skillsList: () => apiGet('/api/settings/agent-skills'),
+  skillsToggle: (folder, enabled) =>
+    apiPost('/api/settings/agent-skills/toggle', { folder, enabled }),
+  skillsImport: (url, force = false) =>
+    apiPost('/api/settings/agent-skills/import', { url, force }, 60000),
+  skillsDelete: (folder) => apiDelete(`/api/settings/agent-skills/${folder}`)
 }
 export const Devices = {
   list: () => apiGet('/api/devices'),

@@ -1,10 +1,12 @@
-"""系统设置 API：诸葛知识库社区账号（BBS）、LLM 接入、企微机器人渠道等运行配置的可视化管理（保存即生效）。"""
-from fastapi import APIRouter
+"""系统设置 API：基本配置（BBS/LLM/企微）+ MCP 服务管理 + Agent Skills 管理（保存即生效）。"""
+import json
+
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import db
 from app.config import settings
-from app.services import app_settings, wecom_bot_service
+from app.services import agent_skills_service, app_settings, mcp_service, wecom_bot_service
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -93,3 +95,130 @@ async def save_settings(payload: SettingsIn) -> dict:
     if wecom_updated:
         await wecom_bot_service.apply_config()   # 长连接按新配置热重启（关闭则断开）
     return get_settings()
+
+
+# ---------------- MCP 服务管理 ----------------
+
+class McpServerIn(BaseModel):
+    id: str | None = None
+    name: str
+    transport: str = "stdio"          # stdio / http
+    command: str = ""
+    args: list[str] = []
+    env: dict = {}
+    url: str = ""
+    headers: dict = {}
+    enabled: bool = False
+
+
+class McpImportIn(BaseModel):
+    text: str
+    enabled: bool = False
+
+
+class McpRegistryInstallIn(BaseModel):
+    item: dict
+    enabled: bool = True
+
+
+@router.get("/mcp")
+def mcp_list() -> dict:
+    from app.agent.ext_tools import get_external_tools  # noqa: F401 —— 确认模块可导入
+    return {"servers": mcp_service.get_servers(), "sdk_hint": mcp_service.MCP_SDK_HINT}
+
+
+@router.put("/mcp")
+async def mcp_save(payload: McpServerIn) -> dict:
+    try:
+        rec = mcp_service.upsert_server(payload.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    mcp_service.invalidate_tools_cache()   # 配置变更即生效（会话热重建）
+    return {"ok": True, "server": rec}
+
+
+@router.delete("/mcp/{server_id}")
+def mcp_delete(server_id: str) -> dict:
+    if not mcp_service.delete_server(server_id):
+        raise HTTPException(404, "MCP 服务不存在")
+    mcp_service.invalidate_tools_cache()
+    return {"ok": True}
+
+
+@router.post("/mcp/test")
+async def mcp_test(payload: McpServerIn) -> dict:
+    """连接测试：建立会话并列出工具（不落库）。"""
+    try:
+        rec = mcp_service._normalize(payload.model_dump())
+        session = await mcp_service._get_session(rec)
+        listing = await session.list_tools()
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:   # noqa: BLE001
+        raise HTTPException(502, f"连接失败：{e}") from e
+    return {"ok": True, "tools": [{"name": t.name,
+                                   "description": (t.description or "")[:120]}
+                                  for t in listing.tools]}
+
+
+@router.post("/mcp/import")
+def mcp_import(payload: McpImportIn) -> dict:
+    try:
+        return mcp_service.import_claude_json(payload.text, enabled=payload.enabled)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"JSON 解析失败：{e}") from e
+
+
+@router.get("/mcp/registry")
+async def mcp_registry(search: str = "", limit: int = 12) -> dict:
+    try:
+        return await mcp_service.registry_search(search, limit)
+    except Exception as e:   # noqa: BLE001 —— 上游限流/网络问题友好透出
+        raise HTTPException(502, f"注册表搜索失败：{e}") from e
+
+
+@router.post("/mcp/registry/install")
+def mcp_registry_install(payload: McpRegistryInstallIn) -> dict:
+    try:
+        rec = mcp_service.install_from_registry(payload.item, enabled=payload.enabled)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "server": rec}
+
+
+# ---------------- Agent Skills 管理 ----------------
+
+@router.get("/agent-skills")
+def agent_skills_list() -> dict:
+    return {"skills": agent_skills_service.list_skills()}
+
+
+@router.post("/agent-skills/toggle")
+def agent_skills_toggle(payload: dict) -> dict:
+    folder = str(payload.get("folder") or "")
+    if not folder:
+        raise HTTPException(400, "folder 必填")
+    agent_skills_service.toggle_skill(folder, bool(payload.get("enabled")))
+    return {"ok": True}
+
+
+@router.post("/agent-skills/import")
+async def agent_skills_import(payload: dict) -> dict:
+    try:
+        return await agent_skills_service.import_from_github(
+            str(payload.get("url") or ""), force=bool(payload.get("force")))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:   # noqa: BLE001
+        raise HTTPException(502, f"导入失败：{e}") from e
+
+
+@router.delete("/agent-skills/{folder}")
+def agent_skills_delete(folder: str) -> dict:
+    try:
+        agent_skills_service.delete_skill(folder)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True}

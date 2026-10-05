@@ -28,8 +28,9 @@ async def llm_select_skill(orch, user_message: str, dtype: str):
         return None
 
 
-def tool_scope(skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
-    """工具注入范围：只读全量 + 技能解锁的写工具；勾选知识库时附加官方知识库工具。"""
+async def tool_scope(skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
+    """工具注入范围：只读全量 + 技能解锁的写工具；勾选知识库时附加官方知识库工具；
+    末尾追加外部能力工具（已启用 MCP 服务的原生工具 + Agent Skills 加载器）。"""
     scope = skills.resolve_skill_tools(skill, dtype)
     tools_by_name = {t.name: t for t in scope}
     tool_schemas = [t.schema() for t in scope]
@@ -38,4 +39,12 @@ def tool_scope(skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict
         if kb_tool is not None:
             tool_schemas.append(kb_tool.schema())
             tools_by_name[kb_tool.name] = kb_tool
+    try:
+        from app.agent.ext_tools import get_external_tools
+        for t in await get_external_tools():
+            if t.name not in tools_by_name:
+                tool_schemas.append(t.schema())
+                tools_by_name[t.name] = t
+    except Exception:   # noqa: BLE001 —— MCP SDK 未安装/服务全失联时仅缺失这部分工具
+        pass
     return tool_schemas, tools_by_name

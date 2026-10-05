@@ -361,8 +361,8 @@ class AgentOrchestrator:
     async def _llm_select_skill(self, user_message: str, dtype: str):
         return await routing.llm_select_skill(self, user_message, dtype)
 
-    def _tool_scope(self, skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
-        return routing.tool_scope(skill, dtype, use_knowledge)
+    async def _tool_scope(self, skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
+        return await routing.tool_scope(skill, dtype, use_knowledge)
 
     # ================= 跨设备批量（devices 参数 fan-out） =================
 
@@ -493,8 +493,16 @@ class AgentOrchestrator:
             # 未勾选但命中知识问答意图：本地个人知识库优先、官方知识库兜底（不自动沉淀）
             messages.append({"role": "system", "content": skills.kb_auto_guide()})
             yield {"type": "skill_selected", "skill": "kb-auto", "name": "知识问答（本地优先）"}
-        tool_schemas, tools_by_name = self._tool_scope(skill, dtype,
-                                                       use_knowledge=use_knowledge or kb_auto)
+        tool_schemas, tools_by_name = await self._tool_scope(skill, dtype,
+                                                             use_knowledge=use_knowledge or kb_auto)
+        # 已启用 Agent Skills 清单注入（LLM 据此决定何时 load_skill）
+        try:
+            from app.agent.ext_tools import skills_catalog_message
+            catalog = skills_catalog_message()
+            if catalog:
+                messages.append({"role": "system", "content": catalog})
+        except Exception:   # noqa: BLE001
+            pass
         # internal 参数模板整轮不变：构建一次（原先在 per-call 循环内重复构建全量表 + dict 推导）
         internal_template = {t.name: getattr(t, "internal", {}) for t in get_tools(dtype)
                              if getattr(t, "internal", None)}
