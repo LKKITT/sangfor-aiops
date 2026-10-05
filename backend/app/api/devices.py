@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app import db
 from app.services.device_cache import CONFIG_TTL, STATUS_TTL, device_cache
@@ -36,6 +36,26 @@ class DevicePatch(BaseModel):
     password: str | None = None
 
 
+class DeviceOut(BaseModel):
+    """设备响应契约：无论入参如何，password 永远以掩码输出（脱敏单点化）。"""
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    name: str
+    type: str
+    mode: str = "real"
+    base_url: str = ""
+    username: str = ""
+    password: str = "***"
+    readonly: int = 0
+    settings_json: str = "{}"
+    created_at: str = ""
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def _mask(cls, v):
+        return "***"
+
+
 def _require(device_id: str) -> dict:
     device = db.get_device(device_id)
     if not device:
@@ -43,9 +63,9 @@ def _require(device_id: str) -> dict:
     return device
 
 
-@router.get("")
+@router.get("", response_model=list[DeviceOut])
 def list_devices() -> list[dict]:
-    return [{**d, "password": "***"} for d in db.list_devices()]
+    return db.list_devices()
 
 
 @router.post("")
@@ -64,7 +84,7 @@ async def add_device(payload: DeviceIn) -> dict:
     return {**device, "password": "***"}
 
 
-@router.patch("/{device_id}")
+@router.patch("/{device_id}", response_model=DeviceOut)
 def patch_device(device_id: str, payload: DevicePatch) -> dict:
     device = _require(device_id)
     fields = payload.model_dump(exclude_none=True)
@@ -75,7 +95,7 @@ def patch_device(device_id: str, payload: DevicePatch) -> dict:
     device.update(fields)
     saved = db.upsert_device(device)
     device_cache.invalidate(device_id)   # 设备连接信息/权限变更，缓存全失效
-    return {**saved, "password": "***"}
+    return {**saved, "password": "***"}   # 响应经 DeviceOut 二次脱敏
 
 
 @router.delete("/{device_id}")

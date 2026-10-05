@@ -105,3 +105,18 @@ def test_sse_schema_doc_matches_models():
         fresh["$defs"][m.__name__].pop("title", None)
     assert on_disk["oneOf"] == fresh["oneOf"]
     assert on_disk["$defs"] == fresh["$defs"]
+
+
+# ---------- N-7：设备响应契约（脱敏单点化） ----------
+
+def test_devices_response_contract(device_id):
+    """/api/devices 响应经 DeviceOut 固化：password 恒为掩码、无多余字段泄漏。"""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    body = client.get("/api/devices").json()
+    dev = next(d for d in body if d["id"] == device_id)
+    assert dev["password"] == "***"
+    assert set(dev) <= {"id", "name", "type", "mode", "base_url", "username",
+                        "password", "readonly", "settings_json", "created_at"}

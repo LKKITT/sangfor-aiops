@@ -4,6 +4,36 @@
 
 ---
 ## 2026-10-05
+### feat: 第 2.5 批（N-1~N-7）——交互闭环收尾、上下文条、四态组件、暗色主题、响应契约
+
+**N-1 HCI-1 收尾**：ChatView onBeforeUnmount 中止进行中的流（先 POST 取消端点再本地
+abort，半截内容留档标记'对话已终止'），切视图不再 token 空耗；确认流挂起态不受影响
+
+**N-2 回退点深链高亮**：确认卡片'查看回退点'带 ?highlight=bk_x 跳转，BackupView
+加载后定位对应行（发光高亮 + 滚动居中），跨设备时提示先切换，行按钮变为'从此回退点恢复'
+
+**N-3 CI 矩阵补 3.14**：3.12/3.13/3.14 三版本（3.14 本地已实测），README 版本口径同步
+
+**N-4 ContextBar 设备上下文条**：components/ContextBar.vue（设备名/类型徽章/只读标记/
+内联切换），接入配置可视化/配置体检/备份与恢复/软件更新建议四个工作台页头，
+与侧栏/输入台三方同步
+
+**N-5 AsyncSection 四态组件**：loading 骨架/error+重试/empty/内容状态机；
+KnowledgeView 词条列表完成示范迁移（数据仍由父级持有）；@vue/test-utils 引入，
+组件级测试从 0 到 1（状态机 + 重试恢复 5 项）
+
+**N-6 暗色主题**：style.css 增加 [data-theme='dark'] 覆盖块（中性色阶 + EP 亮色
+ramp 字面量的暗色重定义），main.js 引入 EP 官方 dark 变量，useTheme composable
+（localStorage 持久化 + 启动即应用防闪白），侧栏亮/暗切换按钮，9 处硬编码白底
+替换为 --sfa-surface token
+
+**N-7 设备响应契约**：DeviceOut response_model（password 掩码单点化 + extra=ignore
+防字段泄漏），list/patch 端点接入，契约测试断言掩码与字段白名单
+
+**验证**：后端 ruff 全过 + pytest 252/252；前端 Vitest 35/35 + 构建通过；浏览器冒烟
+（暗色切换/上下文条/回退点高亮/历史会话续接）
+
+---
 ### feat: 架构与交互 P2 批次（BE-3/ARC-5/UX-2/ARC-4/FE-4/UX-5）
 
 **BE-3 设备域统一**：services/device_scope.py 为 global/nd_/深信服三态与常量的
