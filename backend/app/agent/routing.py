@@ -47,6 +47,7 @@ async def tool_scope(skill, dtype: str, use_knowledge: bool,
             if t.name not in tools_by_name:
                 tool_schemas.append(t.schema())
                 tools_by_name[t.name] = t
-    except Exception:   # noqa: BLE001 —— MCP SDK 未安装/服务全失联时仅缺失这部分工具
-        pass
+    except Exception as e:   # noqa: BLE001 —— MCP SDK 未安装/服务全失联时仅缺失这部分工具
+        import logging
+        logging.getLogger("sangfor-agent").warning("外部能力工具注入失败: %s", e)
     return tool_schemas, tools_by_name

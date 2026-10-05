@@ -27,12 +27,18 @@ def skills_catalog_message(folders=None) -> str | None:
         return None
     lines = [f"- {s['name']}（调用 load_skill 时 skill 传 \"{s['folder']}\"）：{s['description']}"
              for s in catalog]
-    return ("## 已启用 Agent Skills（可扩展能力包）\n"
-            "当用户请求与以下技能描述相关时，先调用 load_skill 工具加载该技能的完整说明，"
-            "再严格按说明执行（技能可能包含脚本、模板或特定流程约束）：\n" + "\n".join(lines))
+    return ("## 已启用 Agent Skills（可扩展能力包）——使用规则（必须遵守）\n"
+            "1. 用户消息与任一技能的描述相关时（包括寻找/询问能做某事的技能，"
+            "如\"有什么好的 skills\\”、\"有没有能做 X 的技能\"），必须先调用 load_skill "
+            "加载该技能的完整说明，按说明执行后再回答——不要因为自身已有类似能力就跳过；\n"
+            "2. 用户直接询问\"有哪些技能/skills\\”时：调用 load_skill 逐个查看说明，"
+            "再结合说明向用户介绍；\n"
+            "3. 技能说明若包含需要执行的命令/脚本：如实给出命令与所需运行环境，"
+            "没有对应执行工具时明确告知（不要编造执行结果）。\n"
+            "技能清单：\n" + "\n".join(lines))
 
 
-async def get_external_tools(mcps=None, skills=None) -> list[Tool]:
+async def get_external_tools(mcps=None, skill_folders=None) -> list[Tool]:
     """外部工具全集：load_skill + 指定 MCP 服务的桥接工具（对话级选用）。"""
     tools = [Tool(
         name="load_skill",

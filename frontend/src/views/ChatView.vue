@@ -124,13 +124,18 @@
                       <el-button size="small" text type="primary" @click="resetExt">恢复全部</el-button>
                     </div>
                     <el-checkbox-group v-model="selMcps" class="ext-opts">
-                      <el-checkbox v-for="m in extMcps" :key="m.id" :value="m.id">{{ m.name }}</el-checkbox>
+                      <el-checkbox v-for="m in extMcps" :key="m.id" :value="m.id">
+                        <span class="ext-name">{{ m.name }}</span>
+                      </el-checkbox>
                     </el-checkbox-group>
                   </div>
                   <div class="ext-sec" v-if="extSkills.length">
                     <div class="ext-sec-title">Agent Skills</div>
                     <el-checkbox-group v-model="selSkills" class="ext-opts">
-                      <el-checkbox v-for="s in extSkills" :key="s.folder" :value="s.folder">{{ s.name }}</el-checkbox>
+                      <el-checkbox v-for="s in extSkills" :key="s.folder" :value="s.folder">
+                        <span class="ext-name">{{ s.name }}</span>
+                        <span class="ext-desc">{{ s.description.slice(0, 64) }}{{ s.description.length > 64 ? '…' : '' }}</span>
+                      </el-checkbox>
                     </el-checkbox-group>
                   </div>
                   <div v-if="!extMcps.length && !extSkills.length" class="ext-none">
@@ -856,6 +861,11 @@ function allPlanItems(plan) {
 .ext-opts { display: flex; flex-direction: column; gap: 0; }
 .ext-opts .el-checkbox { height: 26px; margin-right: 0; }
 .ext-none { font-size: 12px; color: var(--sfa-text-4); text-align: center; padding: 8px 0; }
+.ext-name { font-size: 12.5px; }
+.ext-desc {
+  display: block; font-size: 11px; color: var(--sfa-text-4);
+  line-height: 1.5; margin-top: 1px; white-space: normal;
+}
 .queued-hint {
   display: flex; align-items: center; gap: 4px; margin-bottom: 6px;
   font-size: 12px; color: var(--sfa-warning, var(--sfa-warn-ink)); background: var(--sfa-warn-bg);

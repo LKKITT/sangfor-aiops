@@ -4,6 +4,24 @@
 
 ---
 ## 2026-10-05
+### fix: 勾选的技能在对话中未生效修复（load_skill 从未注入的根因）
+
+**根因**：A-2 重构把 tool_scope 移入 routing.py 后，外部工具注入被 `except: pass`
+ 静默吞掉一个 TypeError——ext_tools.get_external_tools 的参数名仍是 skills，
+ 而 routing 以 skill_folders 关键字调用 → TypeError → load_skill 与 MCP 工具从未注入，
+ 用户勾选技能后模型因无此工具而不使用（回答中甚至如实说“没有 load_skill 工具”）。
+ 此前冒烟“已加载”为模型凭系统提示清单臆述，未真调用——测试盲区。
+
+**修复**：① ext_tools 参数改名 skill_folders 并对齐 routing 调用；② 注入失败由静默
+ 改为 warning 日志（防再次无声失败）；③ 技能清单系统提示从软引导升级为强规则——
+ 描述相关必须先 load_skill、询问有哪些技能时逐个加载介绍、脚本类技能如实告知执行环境
+
+**前端**：扩展能力选择器中技能/MCP 增加描述展示（此前只有名称，用户无法判断匹配）
+
+**验证**：以用户原问题实测——模型先调用 load_skill 加载 find-skills 说明再回答
+ （修复前同问题 0 次工具调用）；后端 272/272、前端 35/35、构建通过
+
+---
 ### fix: 扩展能力选择器无法勾选修复
 
 根因：el-checkbox-group 的 v-model 初始化为 null（非数组）——Element Plus 的 group
