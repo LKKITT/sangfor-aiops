@@ -131,6 +131,8 @@ copy .env.example .env   # 填入 LLM_API_KEY（智谱/DeepSeek 等 OpenAI 兼�
 ../.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8600
 
 # 前端
+# （后端须单进程运行：uvicorn 默认 --workers 1，请勿调大——取消信号/设备客户端缓存/
+#  保活等状态均为进程内单例，多 worker 会导致取消失效与重复登录）
 cd frontend
 npm install
 npm run dev
