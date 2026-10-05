@@ -134,7 +134,7 @@
                     <el-checkbox-group v-model="selSkills" class="ext-opts">
                       <el-checkbox v-for="s in extSkills" :key="s.folder" :value="s.folder">
                         <span class="ext-name">{{ s.name }}</span>
-                        <span class="ext-desc">{{ s.description.slice(0, 64) }}{{ s.description.length > 64 ? '…' : '' }}</span>
+                        <span class="ext-desc">{{ (s.description || '').slice(0, 64) }}{{ (s.description || '').length > 64 ? '…' : '' }}</span>
                       </el-checkbox>
                     </el-checkbox-group>
                   </div>
@@ -262,7 +262,8 @@ async function loadExtCapabilities() {
   try {
     const [m, s] = await Promise.all([Settings.mcpList(), Settings.skillsList()])
     extMcps.value = (m.servers || []).filter(x => x.enabled).map(x => ({ id: x.id, name: x.name }))
-    extSkills.value = (s.skills || []).filter(x => x.enabled).map(x => ({ folder: x.folder, name: x.name }))
+    extSkills.value = (s.skills || []).filter(x => x.enabled)
+      .map(x => ({ folder: x.folder, name: x.name, description: x.description || '' }))
     selMcps.value = extMcps.value.map(x => x.id)       // 默认全选
     selSkills.value = extSkills.value.map(x => x.folder)
   } catch { /* 设置接口异常不影响对话 */ }

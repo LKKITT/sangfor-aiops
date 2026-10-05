@@ -102,8 +102,8 @@
 
       <main class="main">
         <router-view v-slot="{ Component }">
-          <transition name="view">
-            <component :is="Component" :key="route.path" />
+          <transition name="view" mode="out-in">
+            <component :is="Component" />
           </transition>
         </router-view>
       </main>

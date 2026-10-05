@@ -4,6 +4,21 @@
 
 ---
 ## 2026-10-05
+### fix: 侧栏菜单点击右侧无反应修复（路由视图渲染崩溃）
+
+**根因链**：扩展能力选择器的技能项渲染调用 s.description.slice(...)，但 extSkills
+ 映射未携带 description 字段 → undefined.slice 抛错 → ChatView 渲染中断 →
+ 路由过渡的 vnode 树损坏（vnode null / nextSibling / parentNode 连环错误）→
+ 此后所有侧栏导航只改 URL 与高亮、右侧内容不再切换
+
+**修复**：① extSkills 映射携带 description（后端缺省为空串）；② 模板对 description
+ 加 || '' 兜底；③ 路由视图过渡加 mode="out-in" 并移除冗余 :key（消除异步路由组件
+ 与过渡并发导致的 vnode 竞态，杜绝同类导航损坏）
+
+**验证**：浏览器逐菜单连续切换两轮（9 个视图，含来回），零错误、全部正常渲染；
+ 后端 272/272、前端 35/35、构建通过
+
+---
 ### fix: 勾选的技能在对话中未生效修复（load_skill 从未注入的根因）
 
 **根因**：A-2 重构把 tool_scope 移入 routing.py 后，外部工具注入被 `except: pass`
