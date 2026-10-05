@@ -67,8 +67,8 @@
         <template v-for="group in navGroups" :key="group.label">
           <div class="nav-group-label">{{ group.label }}</div>
           <button v-for="item in group.items" :key="item.key" class="nav-item"
-                  :class="{ active: store.view === item.key }" :title="item.label"
-                  @click="store.view = item.key; mobileOpen = false">
+                  :class="{ active: route.path === item.to }" :title="item.label"
+                  @click="router.push(item.to); mobileOpen = false">
             <span class="nav-bar"></span>
             <el-icon class="nav-ico"><component :is="item.icon" /></el-icon>
             <span class="nav-label">{{ item.label }}</span>
@@ -97,9 +97,11 @@
       </div>
 
       <main class="main">
-        <transition name="view">
-          <component :is="views[store.view]" :key="store.view" />
-        </transition>
+        <router-view v-slot="{ Component }">
+          <transition name="view">
+            <component :is="Component" :key="route.path" />
+          </transition>
+        </router-view>
       </main>
     </div>
 
@@ -205,56 +207,38 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, markRaw, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { router } from './router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { store, loadDevices, loadHealth, currentDevice, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from './store.js'
 import { Devices } from './api.js'
 
-// 视图按需加载：异步组件让 Vite 自动按视图分片，首屏只携带当前视图，其余首次切换时拉取
-const ChatView = defineAsyncComponent(() => import('./views/ChatView.vue'))
-const ConfigView = defineAsyncComponent(() => import('./views/ConfigView.vue'))
-const BackupView = defineAsyncComponent(() => import('./views/BackupView.vue'))
-const CheckupView = defineAsyncComponent(() => import('./views/CheckupView.vue'))
-const UpdatesView = defineAsyncComponent(() => import('./views/UpdatesView.vue'))
-const KnowledgeView = defineAsyncComponent(() => import('./views/KnowledgeView.vue'))
-const ChatLogView = defineAsyncComponent(() => import('./views/ChatLogView.vue'))
-const NetDevView = defineAsyncComponent(() => import('./views/NetDevView.vue'))
-const SettingsView = defineAsyncComponent(() => import('./views/SettingsView.vue'))
+// 视图路由化：URL 可寻址（刷新保持/可分享），组件按路由级动态 import 分片加载
 
-const views = {
-  chat: markRaw(ChatView),
-  config: markRaw(ConfigView),
-  backup: markRaw(BackupView),
-  checkup: markRaw(CheckupView),
-  updates: markRaw(UpdatesView),
-  knowledge: markRaw(KnowledgeView),
-  netdev: markRaw(NetDevView),
-  chatlog: markRaw(ChatLogView),
-  settings: markRaw(SettingsView)
-}
-
-// 侧栏导航分组（图标为全局注册的 Element 图标组件名）
+// 侧栏导航分组（图标为全局注册的 Element 图标组件名；to 为路由路径）
 const navGroups = [
   { label: '工作台', items: [
-    { key: 'chat', label: 'AI 对话', icon: 'ChatDotRound' },
-    { key: 'config', label: '配置可视化', icon: 'SetUp' },
-    { key: 'checkup', label: '配置体检', icon: 'Odometer' },
-    { key: 'backup', label: '备份与恢复', icon: 'CopyDocument' },
+    { key: 'chat', to: '/chat', label: 'AI 对话', icon: 'ChatDotRound' },
+    { key: 'config', to: '/config', label: '配置可视化', icon: 'SetUp' },
+    { key: 'checkup', to: '/checkup', label: '配置体检', icon: 'Odometer' },
+    { key: 'backup', to: '/backup', label: '备份与恢复', icon: 'CopyDocument' },
   ]},
   { label: '资产运营', items: [
-    { key: 'netdev', label: '网络设备管理', icon: 'Cpu' },
-    { key: 'updates', label: '软件更新建议', icon: 'Download' },
+    { key: 'netdev', to: '/netdev', label: '网络设备管理', icon: 'Cpu' },
+    { key: 'updates', to: '/updates', label: '软件更新建议', icon: 'Download' },
   ]},
   { label: '知识沉淀', items: [
-    { key: 'knowledge', label: '个人知识库', icon: 'Collection' },
-    { key: 'chatlog', label: '对话日志', icon: 'Notebook' },
+    { key: 'knowledge', to: '/knowledge', label: '个人知识库', icon: 'Collection' },
+    { key: 'chatlog', to: '/chatlog', label: '对话日志', icon: 'Notebook' },
   ]},
   { label: '系统', items: [
-    { key: 'settings', label: '平台设置', icon: 'Setting' },
+    { key: 'settings', to: '/settings', label: '平台设置', icon: 'Setting' },
   ]},
 ]
 
 const mobileOpen = ref(false)
+const route = useRoute()
 const showAdd = ref(false)
 const form = ref({ name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false })
 const device = computed(currentDevice)

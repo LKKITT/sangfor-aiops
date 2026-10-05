@@ -17,7 +17,6 @@ export const store = reactive({
   netdevDevices: [],
   currentDeviceId: GLOBAL_DEVICE_ID,
   health: { llm_configured: false, readonly_mode: false },
-  view: 'chat',
   uiAddDeviceTick: 0,   // 触发 App 外壳打开「添加设备」弹窗（自增计数）
   chatSeed: null,       // { text, useKnowledge, tick } 跨视图预填 AI 对话（知识库引用「去问 Agent」）
 })

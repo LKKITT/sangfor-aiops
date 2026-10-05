@@ -81,7 +81,7 @@
         到「AI 对话」勾选「查询知识库」向 Agent 提问深信服技术问题，<br/>
         对话结束后会自动提炼为知识词条沉淀到这里。
       </p>
-      <el-button type="primary" @click="store.view = 'chat'">去对话提问</el-button>
+      <el-button type="primary" @click="router.push('/chat')">去对话提问</el-button>
     </el-empty>
 
     <template v-if="stats.total">
@@ -216,6 +216,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import * as echarts from 'echarts'
 import { store } from '../store.js'
+import { router } from '../router'
 import { KB } from '../api.js'
 
 const md = new MarkdownIt({ breaks: true })
@@ -246,7 +247,7 @@ const seedable = (r) => !refUrl(r) && !!seedQuestion(r)
 
 function askInChat(r) {
   store.chatSeed = { text: seedQuestion(r), useKnowledge: true, tick: (store.chatSeed?.tick || 0) + 1 }
-  store.view = 'chat'
+  router.push('/chat')
 }
 
 const loaded = ref(false)
