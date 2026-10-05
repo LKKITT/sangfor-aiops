@@ -61,188 +61,16 @@
               </div>
               <div class="md-body" v-html="render(m.text)"></div>
 
-              <!-- 变更确认卡片 -->
-              <div v-if="m.confirm" class="confirm-card">
-                <div class="cf-head">
-                  <el-icon class="cf-ico"><WarningFilled /></el-icon>
-                  <span class="cf-title">{{ m.confirm.title }}</span>
-                </div>
-                <div v-if="m.confirm.warning" class="cf-warning">⚠ {{ m.confirm.warning }}</div>
+              <!-- 变更确认卡片（组件化：表单校验/高危二次确认内聚在 ConfirmCard） -->
+              <ConfirmCard v-if="m.confirm" :confirm="m.confirm" :confirming="confirming"
+                           @decide="(approved, edited) => confirmAction(m, approved, edited)" />
 
-                <!-- 高危操作标识 -->
-                <div v-if="isHighRisk(m.confirm)" class="cf-highrisk">
-                  <el-icon><WarningFilled /></el-icon> <b>高危操作</b>：{{ highRiskReason(m.confirm) }}
-                </div>
-
-                <!-- 定向冲突核实（只针对本配置） -->
-                <div v-if="m.confirm.conflicts?.length" class="cf-conflicts">
-                  <div class="cf-sec-label">
-                    定向核实：本配置与现有配置的冲突/重叠（{{ m.confirm.conflicts.length }} 项，不含无关配置）
-                  </div>
-                  <div v-for="(cf, ci) in m.confirm.conflicts" :key="ci" class="cf-conflict-item">
-                    <el-tag :type="cf.level === 'high' ? 'danger' : cf.level === 'medium' ? 'warning' : 'info'" size="small">
-                      {{ cf.level === 'high' ? '冲突' : cf.level === 'medium' ? '重叠' : '冗余' }}
-                    </el-tag>
-                    <span class="cf-conflict-text">{{ cf.text }}</span>
-                    <div class="cf-conflict-sug">{{ cf.suggestion }}</div>
-                  </div>
-                </div>
-                <div v-else-if="m.confirm.conflicts && m.confirm.op !== 'delete'" class="cf-noconflict">
-                  ✓ 定向核实：与现有配置无冲突、无重叠
-                </div>
-
-                <!-- AC 绑定创建：交互式表单 -->
-                <div v-if="isBindingCreate(m.confirm)" class="cf-form">
-                  <el-form label-width="92px" size="small" style="max-width: 460px">
-                    <el-form-item label="用户名">
-                      <el-input v-model="bindForm.user" placeholder="用户名，如：张三" />
-                    </el-form-item>
-                    <el-form-item label="IP 地址">
-                      <el-input v-model="bindForm.ip" placeholder="如：192.168.1.1" />
-                    </el-form-item>
-                    <el-form-item label="MAC 地址">
-                      <el-input v-model="bindForm.mac" placeholder="如：11-22-33-44-55-66" />
-                    </el-form-item>
-                    <el-form-item label="免认证">
-                      <el-switch v-model="bindForm.noauth" />
-                      <span class="bind-note">开启后该用户流量不经认证直接放行</span>
-                    </el-form-item>
-                    <el-form-item label="限制登录">
-                      <el-switch v-model="bindForm.limitlogon" />
-                      <span class="bind-note">开启后限制该绑定登录</span>
-                    </el-form-item>
-                    <el-form-item label="有效期">
-                      <el-tag size="small" type="success">永久有效（noauth.expire_time=0）</el-tag>
-                    </el-form-item>
-                    <el-form-item label="描述">
-                      <el-input v-model="bindForm.comment" placeholder="选填" />
-                    </el-form-item>
-                  </el-form>
-                </div>
-
-                <!-- NAT 创建/修改：交互式表单 -->
-                <div v-if="isResourceEdit(m.confirm, 'nat')" class="cf-form">
-                  <el-form label-width="100px" size="small" style="max-width: 480px">
-                    <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                    <el-form-item label="源区域"><el-input v-model="editForm.src_zone" placeholder="trust / untrust / dmz" /></el-form-item>
-                    <el-form-item label="目的区域"><el-input v-model="editForm.dst_zone" placeholder="trust / untrust / dmz" /></el-form-item>
-                    <el-form-item label="源地址"><el-input v-model="editForm.src_addr" /></el-form-item>
-                    <el-form-item label="目的地址"><el-input v-model="editForm.dst_addr" /></el-form-item>
-                    <el-form-item label="服务"><el-input v-model="editForm.service" /></el-form-item>
-                    <el-form-item label="转换地址"><el-input v-model="editForm.translated_addr" /></el-form-item>
-                    <el-form-item label="启用"><el-switch v-model="editForm.enabled" /></el-form-item>
-                    <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
-                  </el-form>
-                </div>
-
-                <!-- ACL 创建/修改：交互式表单 -->
-                <div v-if="isResourceEdit(m.confirm, 'acl')" class="cf-form">
-                  <el-form label-width="100px" size="small" style="max-width: 480px">
-                    <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                    <el-form-item label="源区域"><el-input v-model="editForm.src_zone" placeholder="trust / untrust / dmz" /></el-form-item>
-                    <el-form-item label="目的区域"><el-input v-model="editForm.dst_zone" placeholder="trust / untrust / dmz" /></el-form-item>
-                    <el-form-item label="源地址"><el-input v-model="editForm.src_addr" /></el-form-item>
-                    <el-form-item label="目的地址"><el-input v-model="editForm.dst_addr" /></el-form-item>
-                    <el-form-item label="服务"><el-input v-model="editForm.service" /></el-form-item>
-                    <el-form-item label="动作">
-                      <el-radio-group v-model="editForm.action">
-                        <el-radio value="allow">允许</el-radio>
-                        <el-radio value="deny">拒绝</el-radio>
-                      </el-radio-group>
-                    </el-form-item>
-                    <el-form-item label="启用"><el-switch v-model="editForm.enabled" /></el-form-item>
-                    <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
-                  </el-form>
-                </div>
-
-                <!-- 网络对象 创建/修改：交互式表单 -->
-                <div v-if="isResourceEdit(m.confirm, 'object')" class="cf-form">
-                  <el-form label-width="100px" size="small" style="max-width: 480px">
-                    <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                    <el-form-item label="成员地址"><el-input v-model="editForm.members" placeholder="如：10.0.0.0/24, 192.168.1.5" /></el-form-item>
-                    <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
-                  </el-form>
-                </div>
-
-                <!-- 自定义服务 创建/修改：交互式表单 -->
-                <div v-if="isResourceEdit(m.confirm, 'service')" class="cf-form">
-                  <el-form label-width="100px" size="small" style="max-width: 480px">
-                    <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                    <el-form-item label="协议">
-                      <el-radio-group v-model="editForm.protocol">
-                        <el-radio value="TCP">TCP</el-radio>
-                        <el-radio value="UDP">UDP</el-radio>
-                        <el-radio value="TCP/UDP">TCP/UDP</el-radio>
-                      </el-radio-group>
-                    </el-form-item>
-                    <el-form-item label="端口"><el-input v-model="editForm.ports" placeholder="如：80,443 或 8000-9000" /></el-form-item>
-                    <el-form-item label="备注"><el-input v-model="editForm.comment" /></el-form-item>
-                  </el-form>
-                </div>
-
-                <!-- 规则变更 before/after -->
-                <div v-if="!isBindingCreate(m.confirm) && !isResourceEdit(m.confirm) && (m.confirm.before || m.confirm.after)"
-                     class="cf-diff mono">
-                  <div v-if="m.confirm.before" class="diff-removed">- {{ fmtRule(m.confirm.before) }}</div>
-                  <div v-if="m.confirm.after" class="diff-added">+ {{ fmtRule(m.confirm.after) }}</div>
-                </div>
-
-                <!-- 批量变更：逐台设备计划 -->
-                <div v-if="m.confirm.batch_devices?.length" class="cf-batch">
-                  <div class="cf-sec-label">批量下发（{{ m.confirm.batch_devices.length }} 台设备，确认后逐台执行）</div>
-                  <div v-for="(b, bi) in m.confirm.batch_devices" :key="bi" class="cf-batch-item">
-                    <el-tag size="small" type="info">{{ b.device }}</el-tag>
-                    <span class="cf-batch-title">{{ b.title }}</span>
-                    <div v-if="b.warning" class="cf-batch-warn">{{ b.warning }}</div>
-                  </div>
-                </div>
-
-                <!-- 恢复计划 -->
-                <div v-if="m.confirm.plan" class="cf-plan">
-                  <div class="cf-plan-line">
-                    共 <b>{{ m.confirm.plan.total }}</b> 项变更：
-                    <el-tag v-for="g in ['delete','update','create']" :key="g" size="small" class="cf-plan-tag"
-                            :type="g === 'delete' ? 'danger' : g === 'update' ? 'warning' : 'success'">
-                      {{ { delete: '删除', update: '修改', create: '重建' }[g] }} {{ m.confirm.plan[g]?.length || 0 }} 项
-                    </el-tag>
-                  </div>
-                  <el-collapse class="cf-plan-detail">
-                    <el-collapse-item title="查看详细变更清单">
-                      <div v-for="(it, k) in allPlanItems(m.confirm.plan)" :key="k" class="mono cf-plan-item">
-                        {{ it }}
-                      </div>
-                    </el-collapse-item>
-                  </el-collapse>
-                </div>
-
-                <div v-if="m.confirm.status === 'pending'" class="cf-actions">
-                  <el-button type="primary" size="small" :loading="confirming" @click="confirmAction(m, true)">
-                    <el-icon><Check /></el-icon>&nbsp;确认执行
-                  </el-button>
-                  <el-button type="danger" plain size="small" :disabled="confirming" @click="confirmAction(m, false)">
-                    <el-icon><Close /></el-icon>&nbsp;拒绝
-                  </el-button>
-                </div>
-                <div v-else-if="m.confirm.status === 'executed'" class="cf-status ok">
-                  <el-icon><CircleCheckFilled /></el-icon> 已执行
-                </div>
-                <div v-else-if="m.confirm.status === 'rejected'" class="cf-status dim">已拒绝</div>
-                <div v-else class="cf-status dim">{{ m.confirm.status }}</div>
+              <!-- 失败重试：仅最后一条助手消息且保留有用户输入时 -->
+              <div v-if="m.failed && i === messages.length - 1 && lastUserText" class="retry-row">
+                <el-button size="small" type="warning" plain @click="retryLast">
+                  <el-icon><RefreshRight /></el-icon>&nbsp;重试上一条提问
+                </el-button>
               </div>
-
-              <!-- 高危操作二次确认弹窗 -->
-              <el-dialog v-model="showSecondConfirm" title="二次确认" width="420px" :close-on-click-modal="false" append-to-body>
-                <div class="second-confirm">
-                  <div class="sc-ico"><el-icon :size="30"><WarningFilled /></el-icon></div>
-                  <div class="sc-title">高危操作确认</div>
-                  <div class="sc-reason">{{ secondConfirmReason }}</div>
-                  <div class="sc-note">此操作可能影响业务，请确认已充分评估风险</div>
-                </div>
-                <template #footer>
-                  <el-button @click="showSecondConfirm = false; secondConfirmCallback = null">取消</el-button>
-                  <el-button type="danger" @click="doSecondConfirm">确认执行高危操作</el-button>
-                </template>
-              </el-dialog>
             </div>
 
             <div v-else class="bubble-user">{{ m.text }}</div>
@@ -329,6 +157,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { store, currentDevice, loadDevices, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from '../store.js'
 import { apiGet, chatStream, Devices } from '../api.js'
+import ConfirmCard from '../components/chat/ConfirmCard.vue'
+import { applyEvent, toolLabel } from '../chat/agentStream'
 
 // 会话缓存（模块级）：切视图/切设备不丢；页面刷新后由后端 last-conversation 接口兜底恢复
 const convCache = {}
@@ -386,33 +216,6 @@ const quickPrompts = computed(() => {
   ]
 })
 
-const TOOL_NAMES = {
-  get_device_status: '查询设备状态', get_interfaces: '查询接口', get_nat_rules: '查询 NAT',
-  get_acl_rules: '查询访问控制策略', get_user_bindings: '查询用户绑定', get_static_routes: '查询路由',
-  get_network_objects: '查询网络对象', get_services: '查询自定义服务',
-  run_config_checkup: '运行配置体检', create_backup: '创建备份', list_backups: '查询备份列表',
-  diff_backups: '对比备份差异', get_software_updates: '获取软件更新信息', get_upgrade_advice: '生成升级建议',
-  get_audit_logs: '查询审计日志', restore_backup: '生成恢复计划', execute_restore: '执行恢复',
-  search_official_knowledge: '查询官方知识库', search_personal_kb: '检索本地知识库',
-  get_scp_clusters: '查询 SCP 集群', get_scp_hosts: '查询 SCP 物理机',
-  get_scp_host_interfaces: '查询物理机网口', get_scp_vms: '查询 SCP 虚拟机',
-  get_scp_vm_detail: '查询虚拟机详情', get_scp_storages: '查询 SCP 存储',
-  record_to_kb: '沉淀对话到知识库', ingest_url_to_kb: '沉淀链接到知识库',
-  list_available_devices: '查询设备列表', add_device: '添加设备',
-  create_nat_rule: '新建 NAT', update_nat_rule: '修改 NAT', delete_nat_rule: '删除 NAT',
-  create_acl_rule: '新建策略', update_acl_rule: '修改策略', delete_acl_rule: '删除策略',
-  create_user_binding: '新建绑定', update_user_binding: '修改绑定', delete_user_binding: '删除绑定',
-  create_network_object: '新建网络对象', update_network_object: '修改网络对象', delete_network_object: '删除网络对象',
-  create_service: '新建自定义服务', update_service: '修改自定义服务', delete_service: '删除自定义服务',
-  get_whiteblacklist: '查询黑白名单',
-  create_whiteblacklist: '添加黑白名单', update_whiteblacklist: '修改黑白名单', delete_whiteblacklist: '删除黑白名单',
-  netdev_list_devices: '查询网络设备列表', netdev_get_status: '网络设备健康查询',
-  netdev_get_config: '网络设备配置查询', netdev_get_interfaces: '网络设备接口查询',
-  netdev_get_routes: '网络设备路由查询', netdev_get_arp: 'ARP 表项查询',
-  netdev_get_logs: '网络设备日志分析', netdev_locate_terminal: '终端定位',
-  netdev_apply_config: '下发网络设备配置', netdev_run_commands: '执行网络设备命令'
-}
-
 function cachePut(devId) {
   if (!devId) return
   convCache[devId] = { list: JSON.parse(JSON.stringify(messages.value)), convId: currentConvId }
@@ -445,7 +248,7 @@ function mapHistoryMessages(rawMsgs) {
       out.push({ role: 'user', text: c.text || '' })
     } else if (m.role === 'assistant' && (c.text || c.tool_calls?.length)) {
       const trace = (c.tool_calls || []).map(tc => {
-        const cn = TOOL_NAMES[tc.name] || tc.name
+        const cn = toolLabel(tc.name)
         return doneCalls.has(tc.id) ? `${cn} ✓` : `${cn} …`
       })
       out.push({ role: 'assistant', text: c.text || '', trace, confirm: null })
@@ -587,6 +390,13 @@ const inputPlaceholder = computed(() => {
   return '例如：帮我看一下外网接口流量，再把 3389 对公网暴露的策略收紧'
 })
 
+const lastUserText = ref('')
+
+async function retryLast() {
+  if (streaming.value) return ElMessage.warning('当前仍有对话在进行')
+  if (lastUserText.value) send(lastUserText.value)
+}
+
 async function scrollBottom() {
   await nextTick()
   if (scrollRef.value) scrollRef.value.scrollTop = scrollRef.value.scrollHeight
@@ -599,6 +409,7 @@ function send(preset) {
   if (!dev) return ElMessage.warning('请先选择设备')
   if (preset) input.value = ''
   else input.value = ''
+  lastUserText.value = text
   messages.value.push({ role: 'user', text })
   streaming.value = true
   const aiMsg = reactiveMsg()
@@ -611,6 +422,7 @@ function send(preset) {
   chatStream('/api/chat', body, ev => handleEvent(ev, aiMsg), abortController.signal)
     .catch(e => {
       if (e.name === 'AbortError') return
+      aiMsg.failed = e.message
       aiMsg.text += `\n\n**连接失败**：${e.message}`
     })
     .finally(() => { streaming.value = false; abortController = null; scrollBottom() })
@@ -636,195 +448,29 @@ async function stopChat() {
 
 function reactiveMsg() {
   // Vue reactive：流式 token 逐段触发重渲染（自定义 Proxy 会绕过响应式导致一次性出现）
-  return reactive({ role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null })
+  return reactive({ role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null, failed: null })
 }
 
 function handleEvent(ev, aiMsg) {
-  if (ev.type === 'meta') {
-    currentConvId = ev.conv_id || currentConvId
-    return
-  }
-  if (ev.type === 'token') { aiMsg.text += ev.text; return }
-  if (ev.type === 'tool_call') {
-    aiMsg._currentTool = TOOL_NAMES[ev.name] || ev.name
-    aiMsg.trace.push(`${TOOL_NAMES[ev.name] || ev.name} …`)
-    return
-  }
-  if (ev.type === 'tool_result') {
-    // 按工具名配对收尾：并行轮次的事件顺序为"全部 tool_call → 全部 tool_result"，
-    // 不能假设结果紧跟在对应调用之后（串行轮次同样兼容）
-    const label = TOOL_NAMES[ev.name] || ev.name
-    const idx = aiMsg.trace.lastIndexOf(`${label} …`)
-    if (idx >= 0) {
-      aiMsg.trace[idx] = `${label} ✓`
-    } else {
-      aiMsg.trace.push(`${label} ✓`)
-    }
-    aiMsg._currentTool = null
-    return
-  }
-  if (ev.type === 'confirm_required') {
-    aiMsg.confirm = { ...ev.action, status: 'pending' }
-    if (isBindingCreate(ev.action)) syncBindForm(ev.action)
-    if (isResourceEdit(ev.action, 'nat') || isResourceEdit(ev.action, 'acl') ||
-        isResourceEdit(ev.action, 'object') || isResourceEdit(ev.action, 'service')) {
-      syncEditForm(ev.action)
-    }
-    scrollBottom()
-    return
-  }
-  if (ev.type === 'offline_notice') {
-    aiMsg.text += `\n\n> ${ev.text}`
-    return
-  }
-  if (ev.type === 'error') {
-    aiMsg.text += `\n\n**出错了**：${ev.text}`
-    return
-  }
-  if (ev.type === 'done') return
+  applyEvent(aiMsg, ev, {
+    onMeta: (convId) => { if (convId) currentConvId = convId },
+    onConfirm: () => scrollBottom(),
+  })
 }
 
-const bindForm = reactive({ user: '', ip: '', mac: '', noauth: false, limitlogon: false, comment: '' })
-
-// 资源编辑表单（NAT / ACL / 网络对象 / 自定义服务）
-const editForm = reactive({
-  name: '', src_zone: '', dst_zone: '', src_addr: '', dst_addr: '',
-  service: '', translated_addr: '', enabled: true, action: 'allow',
-  protocol: 'TCP', ports: '', members: '', comment: ''
-})
-
-// 高危操作二次确认
-const showSecondConfirm = ref(false)
-const secondConfirmReason = ref('')
-let secondConfirmCallback = null
-
-function isBindingCreate(confirm) {
-  return confirm?.op === 'create' && (confirm?.resource === 'binding' || confirm?.tool_name === 'create_user_binding')
-}
-
-function syncBindForm(confirm) {
-  const a = confirm?.after || {}
-  bindForm.user = a.user || ''
-  bindForm.ip = a.ip || ''
-  bindForm.mac = a.mac || ''
-  bindForm.noauth = !!a.noauth
-  bindForm.limitlogon = !!a.limitlogon
-  bindForm.comment = a.comment || a.desc || ''
-}
-
-function isHighRisk(confirm) {
-  if (!confirm) return false
-  // 删除操作
-  if (confirm.op === 'delete') return true
-  // 高危端口暴露
-  const service = (confirm.after?.service || confirm.data?.service || '').toLowerCase()
-  const highRiskPorts = ['445', '139', '135', '3389', '22', '23', '2049', '6379', '27017', '3306', '1433']
-  if (highRiskPorts.some(p => service.includes(p))) return true
-  // 开放 any 到 untrust
-  if (confirm.after?.action === 'allow' && (confirm.after?.dst_zone === 'untrust' || confirm.data?.dst_zone === 'untrust')) {
-    const src = confirm.after?.src_addr || ''
-    if (src === 'any' || src === '0.0.0.0/0') return true
-  }
-  // 恢复操作
-  if (confirm.plan) return true
-  return false
-}
-
-function highRiskReason(confirm) {
-  if (!confirm) return ''
-  if (confirm.op === 'delete') return `将要删除 ${confirm.resource || '配置'}，删除后相关业务将受影响`
-  const service = (confirm.after?.service || confirm.data?.service || '').toLowerCase()
-  const highRiskPorts = ['445', '139', '135', '3389', '22', '23', '2049', '6379', '27017', '3306', '1433']
-  const matched = highRiskPorts.filter(p => service.includes(p))
-  if (matched.length) return `操作涉及高危端口 ${matched.join(', ')}，可能被利用进行远程攻击`
-  if (confirm.after?.action === 'allow' && (confirm.after?.dst_zone === 'untrust' || confirm.data?.dst_zone === 'untrust')) {
-    return '该策略允许任意地址访问公网，可能造成数据泄露或资源滥用'
-  }
-  if (confirm.plan) return '恢复操作将覆盖当前配置，请确认备份文件正确'
-  return '该操作涉及业务配置变更，请确认风险'
-}
-
-function isResourceEdit(confirm, type) {
-  if (!confirm) return false
-  const resourceMap = { nat: 'nat', acl: 'acl', object: 'object', service: 'service' }
-  const expected = resourceMap[type]
-  if (!expected) return false
-  const op = confirm.op || ''
-  if (op !== 'create' && op !== 'update') return false
-  const resource = (confirm.resource || confirm.tool_name || '').toLowerCase()
-  return resource.includes(expected)
-}
-
-function syncEditForm(confirm) {
-  const a = confirm?.after || confirm?.data || {}
-  editForm.name = a.name || ''
-  editForm.src_zone = a.src_zone || ''
-  editForm.dst_zone = a.dst_zone || ''
-  editForm.src_addr = a.src_addr || ''
-  editForm.dst_addr = a.dst_addr || ''
-  editForm.service = a.service || ''
-  editForm.translated_addr = a.translated_addr || ''
-  editForm.enabled = a.enabled !== false
-  editForm.action = a.action || 'allow'
-  editForm.protocol = a.protocol || 'TCP'
-  editForm.ports = a.ports || ''
-  editForm.members = a.members || ''
-  editForm.comment = a.comment || a.desc || ''
-}
-
-function doSecondConfirm() {
-  showSecondConfirm.value = false
-  if (secondConfirmCallback) {
-    secondConfirmCallback()
-    secondConfirmCallback = null
-  }
-}
-
-function buildEditedData(confirm) {
-  if (isBindingCreate(confirm)) {
-    return { data: { user: bindForm.user, ip: bindForm.ip, mac: bindForm.mac,
-                     noauth: bindForm.noauth, limitlogon: bindForm.limitlogon,
-                     comment: bindForm.comment } }
-  }
-  if (isResourceEdit(confirm, 'nat') || isResourceEdit(confirm, 'acl')) {
-    return { data: { name: editForm.name, src_zone: editForm.src_zone, dst_zone: editForm.dst_zone,
-                     src_addr: editForm.src_addr, dst_addr: editForm.dst_addr,
-                     service: editForm.service, translated_addr: editForm.translated_addr,
-                     enabled: editForm.enabled, action: editForm.action,
-                     comment: editForm.comment } }
-  }
-  if (isResourceEdit(confirm, 'object')) {
-    return { data: { name: editForm.name, members: editForm.members, comment: editForm.comment } }
-  }
-  if (isResourceEdit(confirm, 'service')) {
-    return { data: { name: editForm.name, protocol: editForm.protocol, ports: editForm.ports,
-                     comment: editForm.comment } }
-  }
-  return null
-}
-
-function confirmAction(msg, approved) {
-  const dev = currentDevice()
-  if (approved && isHighRisk(msg.confirm)) {
-    // 高危操作：先弹出二次确认
-    secondConfirmReason.value = highRiskReason(msg.confirm)
-    secondConfirmCallback = () => doConfirmAction(msg, true)
-    showSecondConfirm.value = true
-    return
-  }
-  doConfirmAction(msg, approved)
-}
-
-async function doConfirmAction(msg, approved) {
+// edited 由 ConfirmCard 校验并收集（表单组件 validate + getData）
+async function confirmAction(msg, approved, edited) {
   const dev = currentDevice()
   confirming.value = true
   const contMsg = reactiveMsg()
   messages.value.push(contMsg)
-  const edited = approved ? buildEditedData(msg.confirm) : null
   chatStream('/api/chat/confirm', {
-    action_id: msg.confirm.action_id, device_id: dev.id, approved, edited
-  }, ev => handleEvent(ev, contMsg))
-    .catch(e => { contMsg.text += `\n\n**连接失败**：${e.message}` })
+    action_id: msg.confirm.action_id, device_id: dev.id, approved, edited: approved ? edited : null
+  }, ev => applyEvent(contMsg, ev, {
+    onMeta: (convId) => { if (convId) currentConvId = convId },
+    onConfirm: () => scrollBottom(),
+  }))
+    .catch(e => { contMsg.failed = e.message; contMsg.text += `\n\n**连接失败**：${e.message}` })
     .finally(() => {
       confirming.value = false
       msg.confirm.status = approved ? 'executed' : 'rejected'
@@ -1013,49 +659,7 @@ function allPlanItems(plan) {
   letter-spacing: .04em; margin-top: 11px;
 }
 
-/* ===== 确认卡片内部 ===== */
-.cf-head { display: flex; align-items: center; gap: 7px; font-weight: 650; margin-bottom: 8px; font-size: 13.5px; }
-.cf-ico { color: #D08700; font-size: 16px; }
-.cf-warning { color: #B88230; margin-bottom: 8px; font-size: 12.5px; }
-.cf-highrisk {
-  margin-bottom: 10px; padding: 7px 11px; border-radius: 8px;
-  background: #FDEEEF; border: 1px solid #FBD8D9; font-size: 12px; color: #D33A40;
-  display: flex; align-items: center; gap: 4px;
-}
-.cf-conflicts { margin-bottom: 10px; }
-.cf-sec-label { font-size: 12px; color: var(--sfa-text-3); margin-bottom: 6px; }
-.cf-conflict-item {
-  font-size: 12px; background: #fff; border-left: 3px solid var(--sfa-warning);
-  padding: 5px 9px; margin-bottom: 5px; border-radius: 0 7px 7px 0;
-}
-.cf-conflict-text { margin-left: 4px; }
-.cf-conflict-sug { color: var(--sfa-text-3); margin-top: 3px; padding-left: 2px; }
-.cf-noconflict { font-size: 12px; color: #0E9F6E; margin-bottom: 8px; }
-.cf-form { background: #fff; border-radius: 9px; padding: 12px; border: 1px solid #F3DFB2; margin-bottom: 8px; }
-.cf-diff { font-size: 12px; background: #fff; border-radius: 9px; padding: 9px 11px; border: 1px solid #F3DFB2; }
-.cf-batch { margin-bottom: 10px; }
-.cf-batch-item {
-  font-size: 12px; background: #fff; border: 1px solid var(--sfa-border-soft);
-  border-radius: 8px; padding: 6px 9px; margin-bottom: 5px;
-}
-.cf-batch-title { margin-left: 6px; }
-.cf-batch-warn { color: #B88230; margin-top: 3px; }
-.cf-plan { font-size: 12.5px; }
-.cf-plan-tag { margin: 2px 3px; }
-.cf-plan-detail { margin-top: 6px; }
-.cf-plan-item { font-size: 12px; padding: 2.5px 0; }
-.cf-actions { margin-top: 12px; display: flex; gap: 8px; }
-.cf-status { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; font-size: 12.5px; font-weight: 600; }
-.cf-status.ok { color: #0E9F6E; }
-.cf-status.dim { color: var(--sfa-text-4); }
-.bind-note { font-size: 12px; color: var(--sfa-text-3); margin-left: 8px; }
-
-/* 二次确认弹窗 */
-.second-confirm { padding: 8px 0 4px; text-align: center; }
-.sc-ico { color: var(--sfa-danger); margin-bottom: 10px; }
-.sc-title { font-weight: 700; font-size: 15px; margin-bottom: 8px; }
-.sc-reason { color: var(--sfa-text-2); font-size: 13px; margin-bottom: 14px; }
-.sc-note { color: var(--sfa-danger); font-size: 12px; background: #FDEEEF; padding: 9px; border-radius: 8px; }
+.retry-row { margin-top: 8px; }
 
 @media (max-width: 1240px) { .chat-page { height: calc(100vh - 36px); } }
 @media (max-width: 820px) {
