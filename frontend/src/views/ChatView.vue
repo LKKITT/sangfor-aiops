@@ -109,6 +109,10 @@
                       title="勾选后，对话可检索深信服官方知识库（诸葛小T），回答将附带官方引用来源；对话还会沉淀到个人知识库">
                 <el-icon><Search /></el-icon>查询知识库
               </button>
+              <button class="ghost-act" @click="openHistory"
+                      title="查看当前设备（全局模式为全部设备）的历史会话，点击续接">
+                <el-icon><Clock /></el-icon>历史会话
+              </button>
               <button class="ghost-act" @click="newConversation"
                       title="开启新会话：清空当前上下文，避免话题混淆与 token 浪费；设备信息与长期记忆会自动带入新会话">
                 <el-icon><CirclePlus /></el-icon>新会话
@@ -147,6 +151,31 @@
         </div>
         <div class="composer-foot">修改类操作将生成确认卡片，确认后才会下发设备 · 支持深信服设备与网络设备（华为/H3C/锐捷）批量操作 · 结果请复核</div>
       </div>
+
+      <!-- 历史会话抽屉：回看/续接过往对话 -->
+      <el-drawer v-model="showHistory" title="历史会话" size="380px" append-to-body>
+        <div class="his-search">
+          <el-input v-model="historyKeyword" placeholder="搜索标题或消息内容" clearable size="small"
+                    @keyup.enter="loadHistory(true)" />
+          <el-button size="small" type="primary" plain :loading="loadingHistory" @click="loadHistory(true)">搜索</el-button>
+        </div>
+        <div v-if="!loadingHistory && !historyItems.length" class="his-empty">该范围内暂无历史会话</div>
+        <div class="his-list">
+          <div v-for="c in historyItems" :key="c.id" class="his-item" @click="openConversation(c)">
+            <div class="his-title">{{ c.title || '(无标题)' }}</div>
+            <div class="his-last">{{ c.last_message || '…' }}</div>
+            <div class="his-meta">
+              <el-tag size="small" type="info" effect="plain">{{ c.device_name || '未知设备' }}</el-tag>
+              <span>{{ (c.updated_at || '').slice(5, 16).replace('T', ' ') }}</span>
+              <span v-if="c.msg_count !== undefined" class="his-count">{{ c.msg_count }} 条</span>
+            </div>
+          </div>
+        </div>
+        <div v-if="historyItems.length < historyTotal" class="his-more">
+          <el-button size="small" text type="primary" :loading="loadingHistory" @click="loadMore">加载更多（{{ historyTotal - historyItems.length }}）</el-button>
+        </div>
+        <div class="his-tip">续接会话会自动切换到该会话的设备上下文；仅展示最近 200 条消息。</div>
+      </el-drawer>
     </template>
   </div>
 </template>
@@ -318,6 +347,68 @@ function consumeChatSeed() {
 function refreshDevices() {
   loadDevices()
   ElMessage.success('设备列表已刷新')
+}
+
+// ---------------- 历史会话（回看 / 续接） ----------------
+const showHistory = ref(false)
+const historyItems = ref([])
+const historyTotal = ref(0)
+const historyPage = ref(1)
+const historyKeyword = ref('')
+const loadingHistory = ref(false)
+const PAGE_SIZE = 20
+
+function openHistory() {
+  showHistory.value = true
+  if (!historyItems.value.length) loadHistory(true)
+}
+
+async function loadHistory(reset = false) {
+  loadingHistory.value = true
+  try {
+    if (reset) { historyPage.value = 1; historyItems.value = [] }
+    const params = new URLSearchParams({
+      page: String(historyPage.value), page_size: String(PAGE_SIZE),
+      keyword: historyKeyword.value.trim(),
+      device_id: isGlobal(currentDevice()) ? '' : store.currentDeviceId,
+    })
+    const data = await apiGet(`/api/chat/conversations/detail?${params}`)
+    historyTotal.value = data.total || 0
+    historyItems.value = reset ? (data.items || []) : [...historyItems.value, ...(data.items || [])]
+  } catch (e) {
+    ElMessage.error(String(e.message || e))
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+async function loadMore() {
+  historyPage.value++
+  await loadHistory(false)
+}
+
+// 打开并续接指定会话：自动切换到该会话的设备上下文（跨设备续接不串上下文）
+async function openConversation(conv) {
+  if (streaming.value) return ElMessage.warning('请先终止当前对话')
+  try {
+    if (conv.device_id && conv.device_id !== store.currentDeviceId) {
+      const exists = store.devices.some(d => d.id === conv.device_id)
+          || store.netdevDevices.some(d => d.id === conv.device_id)
+      if (exists || conv.device_id === GLOBAL_DEVICE_ID) store.currentDeviceId = conv.device_id
+      await nextTick()
+      await new Promise(r => setTimeout(r, 30))   // 让设备切换的自动恢复先行，随后被本会话覆盖
+    }
+    const rows = await apiGet(`/api/chat/conversations/${conv.id}?limit=200`)
+    const restored = mapHistoryMessages(rows)
+    if (!restored.length) return ElMessage.info('该会话暂无可展示的消息')
+    messages.value = restored
+    currentConvId = conv.id
+    cachePut(store.currentDeviceId)
+    showHistory.value = false
+    await scrollBottom()
+  } catch (e) {
+    ElMessage.error(String(e.message || e))
+  }
 }
 
 // 新会话：清空上下文（设备信息与长期记忆仍会自动注入，不会丢失设备基本情况）
@@ -660,6 +751,24 @@ function allPlanItems(plan) {
 }
 
 .retry-row { margin-top: 8px; }
+
+/* ===== 历史会话抽屉 ===== */
+.his-search { display: flex; gap: 8px; margin-bottom: 10px; }
+.his-empty { text-align: center; color: var(--sfa-text-4); font-size: 12.5px; padding: 26px 0; }
+.his-list { display: flex; flex-direction: column; gap: 8px; }
+.his-item {
+  border: 1px solid var(--sfa-border-soft, #E6E9F2); border-radius: 10px; padding: 9px 11px;
+  cursor: pointer; transition: border-color .15s, box-shadow .15s;
+}
+.his-item:hover { border-color: var(--sfa-primary, #4A70FF); box-shadow: 0 2px 10px rgba(74, 112, 255, .1); }
+.his-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.his-last {
+  font-size: 12px; color: var(--sfa-text-3, #909399); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.his-meta { display: flex; align-items: center; gap: 7px; margin-top: 6px; font-size: 11.5px; color: var(--sfa-text-4); }
+.his-more { text-align: center; padding: 8px 0 0; }
+.his-tip { font-size: 11px; color: var(--sfa-text-4); padding-top: 10px; line-height: 1.6; }
 
 @media (max-width: 1240px) { .chat-page { height: calc(100vh - 36px); } }
 @media (max-width: 820px) {
