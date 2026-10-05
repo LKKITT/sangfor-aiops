@@ -43,6 +43,13 @@ ROUTE_PROTO_CMD = {"huawei": "display ip routing-table protocol {proto}",
                    "h3c": "display ip routing-table protocol {proto}",
                    "ruijie": "show ip route {proto}"}
 ARP_CMD = {"huawei": "display arp", "h3c": "display arp", "ruijie": "show arp"}
+# 接口视图配置查看（dis this 模式）：进入接口视图看"当前视图生效配置"，再返回用户视图。
+# 进入视图/return 均为查看动作，不修改任何配置
+IF_VIEW_CONFIG = {
+    "huawei": ["interface {name}", "display this", "return"],
+    "h3c": ["interface {name}", "display this", "return"],
+    "ruijie": ["show running-config interface {name}"],
+}
 LOG_CMD = {"huawei": "display logbuffer", "h3c": "display logbuffer", "ruijie": "show logging"}
 
 # 配置模式包装：进入/退出全局配置视图
@@ -121,7 +128,9 @@ def _clip(text: str, limit: int) -> str:
 
 async def _run_on_targets(devices: list[dict], commands_for, timeout: float) -> dict:
     """在每台目标设备上执行 commands_for(device) 给出的命令，聚合结果。"""
-    per_cap = max(1500, OUTPUT_CAP_PER_DEVICE // max(1, len(devices)))
+    # 每设备上限自适应：小批量 6000；大批量按 ~20K 总量均摊（下限 500），避免编排器总限截断丢设备
+    per_cap = (OUTPUT_CAP_PER_DEVICE if len(devices) <= 3
+               else max(500, min(OUTPUT_CAP_PER_DEVICE, 20000 // len(devices))))
     results, ok_count = [], 0
     for d in devices:
         cmds = commands_for(d)
@@ -236,6 +245,46 @@ async def _h_get_arp(client, args: dict, device: dict) -> dict:
     return await _run_on_targets(devices, _cmds, timeout=45)
 
 
+async def _h_get_interface_config(client, args: dict, device: dict) -> dict:
+    """接口配置查看：进入接口视图 display this（华为/H3C）或 show run interface（锐捷）。"""
+    devices, err = _resolve_targets(args, device)
+    if err:
+        return {"error": err}
+    if msg := _vendor_check(devices):
+        return {"error": msg}
+    name = str(args.get("interface") or "").strip()
+    if not name:
+        return {"error": "请提供接口名（interface 参数，如 GigabitEthernet1/0/1，"
+                         "也支持常用缩写如 GE1/0/1、Ten-GigabitEthernet1/0/21 → Ten-G 1/0/21）"}
+
+    def _cmds(d):
+        return [c.format(name=name) for c in IF_VIEW_CONFIG[d["vendor"]]]
+    return await _run_on_targets(devices, _cmds, timeout=45)
+
+
+async def _h_query(client, args: dict, device: dict) -> dict:
+    """只读自由查询：仅放行 dis/display/show 前缀命令（网络 CLI 的只读词根），
+    免确认卡片——大幅扩展 AI 可查询范围（VLAN/STP/MAC/LLDP/聚合口/光模块/OSPF 邻居等）。"""
+    import re as _re
+    devices, err = _resolve_targets(args, device)
+    if err:
+        return {"error": err}
+    if msg := _vendor_check(devices):
+        return {"error": msg}
+    raw = args.get("commands") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    commands = [str(c).strip() for c in raw if str(c).strip()]
+    if not commands:
+        return {"error": "commands 不能为空"}
+    readonly = _re.compile(r"^(dis|display|show)\b", _re.IGNORECASE)
+    bad = [c for c in commands if not readonly.match(c)]
+    if bad:
+        return {"error": (f"以下命令不是只读查询（仅放行 dis/display/show 开头）：{bad}。"
+                          "变更类请使用 netdev_apply_config / netdev_run_commands（走确认卡片）")}
+    return await _run_on_targets(devices, lambda d: commands, timeout=60)
+
+
 async def _h_get_logs(client, args: dict, device: dict) -> dict:
     devices, err = _resolve_targets(args, device)
     if err:
@@ -262,22 +311,46 @@ async def _h_locate_terminal(client, args: dict, device: dict) -> dict:
     if not query:
         return {"error": "请提供要定位的 IP / MAC / 设备名（query 参数）"}
     group = str(args.get("group") or "").strip()
-    groups = [group] if group else sorted({(d.get("group_name") or "").strip()
-                                           for d in db.list_netdev_devices()})
-    if not groups:
+    all_groups = sorted({(d.get("group_name") or "").strip()
+                         for d in db.list_netdev_devices()})
+    if not all_groups:
         return {"error": "尚无网络设备，请先在「网络设备管理」页添加"}
+    # 指定了分组时先在该组内定位，未命中降级为全网搜索（终端可能接在别的分组的设备上）
+    groups = [group] if group else all_groups
     collected = ""
     hits, misses = [], []
-    for g in groups:
+    searched = set()
+
+    async def _ensure_fresh(g: str) -> None:
+        """缓存为空或已过期（TTL 外）时先重新采集，避免拿陈旧 ARP/MAC 定位失败。"""
+        nonlocal collected
         caches = db.list_netdev_topology_cache(g)
-        if not caches or not any((c.get("arp") or []) or (c.get("mac") or []) for c in caches):
+        stale = (not caches
+                 or not any((c.get("arp") or []) or (c.get("mac") or []) for c in caches)
+                 or any(topo._stale(c) for c in caches))
+        if stale:
             await topo.collect_group(g)
-            collected = "定位前已自动完成该分组的 ARP/MAC 采集（首次定位或缓存过期时会多花一些时间）"
+            collected = "定位前已自动完成过期缓存的重新采集（ARP/MAC 表实时性更好，多花了一些时间）"
+
+    for g in groups:
+        searched.add(g)
+        await _ensure_fresh(g)
         r = topo.search_asset(g, query)
         if r.get("hits"):
             hits.append({"group": g, **r})
         else:
             misses.append({"group": g, "reason": r.get("reason", "")})
+    # 组内未命中（或组内设备缓存齐了仍找不到）：降级搜索其余分组
+    if not hits and group:
+        for g in all_groups:
+            if g in searched or g == group:
+                continue
+            await _ensure_fresh(g)
+            r = topo.search_asset(g, query)
+            if r.get("hits"):
+                hits.append({"group": g, **r, "note": f"指定分组内未找到，在分组「{g}」中定位到"})
+            else:
+                misses.append({"group": g, "reason": r.get("reason", "")})
     if not hits:
         reason = next((m["reason"] for m in misses if m.get("reason")), "")
         return {"kind": "none", "query": query, "hits": [],
@@ -460,6 +533,19 @@ NETDEV_TOOLS: list[Tool] = [
           "properties": {"keyword": {"type": "string", "description": "可选：日志过滤关键词"},
                          "devices": _NETDEV_DEVICES_DESC}},
          _h_get_logs, device_type="netdev", needs_device=False),
+    Tool("netdev_get_interface_config", "网络设备接口配置查看（华为/H3C/锐捷）：查看某接口当前生效的完整配置——自动进入接口视图执行 display this（锐捷为 show run interface），这是看单个接口配置的正确姿势（比 dis cu 全量过滤更准）。配合 netdev_get_interfaces 的接口概览先找接口名。",
+         {"type": "object",
+          "properties": {"interface": {"type": "string", "description": "接口名（如 GigabitEthernet1/0/1、XGE1/0/21、Vlan-interface10、Bridge-Aggregation1），支持设备常用缩写"},
+                         "devices": _NETDEV_DEVICES_DESC},
+          "required": ["interface"]},
+         _h_get_interface_config, device_type="netdev", needs_device=False),
+    Tool("netdev_query", "网络设备只读自由查询（华为/H3C/锐捷，免确认）：执行 dis/display/show 开头的任意只读命令并回传原文，用于覆盖专用工具没有的查询。常用命令——VLAN：display vlan brief / show vlan brief；MAC：display mac-address | include <关键字>；STP：display stp brief / show spanning-tree summary；链路聚合：display link-aggregation verbose / show interface aggregation brief；LLDP 邻居：display lldp neighbor brief；光模块：display transceiver interface；设备模块：display device；OSPF/BGP 邻居：display ospf peer / display bgp peer；在线用户：display users；DHCP：display dhcp server statistics。",
+         {"type": "object",
+          "properties": {"commands": {"type": "array", "items": {"type": "string"},
+                                      "description": "只读命令列表（必须 dis/display/show 开头，可用 | include 过滤，可多条一次执行）"},
+                         "devices": _NETDEV_DEVICES_DESC},
+          "required": ["commands"]},
+         _h_query, device_type="netdev", needs_device=False),
     Tool("netdev_locate_terminal", "终端定位：按 IP / MAC / 设备名在全网拓扑（ARP+MAC 表）中定位终端接入的交换机与端口，用于故障定位与资产盘点。缓存过期时会自动重新采集（耗时较长）。",
          {"type": "object",
           "properties": {"query": {"type": "string", "description": "要定位的 IP / MAC / 设备名"},

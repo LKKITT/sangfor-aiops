@@ -493,3 +493,98 @@ def test_chat_api_accepts_netdev_device(nd_h3c):
         events = [line[6:] for line in resp.text.split("\n") if line.startswith("data: ")]
         texts = "".join(e.get("text", "") for e in map(lambda s: __import__("json").loads(s), events))
         assert "网络设备" in texts
+
+
+# ---------- 接口配置查看（dis this 模式）与只读自由查询 ----------
+
+def test_interface_config_dis_this(nd_h3c, nd_huawei, fake_run):
+    """H3C/华为：进入接口视图 → display this → return；锐捷：show run interface 单命令。"""
+    from app.agent.netdev_tools import _h_get_interface_config
+    r = asyncio.run(_h_get_interface_config(
+        None, {"interface": "GigabitEthernet1/0/1", "devices": ["AI核心交换机"]}, {}))
+    assert r["succeeded"] == 1
+    cmds = fake_run[0][1]
+    assert cmds[0] == "interface GigabitEthernet1/0/1"
+    assert cmds[1] == "display this"
+    assert cmds[-1] == "return"
+    r2 = asyncio.run(_h_get_interface_config(
+        None, {"interface": "GigabitEthernet0/1", "devices": ["AI接入交换机"]}, {}))
+    assert r2["succeeded"] == 1
+    assert fake_run[-1][1] == ["interface GigabitEthernet0/1", "display this", "return"]
+
+
+def test_interface_config_requires_name(nd_h3c, fake_run):
+    from app.agent.netdev_tools import _h_get_interface_config
+    r = asyncio.run(_h_get_interface_config(None, {"devices": ["AI核心交换机"]}, {}))
+    assert "interface" in r["error"]
+
+
+def test_netdev_query_readonly_guard(nd_h3c, fake_run):
+    """只读自由查询：dis/display/show 放行（免确认）；其余命令拒绝并指引走确认工具。"""
+    from app.agent.netdev_tools import _h_query
+    ok = asyncio.run(_h_query(None, {"commands": ["display vlan brief",
+                                                  "dis mac-address | include aabb"],
+                                     "devices": ["AI核心交换机"]}, {}))
+    assert ok["succeeded"] == 1
+    assert fake_run[-1][1] == ["display vlan brief", "dis mac-address | include aabb"]
+    bad = asyncio.run(_h_query(None, {"commands": ["system-view", "display vlan"],
+                                      "devices": ["AI核心交换机"]}, {}))
+    assert "只读" in bad["error"] and "system-view" in bad["error"]
+    bad2 = asyncio.run(_h_query(None, {"commands": ["undo vlan 10"],
+                                       "devices": ["AI核心交换机"]}, {}))
+    assert "只读" in bad2["error"]
+
+
+def test_netdev_query_tool_not_write():
+    """netdev_query 必须注册为只读工具（不走确认卡片），netdev_run_commands 保持写语义。"""
+    assert TOOLS_BY_NAME["netdev_query"].write is False
+    assert TOOLS_BY_NAME["netdev_get_interface_config"].write is False
+    assert TOOLS_BY_NAME["netdev_run_commands"].write is True
+
+
+def test_locate_stale_cache_triggers_recollect(monkeypatch, nd_h3c):
+    """定位增强：缓存过期（非仅空）时自动重采集；组内未命中降级搜索其余分组。"""
+    # 目标终端所在的"政务网"分组需要真实存在（降级循环遍历 DB 分组清单）
+    gov = db.save_netdev_device({"name": "政务接入", "vendor": "h3c", "host": "10.77.0.9",
+                                 "port": 22, "username": "admin", "password": "x",
+                                 "group_name": "政务网"})
+    try:
+        _locate_stale_asserts(monkeypatch, nd_h3c, gov)
+    finally:
+        db.delete_netdev_device(gov["id"])
+
+
+def _locate_stale_asserts(monkeypatch, nd_h3c, gov):
+    from datetime import datetime, timedelta
+    old_ts = (datetime.now() - timedelta(days=3)).isoformat(timespec="seconds")
+    db.save_netdev_topology_cache(nd_h3c["id"], "AI测试组", [], [{"ip": "1.1.1.1", "mac": "aa"}], [])
+    with db._connect() as conn:
+        conn.execute("UPDATE netdev_topology_cache SET fetched_at=? WHERE device_id=?",
+                     (old_ts, nd_h3c["id"]))
+
+    collected = []
+    searches = []
+
+    async def fake_collect(group, force=False):
+        collected.append(group)
+        return {"total": 1, "collected": 1, "failed": 0}
+
+    def fake_search(group, query):
+        searches.append(group)
+        if group == "AI测试组" and query == "10.72.25.16":
+            return {"kind": "none", "hits": [], "arp_refs": [], "primary_hit": None,
+                    "reason": "ARP/MAC 表中未找到"}
+        if group == "政务网" and query == "10.72.25.16":
+            return {"kind": "asset",
+                    "hits": [{"device_id": "nd_x", "device_name": "政务接入", "port": "GE1/0/8",
+                              "ip": "10.72.25.16", "mac": "", "access": True, "source": "mac-table"}],
+                    "arp_refs": [], "primary_hit": "政务接入"}
+        return {"kind": "none", "hits": [], "arp_refs": [], "primary_hit": None, "reason": "未找到"}
+
+    monkeypatch.setattr(topo, "collect_group", fake_collect)
+    monkeypatch.setattr(topo, "search_asset", fake_search)
+    # 指定组未命中 → 降级到其余分组（政务网）命中
+    r = asyncio.run(_h_locate_terminal(None, {"query": "10.72.25.16", "group": "AI测试组"}, {}))
+    assert "AI测试组" in collected, "过期缓存应触发重采集"
+    assert any(h.get("group") == "政务网" for h in r.get("groups", [])), "组内未命中应降级全网"
+    assert "10.72.25.16" in r["_llm_summary"] or "政务接入" in r["_llm_summary"]

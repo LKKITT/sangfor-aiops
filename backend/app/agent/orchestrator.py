@@ -38,7 +38,9 @@ from app.services.device_cache import device_cache
 from app.services.app_settings import get_llm_config
 
 MAX_TOOL_ROUNDS = 8
-TOOL_RESULT_LIMIT = 8000
+# 工具结果回传上限：网络设备批量查询（几十台 × 健康四命令）轻松超过 8000，
+# 截断会让 LLM 拿到残缺数据而漏答设备；放宽到 24K（历史瘦身机制另行控制 prompt 体积）
+TOOL_RESULT_LIMIT = 24000
 # 只读工具整轮并发上限：一轮内全部为只读调用时并发执行（延迟从"各工具之和"降为"最慢者"）。
 # 设备侧单 token 并发上限未知，取保守值；写操作永远不参与并行。
 READ_CONCURRENCY = 3
@@ -604,7 +606,11 @@ class AgentOrchestrator:
                     if isinstance(result, dict) and "_read_error" in result:
                         continue
                     raws[r["key"]] = result
-                    content = json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]
+                    raw_content = json.dumps(result, ensure_ascii=False)
+                    content = (raw_content if len(raw_content) <= TOOL_RESULT_LIMIT
+                               else raw_content[:TOOL_RESULT_LIMIT]
+                               + f"…〔结果超长已截断：原文 {len(raw_content)} 字符，"
+                                 "请用更细的过滤条件缩小范围后重查〕")
                     executed_results[r["key"]] = (content, _compact_result(r["call"]["name"], result))
                 # 失败原因按 key 收集：同 key 重复调用直接复用，不重试执行
                 errors = {r["key"]: result["_read_error"]
@@ -743,7 +749,11 @@ class AgentOrchestrator:
                         client = await get_client(device_id) if tool.needs_device else None
                         result = await tool.handler(client, args, device)
                     read_duration_ms = (time.perf_counter() - _t0) * 1000
-                    content = json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]
+                    raw_content = json.dumps(result, ensure_ascii=False)
+                    content = (raw_content if len(raw_content) <= TOOL_RESULT_LIMIT
+                               else raw_content[:TOOL_RESULT_LIMIT]
+                               + f"…〔结果超长已截断：原文 {len(raw_content)} 字符，"
+                                 "请用更细的过滤条件缩小范围后重查〕")
                     executed_results[call_key] = (content, _compact_result(name, result))
                     db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
                                                      "content": content})

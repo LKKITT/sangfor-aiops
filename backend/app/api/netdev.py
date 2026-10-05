@@ -211,6 +211,15 @@ async def ws_terminal(ws: WebSocket, device_id: str) -> None:
         await ws.close()
         return
 
+    # 连接即关闭分页（如 H3C screen-length disable）：dis cu 等长输出不再停在 ---- More ----。
+    # 该命令是会话级显示设置（视图分页），不写入设备配置、不影响其他会话；
+    # 失败（如设备不支持/权限不足）静默跳过，用户仍可手动翻页
+    if paging_cmd := netdev_service.profile_of(device.get("vendor", "")).paging_cmd:
+        try:
+            proc.stdin.write(paging_cmd + "\n")
+        except Exception:   # noqa: BLE001
+            pass
+
     async def pump_out() -> None:
         try:
             while True:

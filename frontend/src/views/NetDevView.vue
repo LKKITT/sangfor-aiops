@@ -604,7 +604,11 @@ async function initConsole() {
     })
     term.onSelectionChange(() => copySelection(term))
 
-    term.onData(text => consoleWs?.send(JSON.stringify({ type: 'data', text })))
+    term.onData(text => {
+      // Backspace：xterm 默认发 （DEL），部分网络设备 CLI（Comware/VRP）只认 （BS）
+      const out = text === '' ? '' : text
+      consoleWs?.send(JSON.stringify({ type: 'data', text: out }))
+    })
     term.onResize(({ cols, rows }) =>
       consoleWs?.send(JSON.stringify({ type: 'resize', cols, rows })))
     consoleTerm = term
