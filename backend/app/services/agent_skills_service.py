@@ -115,10 +115,14 @@ def skill_body(folder: str, cap: int = 12000) -> str:
     raise ValueError(f"技能「{folder}」不存在或缺少 SKILL.md")
 
 
-def enabled_catalog() -> list[dict]:
-    """已启用技能清单（注入系统提示：名称 + 描述，引导 LLM 按需 load_skill）。"""
+def enabled_catalog(folders=None) -> list[dict]:
+    """已启用技能清单（注入系统提示：名称 + 描述，引导 LLM 按需 load_skill）。
+
+    folders=None 表示全部已启用；传 folder 列表则只返回指定的（对话级选用）。
+    """
     return [{"folder": s["folder"], "name": s["name"], "description": s["description"]}
-            for s in list_skills() if s["enabled"]]
+            for s in list_skills() if s["enabled"]
+            and (folders is None or s["folder"] in set(folders))]
 
 
 # ---------------- GitHub 文件夹导入 ----------------

@@ -23,6 +23,8 @@ class ChatIn(BaseModel):
     device_id: str
     conv_id: str | None = None   # 续接已有对话（带待确认卡片上下文）
     use_knowledge: bool = False  # 勾选后启用官方知识库检索技能（诸葛小T）
+    mcps: list[str] | None = None    # 对话级选用：MCP 服务 id 列表（None=全部已启用）
+    skills: list[str] | None = None  # 对话级选用：Agent Skills folder 列表（None=全部已启用）
 
 
 class ConfirmIn(BaseModel):
@@ -30,6 +32,8 @@ class ConfirmIn(BaseModel):
     device_id: str
     approved: bool
     edited: dict | None = None   # 用户在确认卡片上编辑后的参数（如绑定表单）
+    mcps: list[str] | None = None
+    skills: list[str] | None = None
 
 
 def _sse_events(generator, conv_id: str = ""):
@@ -75,7 +79,9 @@ async def chat(payload: ChatIn):
     # 注册取消信号
     _cancel_events[conv_id] = asyncio.Event()
     return _sse_events(orchestrator.stream_chat(conv_id, payload.message, payload.device_id,
-                                                use_knowledge=payload.use_knowledge), conv_id=conv_id)
+                                                use_knowledge=payload.use_knowledge,
+                                                mcps=payload.mcps, skill_folders=payload.skills),
+                       conv_id=conv_id)
 
 
 @router.post("/{conv_id}/cancel")
@@ -95,7 +101,8 @@ async def confirm(payload: ConfirmIn):
         raise HTTPException(404, "确认任务不存在")
     return _sse_events(orchestrator.resume_confirm(action["conv_id"], payload.action_id,
                                                    payload.approved, payload.device_id,
-                                                   edited=payload.edited))
+                                                   edited=payload.edited,
+                                                   mcps=payload.mcps, skills=payload.skills))
 
 
 @router.get("/conversations")

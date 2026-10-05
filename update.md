@@ -4,6 +4,23 @@
 
 ---
 ## 2026-10-05
+### feat: 对话级 MCP/Skills 选用——输入台扩展能力选择器
+
+AI 对话输入台新增「扩展能力」选择器（popover）：分 MCP 服务 / Agent Skills 两组勾选，
+默认全部已启用项；取消勾选后本次对话仅注入所选服务/技能，带「恢复全部」一键复位。
+选择随对话请求（chat 与 confirm 续答）透传后端，未传（None）保持兼容=全部已启用。
+
+**后端链路贯通**：ChatIn/ConfirmIn 增加 mcps/skills 字段 → stream_chat/resume_confirm
+ → _run_llm_loop → routing.tool_scope（agent_tools 按 server_id 过滤，桥接工具记录
+ _mcp_server_id；enabled_catalog 按 folder 过滤，技能清单系统提示同步收窄）
+
+**端到端验证**：真实对话勾选 find-skills 后提问，模型经系统提示清单调用 load_skill
+ 加载技能说明并基于内容作答（回答中正确引用技能用途）；无已启用项时选择器隐藏
+
+**修复**：选用参数 skills 曾遮蔽编排器/routing 的 skills 模块导入（F821 13 处失败），
+ 统一改名 skill_folders
+
+---
 ### feat: 平台设置扩展 MCP/Skills 管理 + AI 对话接入外部能力（MCP/Agent Skills）
 
 **平台设置重构为三标签**：基本配置（原 BBS/LLM/企微原样迁入）｜MCP 配置｜Skills 配置

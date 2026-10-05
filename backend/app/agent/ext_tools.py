@@ -20,9 +20,9 @@ async def _h_load_skill(client, args, device):
                              "说明中引用的脚本/文件路径为相对技能目录的路径。")}
 
 
-def skills_catalog_message() -> str | None:
+def skills_catalog_message(folders=None) -> str | None:
     """已启用技能的系统提示清单（无启用技能返回 None 不注入）。"""
-    catalog = agent_skills_service.enabled_catalog()
+    catalog = agent_skills_service.enabled_catalog(folders)
     if not catalog:
         return None
     lines = [f"- {s['name']}（调用 load_skill 时 skill 传 \"{s['folder']}\"）：{s['description']}"
@@ -32,8 +32,8 @@ def skills_catalog_message() -> str | None:
             "再严格按说明执行（技能可能包含脚本、模板或特定流程约束）：\n" + "\n".join(lines))
 
 
-async def get_external_tools() -> list[Tool]:
-    """外部工具全集：load_skill + 已启用 MCP 服务的桥接工具。"""
+async def get_external_tools(mcps=None, skills=None) -> list[Tool]:
+    """外部工具全集：load_skill + 指定 MCP 服务的桥接工具（对话级选用）。"""
     tools = [Tool(
         name="load_skill",
         description="加载已启用的 Agent Skill 的完整说明（含操作步骤/脚本用法）。"
@@ -44,5 +44,5 @@ async def get_external_tools() -> list[Tool]:
                     "required": ["skill"]},
         handler=_h_load_skill,
         device_type=None, needs_device=False, batch_devices=False)]
-    tools += await mcp_service.agent_tools()
+    tools += await mcp_service.agent_tools(server_ids=mcps)
     return tools

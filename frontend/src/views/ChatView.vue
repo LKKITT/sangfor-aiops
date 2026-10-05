@@ -111,6 +111,33 @@
           </div>
           <div class="composer-toolbar">
             <div class="ct-left">
+              <el-popover placement="top-start" :width="300" trigger="click">
+                <template #reference>
+                  <button class="kb-toggle" :class="{ on: extDeselected } "
+                          title="选择本次对话使用的 MCP 服务与 Agent Skills（默认全部已启用项）">
+                    <el-icon><SetUp /></el-icon>扩展能力
+                  </button>
+                </template>
+                <div class="ext-pop">
+                  <div class="ext-sec" v-if="extMcps.length">
+                    <div class="ext-sec-title">MCP 服务
+                      <el-button size="small" text type="primary" @click="resetExt">恢复全部</el-button>
+                    </div>
+                    <el-checkbox-group v-model="selMcps" class="ext-opts">
+                      <el-checkbox v-for="m in extMcps" :key="m.id" :value="m.id">{{ m.name }}</el-checkbox>
+                    </el-checkbox-group>
+                  </div>
+                  <div class="ext-sec" v-if="extSkills.length">
+                    <div class="ext-sec-title">Agent Skills</div>
+                    <el-checkbox-group v-model="selSkills" class="ext-opts">
+                      <el-checkbox v-for="s in extSkills" :key="s.folder" :value="s.folder">{{ s.name }}</el-checkbox>
+                    </el-checkbox-group>
+                  </div>
+                  <div v-if="!extMcps.length && !extSkills.length" class="ext-none">
+                    尚未启用 MCP 服务或 Agent Skills（平台设置中配置）
+                  </div>
+                </div>
+              </el-popover>
               <button class="kb-toggle" :class="{ on: useKnowledge }" @click="useKnowledge = !useKnowledge"
                       title="勾选后，对话可检索深信服官方知识库（诸葛小T），回答将附带官方引用来源；对话还会沉淀到个人知识库">
                 <el-icon><Search /></el-icon>查询知识库
@@ -191,7 +218,7 @@ import { ref, reactive, computed, nextTick, watch, onMounted, onBeforeUnmount } 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { store, currentDevice, loadDevices, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from '../store.js'
-import { apiGet, chatStream, Devices } from '../api.js'
+import { apiGet, chatStream, Devices, Settings } from '../api.js'
 import ConfirmCard from '../components/chat/ConfirmCard.vue'
 import { applyEvent, toolLabel } from '../chat/agentStream'
 
@@ -216,6 +243,28 @@ let currentConvId = null
 // 终止对话：AbortController
 let abortController = null
 const queuedText = ref('')   // 流式期间排队的待发送消息
+
+// ---- 扩展能力选用（MCP 服务 / Agent Skills；null=全部已启用） ----
+const extMcps = ref([])      // 全部已启用服务 [{id, name}]
+const extSkills = ref([])    // 全部已启用技能 [{folder, name}]
+const selMcps = ref(null)    // 选中的服务 id 列表（null=全部）
+const selSkills = ref(null)  // 选中的技能 folder 列表（null=全部）
+const extDeselected = computed(() =>
+  (Array.isArray(selMcps.value) && selMcps.value.length < extMcps.value.length)
+  || (Array.isArray(selSkills.value) && selSkills.value.length < extSkills.value.length))
+
+async function loadExtCapabilities() {
+  try {
+    const [m, s] = await Promise.all([Settings.mcpList(), Settings.skillsList()])
+    extMcps.value = (m.servers || []).filter(x => x.enabled).map(x => ({ id: x.id, name: x.name }))
+    extSkills.value = (s.skills || []).filter(x => x.enabled).map(x => ({ folder: x.folder, name: x.name }))
+  } catch { /* 设置接口异常不影响对话 */ }
+}
+
+function resetExt() {
+  selMcps.value = null
+  selSkills.value = null
+}
 
 const scrollRef = ref(null)
 const quickPrompts = computed(() => {
@@ -323,6 +372,7 @@ onMounted(async () => {
   await loadDevices()
   loadMessages(store.currentDeviceId)
   consumeChatSeed()
+  loadExtCapabilities()
 })
 watch(() => store.chatSeed?.tick, () => consumeChatSeed())
 watch(() => store.currentDeviceId, (newId, oldId) => {
@@ -536,7 +586,8 @@ function send(preset) {
   scrollBottom()
 
   abortController = new AbortController()
-  const body = { message: text, device_id: dev.id, use_knowledge: useKnowledge.value }
+  const body = { message: text, device_id: dev.id, use_knowledge: useKnowledge.value,
+                 mcps: selMcps.value, skills: selSkills.value }
   if (currentConvId) body.conv_id = currentConvId
   chatStream('/api/chat', body, ev => handleEvent(ev, aiMsg), abortController.signal)
     .catch(e => {
@@ -593,7 +644,9 @@ async function confirmAction(msg, approved, edited) {
   const contMsg = reactiveMsg()
   messages.value.push(contMsg)
   chatStream('/api/chat/confirm', {
-    action_id: msg.confirm.action_id, device_id: dev.id, approved, edited: approved ? edited : null
+    action_id: msg.confirm.action_id, device_id: dev.id, approved,
+    edited: approved ? edited : null,
+    mcps: selMcps.value, skills: selSkills.value
   }, ev => applyEvent(contMsg, ev, {
     onMeta: (convId) => { if (convId) currentConvId = convId },
     onConfirm: () => scrollBottom(),
@@ -794,6 +847,13 @@ function allPlanItems(plan) {
 }
 
 .retry-row { margin-top: 8px; }
+.ext-pop { max-height: 46vh; overflow-y: auto; }
+.ext-sec { margin-bottom: 8px; }
+.ext-sec-title { display: flex; align-items: center; justify-content: space-between;
+                 font-size: 12px; font-weight: 650; color: var(--sfa-text-2); margin-bottom: 4px; }
+.ext-opts { display: flex; flex-direction: column; gap: 0; }
+.ext-opts .el-checkbox { height: 26px; margin-right: 0; }
+.ext-none { font-size: 12px; color: var(--sfa-text-4); text-align: center; padding: 8px 0; }
 .queued-hint {
   display: flex; align-items: center; gap: 4px; margin-bottom: 6px;
   font-size: 12px; color: var(--sfa-warning, var(--sfa-warn-ink)); background: var(--sfa-warn-bg);

@@ -26,8 +26,7 @@ from openai import AsyncOpenAI
 from app import db
 from app.adapters.factory import get_client
 from app.agent import guardrails
-from app.agent import skills
-from app.agent import memory, offline, routing
+from app.agent import memory, offline, routing, skills
 from app.agent.prompts import SYSTEM_PROMPT, device_context_message
 from app.agent.tools import TOOLS_BY_NAME, get_tools
 from app.config import settings
@@ -155,7 +154,9 @@ class AgentOrchestrator:
     # ================= 对话入口 =================
 
     async def stream_chat(self, conv_id: str, user_message: str, device_id: str,
-                          use_knowledge: bool = False) -> AsyncGenerator[dict, None]:
+                          use_knowledge: bool = False,
+                          mcps: list[str] | None = None,
+                          skill_folders: list[str] | None = None) -> AsyncGenerator[dict, None]:
         guardrails.check_user_request(user_message)   # 黑名单先于 LLM 拦截
         device = load_any_device(device_id)
         # 本轮消息起点：知识沉淀（命中官方知识库时）只取本轮新增对话，不引入之前会话内容
@@ -174,13 +175,16 @@ class AgentOrchestrator:
             return
         async for ev in self._run_llm_loop(conv_id, device_id, device,
                                            user_message=user_message, use_knowledge=use_knowledge,
-                                           kb_since_id=kb_since, kb_auto=kb_auto):
+                                           kb_since_id=kb_since, kb_auto=kb_auto,
+                                           mcps=mcps, skill_folders=skill_folders):
             yield ev
 
     # ================= 确认流恢复 =================
 
     async def resume_confirm(self, conv_id: str, action_id: str, approved: bool,
-                             device_id: str, edited: dict | None = None) -> AsyncGenerator[dict, None]:
+                             device_id: str, edited: dict | None = None,
+                             mcps: list[str] | None = None,
+                             skill_folders: list[str] | None = None) -> AsyncGenerator[dict, None]:
         action = db.get_pending_action(action_id)
         if not action or action["conv_id"] != conv_id:
             yield {"type": "error", "text": "确认任务不存在"}
@@ -276,7 +280,7 @@ class AgentOrchestrator:
         if self._llm() is None:
             yield {"type": "done"}
             return
-        async for ev in self._run_llm_loop(conv_id, device_id, device):
+        async for ev in self._run_llm_loop(conv_id, device_id, device, mcps=mcps, skill_folders=skill_folders):
             yield ev
 
     # ================= 记忆管理（实现见 agent/memory.py） =================
@@ -361,8 +365,11 @@ class AgentOrchestrator:
     async def _llm_select_skill(self, user_message: str, dtype: str):
         return await routing.llm_select_skill(self, user_message, dtype)
 
-    async def _tool_scope(self, skill, dtype: str, use_knowledge: bool) -> tuple[list[dict], dict]:
-        return await routing.tool_scope(skill, dtype, use_knowledge)
+    async def _tool_scope(self, skill, dtype: str, use_knowledge: bool,
+                         mcps: list[str] | None = None,
+                         skill_folders: list[str] | None = None) -> tuple[list[dict], dict]:
+        return await routing.tool_scope(skill, dtype, use_knowledge,
+                                        mcps=mcps, skill_folders=skill_folders)
 
     # ================= 跨设备批量（devices 参数 fan-out） =================
 
@@ -473,7 +480,9 @@ class AgentOrchestrator:
     async def _run_llm_loop(self, conv_id: str, device_id: str, device: dict,
                             user_message: str = "", use_knowledge: bool = False,
                             kb_since_id: int | None = None,
-                            kb_auto: bool = False) -> AsyncGenerator[dict, None]:
+                            kb_auto: bool = False,
+                            mcps: list[str] | None = None,
+                            skill_folders: list[str] | None = None) -> AsyncGenerator[dict, None]:
         messages = self._build_messages(conv_id, device)
         dtype = device_context_type(device)
         # 技能路由：关键词优先（零延迟、离线可用）→ 疑似写操作时 LLM 按目录兜底 → 回退全量工具模式
@@ -494,11 +503,12 @@ class AgentOrchestrator:
             messages.append({"role": "system", "content": skills.kb_auto_guide()})
             yield {"type": "skill_selected", "skill": "kb-auto", "name": "知识问答（本地优先）"}
         tool_schemas, tools_by_name = await self._tool_scope(skill, dtype,
-                                                             use_knowledge=use_knowledge or kb_auto)
-        # 已启用 Agent Skills 清单注入（LLM 据此决定何时 load_skill）
+                                                             use_knowledge=use_knowledge or kb_auto,
+                                                             mcps=mcps, skill_folders=skill_folders)
+        # 已启用 Agent Skills 清单注入（对话级选用：skills=None 全部启用，列表=指定项）
         try:
             from app.agent.ext_tools import skills_catalog_message
-            catalog = skills_catalog_message()
+            catalog = skills_catalog_message(skill_folders)
             if catalog:
                 messages.append({"role": "system", "content": catalog})
         except Exception:   # noqa: BLE001

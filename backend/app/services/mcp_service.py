@@ -148,27 +148,37 @@ def invalidate_tools_cache() -> None:
     _reset_sessions()
 
 
-async def agent_tools() -> list[Tool]:
-    """已启用 MCP 服务的全部工具，桥接为 Agent Tool（缓存；配置变更后失效）。"""
+async def agent_tools(server_ids=None) -> list[Tool]:
+    """已启用 MCP 服务的工具桥接为 Agent Tool（缓存；配置变更后失效）。
+
+    server_ids=None 表示全部已启用；传 id 列表则只返回指定服务（对话级选用）。"""
     global _tools_cache
     if _tools_cache is not None:
-        return _tools_cache
+        tools = _tools_cache
+        if server_ids is None:
+            return tools
+        return [t for t in tools if getattr(t, "_mcp_server_id", "") in set(server_ids)]
     tools: list[Tool] = []
     for server in get_servers():
         if not server.get("enabled"):
             continue
+        server_id = server["id"]
         try:
             session = await _get_session(server)
             listing = await session.list_tools()
         except Exception as e:   # noqa: BLE001 —— 单服务失联不拖垮其它
-            tools.append(Tool(name=f"mcp_{_slug(server['name'])}_unavailable",
-                              description=f"MCP 服务「{server['name']}」不可用：{e}",
-                              parameters={"type": "object", "properties": {}},
-                              handler=_mk_unavailable(server["name"]),
-                              device_type=None, needs_device=False, batch_devices=False))
+            unavail = Tool(name=f"mcp_{_slug(server['name'])}_unavailable",
+                           description=f"MCP 服务「{server['name']}」不可用：{e}",
+                           parameters={"type": "object", "properties": {}},
+                           handler=_mk_unavailable(server["name"]),
+                           device_type=None, needs_device=False, batch_devices=False)
+            unavail._mcp_server_id = server_id
+            tools.append(unavail)
             continue
         for t in listing.tools:
-            tools.append(_bridge_tool(server, t))
+            bridged = _bridge_tool(server, t)
+            bridged._mcp_server_id = server_id   # 对话级选用过滤用
+            tools.append(bridged)
     _tools_cache = tools
     return tools
 
