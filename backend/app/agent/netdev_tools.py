@@ -12,6 +12,7 @@
 from app import db
 from app.agent.tools import Tool
 from app.services import netdev_service
+from app.services.device_scope import device_kind
 
 # AI 对话支持的网络设备厂家（用户需求口径：只针对 H3C、华为、锐捷）
 AI_VENDORS = {"huawei", "h3c", "ruijie"}
@@ -95,7 +96,7 @@ def _resolve_targets(args: dict, device: dict) -> tuple[list[dict] | None, str]:
         if not resolved:
             return None, "未提供有效的目标网络设备"
         return resolved, ""
-    if device and str(device.get("id", "")).startswith("nd_") and device.get("host"):
+    if device and device_kind(device.get("id", "")) == "netdev" and device.get("host"):
         return [device], ""
     return None, ("当前对话未绑定网络设备，请指定目标网络设备（devices 参数传设备名称或管理IP，"
                   "传 [\"all\"] 表示全部网络设备）。"

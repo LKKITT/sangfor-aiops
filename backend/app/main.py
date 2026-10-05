@@ -2,6 +2,8 @@
 import asyncio
 import logging
 import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -88,6 +90,20 @@ def _remove_demo_devices() -> None:
 
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+_STARTED_AT = time.time()
+
+
+@app.middleware("http")
+async def request_context_middleware(request, call_next):
+    """请求上下文：request-id 贯穿（响应头回带）+ 访问日志（方法/路径/状态/耗时）。"""
+    rid = request.headers.get("x-request-id") or f"req_{uuid.uuid4().hex[:12]}"
+    request.state.request_id = rid
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = rid
+    log.info("%s %s -> %s (%.0fms) [%s]", request.method, request.url.path,
+             response.status_code, (time.perf_counter() - t0) * 1000, rid)
+    return response
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(devices.router)
@@ -102,8 +118,14 @@ app.include_router(netdev.router)
 
 @app.get("/api/health")
 def health() -> dict:
+    """健康检查 + 运行快照：在线状态、资产数量、待确认动作、近 1h 工具耗时分布。"""
     from app.services.app_settings import get_llm_config
     llm = get_llm_config()
     return {"ok": True, "app": settings.app_name,
             "llm_configured": bool(llm["api_key"]) and not llm["api_key"].startswith("your-"),
-            "readonly_mode": settings.readonly_mode}
+            "readonly_mode": settings.readonly_mode,
+            "runtime": {"uptime_s": int(time.time() - _STARTED_AT),
+                        "sangfor_devices": len(db.list_devices()),
+                        "netdev_devices": len(db.list_netdev_devices()),
+                        "pending_actions": db.count_pending_actions(),
+                        "tool_calls_1h": db.stats_tool_latency(minutes=60)}}

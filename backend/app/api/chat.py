@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app import db
 from app.agent import guardrails
 from app.agent.orchestrator import AgentOrchestrator
+from app.services import device_scope
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 orchestrator = AgentOrchestrator()
@@ -56,12 +57,8 @@ def _sse_events(generator, conv_id: str = ""):
 
 
 def _device_exists(device_id: str) -> bool:
-    """设备存在性校验：global 为全局模式；nd_ 前缀为网络设备；其余为深信服设备。"""
-    if device_id == "global":
-        return True
-    if device_id.startswith("nd_"):
-        return db.get_netdev_device(device_id) is not None
-    return db.get_device(device_id) is not None
+    """设备存在性校验（统一走 device_scope：global / nd_ 网络设备 / 深信服设备）。"""
+    return device_scope.exists(device_id)
 
 
 @router.post("")

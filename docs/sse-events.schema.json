@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/MetaEvent"
+    },
+    {
+      "$ref": "#/$defs/SkillSelectedEvent"
+    },
+    {
+      "$ref": "#/$defs/TokenEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolCallEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolResultEvent"
+    },
+    {
+      "$ref": "#/$defs/ConfirmRequiredEvent"
+    },
+    {
+      "$ref": "#/$defs/ConfirmResultEvent"
+    },
+    {
+      "$ref": "#/$defs/OfflineNoticeEvent"
+    },
+    {
+      "$ref": "#/$defs/CancelledEvent"
+    },
+    {
+      "$ref": "#/$defs/ErrorEvent"
+    },
+    {
+      "$ref": "#/$defs/DoneEvent"
+    }
+  ],
+  "$defs": {
+    "MetaEvent": {
+      "properties": {
+        "type": {
+          "const": "meta",
+          "title": "Type",
+          "type": "string"
+        },
+        "conv_id": {
+          "title": "Conv Id",
+          "type": "string"
+        },
+        "device_id": {
+          "default": "",
+          "title": "Device Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "conv_id"
+      ],
+      "type": "object"
+    },
+    "SkillSelectedEvent": {
+      "properties": {
+        "type": {
+          "const": "skill_selected",
+          "title": "Type",
+          "type": "string"
+        },
+        "skill": {
+          "title": "Skill",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "skill",
+        "name"
+      ],
+      "type": "object"
+    },
+    "TokenEvent": {
+      "properties": {
+        "type": {
+          "const": "token",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "type": "object"
+    },
+    "ToolCallEvent": {
+      "properties": {
+        "type": {
+          "const": "tool_call",
+          "title": "Type",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": true,
+          "title": "Args",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ToolResultEvent": {
+      "properties": {
+        "type": {
+          "const": "tool_result",
+          "title": "Type",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "preview": {
+          "default": "",
+          "title": "Preview",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ConfirmRequiredEvent": {
+      "properties": {
+        "type": {
+          "const": "confirm_required",
+          "title": "Type",
+          "type": "string"
+        },
+        "action": {
+          "additionalProperties": true,
+          "title": "Action",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "action"
+      ],
+      "type": "object"
+    },
+    "ConfirmResultEvent": {
+      "properties": {
+        "type": {
+          "const": "confirm_result",
+          "title": "Type",
+          "type": "string"
+        },
+        "action_id": {
+          "title": "Action Id",
+          "type": "string"
+        },
+        "approved": {
+          "title": "Approved",
+          "type": "boolean"
+        },
+        "failed": {
+          "default": false,
+          "title": "Failed",
+          "type": "boolean"
+        },
+        "result": {
+          "default": null,
+          "title": "Result"
+        },
+        "safety_backup_id": {
+          "default": "",
+          "title": "Safety Backup Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "action_id",
+        "approved"
+      ],
+      "type": "object"
+    },
+    "OfflineNoticeEvent": {
+      "properties": {
+        "type": {
+          "const": "offline_notice",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "type": "object"
+    },
+    "CancelledEvent": {
+      "properties": {
+        "type": {
+          "const": "cancelled",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "ErrorEvent": {
+      "properties": {
+        "type": {
+          "const": "error",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "type": "object"
+    },
+    "DoneEvent": {
+      "properties": {
+        "type": {
+          "const": "done",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    }
+  }
+}

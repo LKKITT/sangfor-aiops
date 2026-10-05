@@ -123,6 +123,37 @@ def get_pending_action_by_conv(conv_id: str) -> Optional[dict]:
 
 
 
+def stats_tool_latency(minutes: int = 60) -> dict:
+    """近 N 分钟工具调用耗时统计（取审计明细中的 ms 字段）：次数 / p50 / p95（毫秒）。"""
+    cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT detail_json FROM audit_logs WHERE action LIKE 'agent.tool.%' AND ts >= ?"
+            " ORDER BY id DESC LIMIT 500", (cutoff,)).fetchall()
+    vals = []
+    for r in rows:
+        try:
+            ms = (json.loads(r["detail_json"]) or {}).get("ms")
+            if isinstance(ms, (int, float)):
+                vals.append(float(ms))
+        except ValueError:
+            continue
+    if not vals:
+        return {"count": 0, "p50_ms": None, "p95_ms": None}
+    vals.sort()
+
+    def pct(p):
+        return round(vals[min(len(vals) - 1, int(len(vals) * p))], 1)
+
+    return {"count": len(vals), "p50_ms": pct(0.5), "p95_ms": pct(0.95)}
+
+
+def count_pending_actions() -> int:
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS c FROM pending_actions WHERE status='pending'").fetchone()["c"]
+
+
 def cleanup_expired(retention_days: int = 180, audit_days: int = 365) -> dict:
     """数据保留清理：过期会话（含消息/摘要/沉淀状态/已处理待确认）与审计日志。
 

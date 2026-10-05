@@ -1,4 +1,5 @@
 """Agent 系统提示词 + 记忆注入 + 设备上下文。"""
+from app.services.device_scope import device_kind
 
 SYSTEM_PROMPT = """你是「全局运维 AI 助手」（深信服售后技术支持 Agent），面向售后技术支持工程师与网络管理员，通过自然语言统一管理所有已添加的深信服设备（AF 防火墙 / AC 上网行为管理 / SCP 云计算平台）与网络设备（华为 / H3C / 锐捷交换机、路由器），并提供软件更新建议。
 
@@ -68,7 +69,7 @@ def device_context_message(device: dict, status: dict | None) -> str:
                      "用户未指明设备时先询问再操作。")
         return "\n".join(lines)
     dev_id = str(device.get("id", ""))
-    if dev_id.startswith("nd_"):
+    if device_kind(dev_id) == "netdev":
         # 网络设备（SSH 交换机/路由器）：无 mode/readonly 概念，按厂家给能力提示
         vendor = device.get("vendor", "")
         vendor_cn = {"huawei": "华为 VRP", "h3c": "H3C Comware", "ruijie": "锐捷 RGSOS"}.get(

@@ -7,6 +7,7 @@ from typing import AsyncGenerator
 
 from app import db
 from app.adapters.factory import get_client
+from app.services.device_scope import device_kind
 
 
 async def offline_reply(conv_id: str, message: str, device_id: str,
@@ -27,7 +28,7 @@ async def offline_answer(message: str, device_id: str, device: dict) -> str:
     from app.agent.orchestrator import GLOBAL_DEVICE_ID   # 延迟导入避免循环依赖
     from app.services.analyzer import run_checks
 
-    if str(device_id or "").startswith("nd_"):
+    if device_kind(device_id) == "netdev":
         return ("我是全局运维助手（当前绑定网络设备）。离线兜底模式仅支持深信服设备的固定意图查询，"
                 "网络设备对话能力需要配置 LLM API Key 后使用（backend/.env 或『平台设置』中的 LLM_API_KEY）。")
     if device_id == GLOBAL_DEVICE_ID:

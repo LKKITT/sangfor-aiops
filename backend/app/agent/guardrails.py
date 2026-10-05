@@ -48,8 +48,12 @@ def check_tool_call(tool_name: str, args: dict, device: dict | None) -> None:
         raise GuardrailError("升级操作涉及业务中断，需人工在维护窗口执行；Agent 仅提供升级建议与前置检查清单")
 
 
-def audit_tool(tool_name: str, args: dict, result: str, conv_id: str = "", device_id: str = "") -> None:
-    db.audit(f"agent.tool.{tool_name}", {"args": args}, conv_id=conv_id, device_id=device_id, result=result)
+def audit_tool(tool_name: str, args: dict, result: str, conv_id: str = "", device_id: str = "",
+               duration_ms: float | None = None) -> None:
+    detail = {"args": args}
+    if duration_ms is not None:
+        detail["ms"] = round(duration_ms, 1)   # 工具耗时入审计明细：供 /api/health 运行快照聚合
+    db.audit(f"agent.tool.{tool_name}", detail, conv_id=conv_id, device_id=device_id, result=result)
 
 
 # 工具元数据由 tools.py 注册时写入

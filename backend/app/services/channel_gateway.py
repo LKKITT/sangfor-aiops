@@ -13,6 +13,7 @@ from typing import AsyncGenerator, Optional
 
 from app import db
 from app.agent.orchestrator import AgentOrchestrator
+from app.services.device_scope import device_kind
 from app.config import settings
 
 log = logging.getLogger("sangfor-agent.channel")
@@ -189,7 +190,7 @@ def _load_bound_device(device_id: str) -> Optional[dict]:
         return None
     if device_id == GLOBAL_DEVICE_ID:
         return _global_context()
-    if device_id.startswith("nd_"):
+    if device_kind(device_id) == "netdev":
         return db.get_netdev_device(device_id)
     return db.get_device(device_id)
 
@@ -296,7 +297,7 @@ def _handle_manage_command(text: str, channel: str, sender_id: str,
         # 切换同时重置会话：旧会话日志保持原设备归属，新对话在新设备下开启
         db.upsert_channel_binding(channel, sender_id, conv_id="", device_id=hit["id"])
         vendor_names = {"huawei": "华为", "h3c": "H3C", "ruijie": "锐捷"}
-        if hit["id"].startswith("nd_"):
+        if device_kind(hit["id"]) == "netdev":
             note = (f"（网络设备·{vendor_names.get(hit.get('vendor', ''), hit.get('vendor', ''))}；"
                     f"AI 对话仅支持华为/H3C/锐捷）"
                     if hit.get("vendor") not in vendor_names else "（网络设备）")

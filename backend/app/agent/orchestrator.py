@@ -18,6 +18,7 @@
 import asyncio
 import copy
 import json
+import time
 from typing import AsyncGenerator
 
 from openai import AsyncOpenAI
@@ -30,7 +31,9 @@ from app.agent import memory, offline, routing
 from app.agent.prompts import SYSTEM_PROMPT, device_context_message
 from app.agent.tools import TOOLS_BY_NAME, get_tools
 from app.config import settings
+from app.services import config_service
 from app.services import personal_kb_service
+from app.services import device_scope
 from app.services.device_cache import device_cache
 from app.services.app_settings import get_llm_config
 
@@ -45,7 +48,7 @@ HISTORY_LIMIT = 24
 RECENT_TOOL_FULL = 3
 TOOL_RESULT_KEEP = 200
 
-GLOBAL_DEVICE_ID = "global"   # 全局模式：不绑定单一设备，跨全部深信服/网络设备操作
+GLOBAL_DEVICE_ID = device_scope.GLOBAL_DEVICE_ID   # 全局模式：不绑定单一设备，跨全部深信服/网络设备操作
 
 
 def load_any_device(device_id: str) -> dict:
@@ -55,7 +58,7 @@ def load_any_device(device_id: str) -> dict:
         return {"id": GLOBAL_DEVICE_ID, "name": "全局（所有设备）", "type": "global",
                 "sangfor_count": len(db.list_devices()),
                 "netdev_count": len(db.list_netdev_devices())}
-    if str(device_id or "").startswith("nd_"):
+    if device_scope.device_kind(device_id) == "netdev":
         return db.get_netdev_device(device_id) or {}
     return db.get_device(device_id) or {}
 
@@ -65,7 +68,7 @@ def device_context_type(device: dict) -> str:
     深信服设备返回其 type（af/ac/scp）。"""
     if str(device.get("id", "")) == GLOBAL_DEVICE_ID or device.get("type") == "global":
         return "global"
-    if str(device.get("id", "")).startswith("nd_"):
+    if device_scope.device_kind(device.get("id", "")) == "netdev":
         return "netdev"
     return device.get("type", "")
 
@@ -222,9 +225,18 @@ class AgentOrchestrator:
                     guardrails.check_tool_call(
                         action["tool_name"], tool_args,
                         None if (tool and tool.device_type == "netdev") else device)
+                    # 变更前自动安全备份（深信服设备写操作）：失败即中止执行，保证始终可回退；
                     # 知识库沉淀/添加设备/网络设备等工具不依赖 REST 设备连接（needs_device=False）
+                    safety_backup_id = ""
+                    if tool and tool.needs_device and tool.device_type != "netdev":
+                        rec = await config_service.create_backup(
+                            device_id, label=f"变更前自动备份 · {action['tool_name']}",
+                            kind="pre_change", created_by="agent")
+                        safety_backup_id = rec["id"]
                     client = await get_client(device_id) if (tool and tool.needs_device) else None
+                    _t0 = time.perf_counter()
                     result = await tool.handler(client, tool_args, device)
+                    write_duration_ms = (time.perf_counter() - _t0) * 1000
                 batch_all_failed = isinstance(result, dict) and result.get("batch") \
                     and not result.get("succeeded")
             except guardrails.GuardrailError as e:
@@ -247,7 +259,8 @@ class AgentOrchestrator:
             db.update_pending_action(action_id, status="failed" if batch_all_failed else "executed",
                                      result_json=json.dumps(result, ensure_ascii=False)[:4000])
             guardrails.audit_tool(action["tool_name"], tool_args,
-                                  "failed" if batch_all_failed else "executed", conv_id, device_id)
+                                  "failed" if batch_all_failed else "executed", conv_id, device_id,
+                                  duration_ms=write_duration_ms)
             # 用户明确要求沉淀（record_to_kb 执行成功）：登记后触发后台提炼
             if action["tool_name"] == skills.KB_RECORD_TOOL_NAME:
                 personal_kb_service.schedule_sediment(conv_id)
@@ -255,7 +268,8 @@ class AgentOrchestrator:
                 "tool_call_id": tool_call_id, "name": action["tool_name"],
                 "content": json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]})
             yield {"type": "confirm_result", "action_id": action_id, "approved": True,
-                   "result": _compact_result(action["tool_name"], result)}
+                   "result": _compact_result(action["tool_name"], result),
+                   "safety_backup_id": safety_backup_id}
 
         if self._llm() is None:
             yield {"type": "done"}
@@ -432,9 +446,11 @@ class AgentOrchestrator:
             try:
                 guardrails.check_tool_call(tool_name, tool_args, d)
                 client = await get_client(d["id"])
+                _t0 = time.perf_counter()
                 r = await tool.handler(client, copy.deepcopy(sub_args), d)
+                guardrails.audit_tool(tool_name, tool_args, "ok", conv_id, d["id"],
+                                      duration_ms=(time.perf_counter() - _t0) * 1000)
                 results.append({"device": d["name"], "ok": True, "data": r})
-                guardrails.audit_tool(tool_name, tool_args, "ok", conv_id, d["id"])
             except guardrails.GuardrailError as e:
                 results.append({"device": d["name"], "ok": False, "error": f"被安全护栏拦截：{e}"})
             except Exception as e:   # noqa: BLE001
@@ -566,19 +582,25 @@ class AgentOrchestrator:
 
                 async def _exec_read(tool, args, sem):
                     async with sem:
+                        _t0 = time.perf_counter()
                         try:
                             if (tool.needs_device and tool.device_type != "netdev"
                                     and resolve_batch_targets(args)):
-                                return await self._run_read_batch(tool, args)
-                            client = await get_client(device_id) if tool.needs_device else None
-                            return await tool.handler(client, args, device)
+                                result = await self._run_read_batch(tool, args)
+                            else:
+                                client = await get_client(device_id) if tool.needs_device else None
+                                result = await tool.handler(client, args, device)
+                            return (time.perf_counter() - _t0, result)
                         except Exception as e:   # noqa: BLE001
-                            return {"_read_error": f"工具执行失败：{e}"}
+                            return (time.perf_counter() - _t0,
+                                    {"_read_error": f"工具执行失败：{e}"})
 
                 unique = [r for r in reads if not r["dup"]]
                 outcomes = await asyncio.gather(*(_exec_read(r["tool"], r["args"], sem) for r in unique))
                 raws: dict = {}
-                for r, result in zip(unique, outcomes, strict=True):
+                dur_by_key: dict = {}
+                for r, (dur, result) in zip(unique, outcomes, strict=True):
+                    dur_by_key[r["key"]] = dur
                     if isinstance(result, dict) and "_read_error" in result:
                         continue
                     raws[r["key"]] = result
@@ -586,7 +608,7 @@ class AgentOrchestrator:
                     executed_results[r["key"]] = (content, _compact_result(r["call"]["name"], result))
                 # 失败原因按 key 收集：同 key 重复调用直接复用，不重试执行
                 errors = {r["key"]: result["_read_error"]
-                          for r, result in zip(unique, outcomes, strict=True)
+                          for r, (_dur, result) in zip(unique, outcomes, strict=True)
                           if isinstance(result, dict) and "_read_error" in result}
                 for r in reads:
                     call, key, name = r["call"], r["key"], r["call"]["name"]
@@ -605,7 +627,8 @@ class AgentOrchestrator:
                         yield {"type": "tool_result", "name": name,
                                "preview": f"（重复调用已合并，请直接使用已有结果）{preview}"}
                         continue
-                    guardrails.audit_tool(name, r["args"], "ok", conv_id, device_id)
+                    guardrails.audit_tool(name, r["args"], "ok", conv_id, device_id,
+                                          duration_ms=dur_by_key.get(key, 0) * 1000)
                     if name == skills.KB_TOOL_NAME and _kb_hit_result(raws.get(key)):
                         kb_hit = True
                         # 标记官方知识库实际命中：待沉淀队列与自动沉淀均以此为准（未命中不入队）
@@ -710,6 +733,7 @@ class AgentOrchestrator:
                            "preview": f"（重复调用已合并，请直接使用已有结果）{preview}"}
                     continue
                 try:
+                    _t0 = time.perf_counter()
                     if (tool.needs_device and tool.device_type != "netdev"
                             and resolve_batch_targets(args)):
                         # 深信服设备类只读工具的批量 fan-out：逐台执行并聚合（网络设备工具自持 devices 解析）
@@ -718,12 +742,14 @@ class AgentOrchestrator:
                         # needs_device=False 的工具（知识库/添加设备/网络设备 SSH 工具）跳过设备登录
                         client = await get_client(device_id) if tool.needs_device else None
                         result = await tool.handler(client, args, device)
+                    read_duration_ms = (time.perf_counter() - _t0) * 1000
                     content = json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]
                     executed_results[call_key] = (content, _compact_result(name, result))
                     db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
                                                      "content": content})
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
-                    guardrails.audit_tool(name, args, "ok", conv_id, device_id)
+                    guardrails.audit_tool(name, args, "ok", conv_id, device_id,
+                                          duration_ms=read_duration_ms)
                     if name == skills.KB_TOOL_NAME and _kb_hit_result(result):
                         kb_hit = True
                         # 标记官方知识库实际命中：待沉淀队列与自动沉淀均以此为准（未命中不入队）
