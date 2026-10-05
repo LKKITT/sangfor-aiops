@@ -40,7 +40,7 @@ const showReadonly = computed(() => device.value && !isGlobal(device.value) && !
 .ctx-bar {
   display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
   padding: 7px 11px; border-radius: 10px;
-  background: var(--sfa-bg-card, #fff); border: 1px solid var(--sfa-border-soft, #E6E9F2);
+  background: var(--sfa-surface); border: 1px solid var(--sfa-border-soft, #E6E9F2);
 }
 .ctx-ico { color: var(--sfa-primary, #4A70FF); }
 .ctx-name { font-weight: 650; font-size: 13.5px; }
