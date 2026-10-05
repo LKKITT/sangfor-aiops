@@ -32,5 +32,7 @@ jobs:
           node-version: "20"
       - name: 安装依赖
         run: cd frontend && npm ci
+      - name: 单元测试（Vitest）
+        run: cd frontend && npm test
       - name: 构建
         run: cd frontend && npm run build
