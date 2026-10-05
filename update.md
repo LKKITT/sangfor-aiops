@@ -4,6 +4,37 @@
 
 ---
 ## 2026-10-05
+### feat: 架构与交互 P2 批次（BE-3/ARC-5/UX-2/ARC-4/FE-4/UX-5）
+
+**BE-3 设备域统一**：services/device_scope.py 为 global/nd_/深信服三态与常量的
+单一来源，chat/devices 校验、orchestrator、prompts、offline、netdev_tools、
+channel_gateway 共 9 处魔法前缀判断全部收口
+
+**ARC-5 可观测性**：http 中间件 request-id 贯穿（响应头回带 X-Request-ID）+
+访问日志（方法/路径/状态/耗时）；audit_tool 增加 duration_ms 并接入全部工具
+执行路径；/api/health 扩展运行快照（uptime/资产数/待确认动作/近 1h 工具耗时
+p50/p95，取自审计明细聚合）
+
+**UX-2 写前安全备份 + 回退点显性化**：深信服设备写操作执行前自动创建 pre_change
+备份（失败即中止执行，保证始终可回退）；confirm_result 事件携带 safety_backup_id，
+确认卡片'已执行'状态渲染'查看回退点'直达备份页（评估勘误：规则变更 diff 展示此前已存在，
+实际缺口是写路径无自动备份与回退入口，本批次补齐）
+
+**ARC-4 SSE 事件契约**：app/agent/events.py 以 Pydantic 定义 11 类事件模型，schema
+导出 docs/sse-events.schema.json（scripts/gen_sse_schema.py），测试守卫漂移；
+前端 agentStream.js 增加契约来源注释与 confirm_result 归约
+
+**FE-4 API 内核**：api.js 五个同构封装收敛为 request 内核，导出签名不变，
+apiDelete 错误文案升级为 readError detail 优先
+
+**UX-5 输入台升级**：多行 textarea（1-6 行自适应），Enter 发送 / Shift+Enter 换行；
+流式期间可继续输入并支持排队（回答结束自动发送，可取消排队）
+
+**新增测试**：test_p2_contracts.py 6 项（设备域解析/存在性、耗时统计、健康快照与
+request-id、事件样例契约校验、schema 漂移守卫）+ 前端 confirm_result 归约用例，
+后端 251/251、前端 30/30 全绿
+
+---
 
 ### feat: 交互与架构 P1 批次落地（路由化/确认卡片组件化/失败重试/历史会话/前端测试 0→1）
 
