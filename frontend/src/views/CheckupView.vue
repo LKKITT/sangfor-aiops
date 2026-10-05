@@ -13,7 +13,9 @@
           </el-button>
         </div>
       </div>
-      <el-alert v-if="netdevMode || globalMode" type="info" :closable="false" show-icon :title="guardText" />
+      <NetDevCheckupPanel v-if="netdevMode" :device="currentDevice()" />
+      <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
+                title="当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备" />
     </div>
 
     <div v-if="report" class="cols">
@@ -61,7 +63,7 @@
       </div>
     </div>
 
-    <div v-else class="page-card empty-card">
+    <div v-else-if="!netdevMode" class="page-card empty-card">
       <svg viewBox="0 0 40 40" fill="none" class="empty-mark" aria-hidden="true">
         <path d="M20 3.5 34.3 11.8v16.4L20 36.5 5.7 28.2V11.8L20 3.5Z" stroke="#C6CEDD" stroke-width="2.5" stroke-linejoin="round" />
         <circle cx="20" cy="20" r="3.4" fill="#C6CEDD" />
@@ -76,6 +78,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import NetDevCheckupPanel from '../components/NetDevCheckupPanel.vue'
 import ContextBar from '../components/ContextBar.vue'
 import { Devices } from '../api.js'
 

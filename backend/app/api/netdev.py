@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app import db
-from app.services import netdev_service
+from app.services import netdev_ops_service, netdev_service
 
 log = logging.getLogger("sangfor-agent.netdev")
 
@@ -269,6 +269,90 @@ def asyncssh_connect(device: dict):
     """独立封装便于测试替换；参数与批量执行保持一致（含老设备传统算法扩展）。"""
     import asyncssh
     return asyncssh.connect(**netdev_service.ssh_connect_kwargs(device))
+
+
+# ---------------- 运维工作台：配置可视化快照 / 配置体检 / 配置备份（全部只读，无恢复） ----------------
+
+def _require_netdev(device_id: str) -> dict:
+    device = db.get_netdev_device(device_id)
+    if not device:
+        raise HTTPException(404, "网络设备不存在")
+    if (device.get("vendor") or "") not in ("huawei", "h3c", "ruijie"):
+        raise HTTPException(400, "该厂家暂不支持工作台运维（仅华为/H3C/锐捷）")
+    return device
+
+
+@router.get("/{device_id}/snapshot")
+async def netdev_snapshot(device_id: str, force: int = 0) -> dict:
+    """配置可视化快照：设备状态/接口/VLAN/路由/ARP/MAC/运行配置（60s 进程内缓存）。"""
+    device = _require_netdev(device_id)
+    result = await netdev_ops_service.collect_snapshot(device, force=bool(force))
+    if not result.get("ok"):
+        raise HTTPException(502, result.get("error", "采集失败"))
+    return result
+
+
+@router.post("/{device_id}/checkup")
+async def netdev_checkup(device_id: str, force: int = 0) -> dict:
+    """配置体检：拉运行配置做规则分析（结果缓存 5 分钟），结构同深信服体检。"""
+    device = _require_netdev(device_id)
+    result = await netdev_ops_service.run_checkup(device, force=bool(force))
+    if not result.get("ok"):
+        raise HTTPException(502, result.get("error", "体检失败"))
+    return result
+
+
+@router.get("/{device_id}/backups")
+def netdev_backup_list(device_id: str) -> list[dict]:
+    _require_netdev(device_id)
+    return db.list_backups(device_id)
+
+
+@router.post("/{device_id}/backups")
+async def netdev_backup_create(device_id: str, payload: dict) -> dict:
+    """配置备份：拉运行配置全文存档（.conf 文本 + 快照 JSON）。"""
+    device = _require_netdev(device_id)
+    try:
+        rec = await netdev_ops_service.create_backup(device, str(payload.get("label") or ""))
+    except RuntimeError as e:
+        raise HTTPException(502, str(e)) from e
+    return {"ok": True, "id": rec["id"], "label": rec["label"],
+            "sw_version": rec["sw_version"], "created_at": rec["created_at"]}
+
+
+@router.get("/{device_id}/backups/diff")
+def netdev_backup_diff(device_id: str, a: str, b: str) -> dict:
+    _require_netdev(device_id)
+    try:
+        return netdev_ops_service.diff_backups(a, b)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@router.get("/{device_id}/backups/{backup_id}/file")
+def netdev_backup_file(device_id: str, backup_id: str):
+    """下载配置文本归档（.conf）。"""
+    from fastapi.responses import FileResponse
+    backup = db.get_backup(backup_id)
+    if not backup or backup["device_id"] != device_id:
+        raise HTTPException(404, "备份不存在")
+    if not backup["file_path"]:
+        raise HTTPException(404, "该备份没有配置文件归档")
+    return FileResponse(backup["file_path"],
+                        filename=backup["file_path"].split("\\")[-1].split("/")[-1])
+
+
+@router.delete("/{device_id}/backups/{backup_id}")
+def netdev_backup_delete(device_id: str, backup_id: str) -> dict:
+    _require_netdev(device_id)
+    backup = db.get_backup(backup_id)
+    if not backup or backup["device_id"] != device_id:
+        raise HTTPException(404, "备份不存在")
+    if backup.get("file_path"):
+        import pathlib
+        pathlib.Path(backup["file_path"]).unlink(missing_ok=True)
+    db.delete_backup(backup_id)
+    return {"ok": True}
 
 
 # ---------------- 网络拓扑（LLDP/ARP 自动发现 + 分组拓扑 + 资产定位） ----------------

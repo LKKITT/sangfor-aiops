@@ -6,15 +6,17 @@
         <h2 class="ph-title">备份与恢复</h2>
         <p class="ph-desc">结构化配置快照（可对比 / 可恢复）+ 设备配置文件归档（.conf，SHA256 校验）· 每日 02:00 自动备份</p>
       </div>
-      <div class="ph-actions">
+      <div class="ph-actions" v-if="!netdevMode">
         <el-button type="primary" @click="createBackup" :loading="creating">
           <el-icon><Plus /></el-icon>&nbsp;立即备份
         </el-button>
       </div>
     </div>
-    <el-alert v-if="netdevMode || globalMode" type="info" :closable="false" show-icon :title="guardText" />
+    <NetDevBackupPanel v-if="netdevMode" :device="currentDevice()" />
+    <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
+              title="当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备" />
 
-    <div class="cols">
+    <div v-if="!netdevMode" class="cols">
       <div class="page-card col-list">
         <div class="col-title">备份时间线</div>
         <el-timeline>
@@ -113,6 +115,7 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import NetDevBackupPanel from '../components/NetDevBackupPanel.vue'
 import ContextBar from '../components/ContextBar.vue'
 import { Backups } from '../api.js'
 

@@ -147,4 +147,17 @@ export const NetDev = {
     apiGet(`/api/netdev/topology/search?group=${encodeURIComponent(group)}&q=${encodeURIComponent(q)}`),
   saveTopologyPositions: (group = '', positions = {}) =>
     apiPost('/api/netdev/topology/positions', { group, positions }, 30000),
+  // ---- 工作台运维（配置可视化/体检/备份；全部只读，无恢复） ----
+  snapshot: (deviceId, force = false) =>
+    apiGet(`/api/netdev/${deviceId}/snapshot${force ? '?force=1' : ''}`, 120000),
+  checkup: (deviceId, force = false) =>
+    apiPost(`/api/netdev/${deviceId}/checkup?force=${force ? 1 : 0}`, {}, 90000),
+  backups: (deviceId) => apiGet(`/api/netdev/${deviceId}/backups`),
+  createBackup: (deviceId, label) =>
+    apiPost(`/api/netdev/${deviceId}/backups`, { label }, 90000),
+  backupDiff: (deviceId, a, b) =>
+    apiGet(`/api/netdev/${deviceId}/backups/diff?a=${a}&b=${b}`, 30000),
+  backupFileUrl: (deviceId, backupId) => `/api/netdev/${deviceId}/backups/${backupId}/file`,
+  deleteBackup: (deviceId, backupId) =>
+    apiDelete(`/api/netdev/${deviceId}/backups/${backupId}`),
 }

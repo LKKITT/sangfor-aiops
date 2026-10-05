@@ -10,7 +10,9 @@
         <el-button :loading="refreshing" @click="load"><el-icon><Refresh /></el-icon>&nbsp;刷新数据</el-button>
       </div>
     </div>
-    <el-alert v-if="netdevMode || globalMode" type="info" :closable="false" show-icon :title="guardText" />
+    <NetDevConfigPanel v-if="netdevMode" :device="currentDevice()" />
+    <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
+              title="当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择" />
     <el-tabs v-else v-model="tab" class="page-card config-tabs">
       <!-- ========== 设备状态（AF / AC 通用） ========== -->
       <el-tab-pane label="设备状态" name="status">
@@ -496,6 +498,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import NetDevConfigPanel from '../components/NetDevConfigPanel.vue'
 import ContextBar from '../components/ContextBar.vue'
 
 const tab = ref('status')
@@ -529,6 +532,7 @@ const acAppRank = ref([])
 const acUserRank = ref([])
 
 const netdevMode = computed(() => isNetDev(currentDevice()))
+const currentDeviceRef = currentDevice
 const globalMode = computed(() => isGlobal(currentDevice()))
 const guardText = computed(() => netdevMode.value
   ? '当前选中的是网络设备：请在「AI 对话」中用自然语言查询/配置，或在「网络设备管理」页批量执行与控制台操作'
