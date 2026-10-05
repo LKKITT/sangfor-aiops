@@ -141,29 +141,43 @@ const isOnline = (n) => n.kind === 'device' && n.last_ok_at
 
 function nodeStyle(n, hitSet) {
   const online = isOnline(n)
+  const dark = theme.value === 'dark'
   if (n.kind === 'external') {
+    // 外部/未知邻居：弱化圆形节点（虚线语义用低饱和实线代替）
     return {
-      symbolSize: 30, itemStyle: { color: '#E6EAF3', borderColor: '#C6CEDD', borderWidth: 1.5,
-                                   opacity: hitSet && !hitSet.has(n.id) ? .15 : 1 },
+      symbol: 'circle', symbolSize: 24,
+      itemStyle: {
+        color: dark
+          ? { type: 'radial', x: .4, y: .35, r: .8,
+              colorStops: [{ offset: 0, color: '#26304A' }, { offset: 1, color: '#1A2338' }] }
+          : { type: 'radial', x: .4, y: .35, r: .8,
+              colorStops: [{ offset: 0, color: '#F4F6FC' }, { offset: 1, color: '#DDE4F1' }] },
+        borderColor: dark ? '#3D4A6E' : '#B9C4DC', borderWidth: 1.5,
+        opacity: hitSet && !hitSet.has(n.id) ? .15 : 1,
+      },
       label: { show: hitSet ? hitSet.has(n.id) : graph.value.nodes.length <= 30,
-               color: '#667085', fontSize: 10 },
+               color: dark ? '#8B96B0' : '#667085', fontSize: 10 },
     }
   }
   const hit = hitSet?.has(n.id)
   const deg = n.degree || 0
-  // 核心设备最大（金色描边），其余按连接度渐进放大
-  const size = n.core ? 62 : Math.min(34 + deg * 3, 54)
+  // 设备节点：机架式圆角矩形（现代网络图标语义），核心最大（accent 描边），按连接度渐进放大
+  const size = n.core ? [72, 52] : hit ? [56, 42] : [40 + Math.min(deg * 2, 14), 30 + Math.min(deg * 1.5, 10)]
   return {
-    symbolSize: hit ? Math.max(size + 12, 58) : size,
+    symbol: 'roundRect', symbolSize: size,
     itemStyle: {
       color: online
-        ? { type: 'radial', x: .4, y: .35, r: .8,
-            colorStops: [{ offset: 0, color: '#6A87FF' }, { offset: 1, color: '#2C47D6' }] }
-        : '#C3CBDC',
-      borderColor: hit ? '#0FB9A4' : n.core ? '#F5A90B' : '#fff',
-      borderWidth: hit ? 4 : n.core ? 3.5 : 2,
-      shadowBlur: hit ? 24 : n.core ? 16 : 8,
-      shadowColor: hit ? 'rgba(15,185,164,.65)' : n.core ? 'rgba(245,169,11,.5)' : 'rgba(16,24,40,.18)',
+        ? { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{ offset: 0, color: '#6D86F0' }, { offset: 1, color: '#3350D8' }] }
+        : (dark ? { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{ offset: 0, color: '#2E3956' }, { offset: 1, color: '#222B44' }] }
+                : { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{ offset: 0, color: '#D9E0EE' }, { offset: 1, color: '#BFC9DE' }] }),
+      borderColor: hit ? '#0FB9A4' : n.core ? '#F5A90B' : (dark ? '#4A5B8F' : 'rgba(255,255,255,.75)'),
+      borderWidth: hit ? 3.5 : n.core ? 2.5 : 1.5,
+      shadowBlur: hit ? 22 : n.core ? 14 : 7,
+      shadowColor: hit ? 'rgba(15,185,164,.6)' : n.core ? 'rgba(245,169,11,.45)' : 'rgba(16,24,40,.22)',
+      shadowOffsetY: 3,
       opacity: hitSet && !hitSet.has(n.id) ? .12 : 1,
     },
     label: { color: theme.value === 'dark' ? '#E4E9F4' : '#101828', fontWeight: 600 },
@@ -174,9 +188,20 @@ const { theme } = useTheme()
 
 function buildOption(hitSet) {
   const positions = graph.value.positions || {}
-  const nodes = graph.value.nodes.map(n => ({
+  // 手动布局（layout:'none'）要求每个节点都有有限坐标：缺失的按网格兜底，
+  // 否则 echarts 直接不渲染该节点（表现为"手动布局没有显示"）
+  const cols = Math.ceil(Math.sqrt(Math.max(graph.value.nodes.length, 1)))
+  const nodes = graph.value.nodes.map((n, i) => {
+    let x = positions[n.id]?.[0]
+    let y = positions[n.id]?.[1]
+    if (layoutMode.value === 'manual'
+        && (!Number.isFinite(x) || !Number.isFinite(y))) {
+      x = 140 + (i % cols) * 170
+      y = 110 + Math.floor(i / cols) * 130
+    }
+    return {
     id: n.id, name: n.id,
-    x: positions[n.id]?.[0], y: positions[n.id]?.[1],
+    x, y,
     ...nodeStyle(n, hitSet),
     label: {
       show: n.kind === 'device' || (hitSet?.has(n.id)) || graph.value.nodes.length <= 30,
@@ -186,11 +211,14 @@ function buildOption(hitSet) {
         : n.core ? `{name|${n.name}}\n{core|核心交换机}`
           : n.cross ? `{name|${n.name}}\n{port|跨分组 · ${n.group || '未分组'}}`
           : n.name,
-      rich: { name: { fontWeight: 650, fontSize: 11.5, color: '#101828', lineHeight: 16 },
-              port: { fontSize: 10.5, color: 'var(--sfa-ok-ink)', fontFamily: 'JetBrains Mono, Consolas, monospace' },
+      rich: { name: { fontWeight: 650, fontSize: 11.5,
+                      color: theme.value === 'dark' ? '#E4E9F4' : '#101828', lineHeight: 16 },
+              port: { fontSize: 10.5, color: theme.value === 'dark' ? '#4FCCBB' : '#0C8F7F',
+                      fontFamily: 'JetBrains Mono, Consolas, monospace' },
               core: { fontSize: 10, color: '#C4870A', fontWeight: 650, lineHeight: 14 } },
-    },
-  }))
+    }
+    }
+  })
   const edges = graph.value.edges.map(e => {
     const isExt = e.source.startsWith('ext:') || e.target.startsWith('ext:')
     const agg = e.aggregated || 0

@@ -480,8 +480,8 @@ def build_graph(group: str) -> dict:
                               "port": a.get("port", "")})
 
     links = merge_physical_links(reports)
-    # 聚合归并：同对设备 ≥3 条链路视为链路聚合（Eth-Trunk/堆叠线束），合并为 1 条聚合线
-    # （单链路/双链路保留原样——双链路是常见的主备/上联形态）
+    # 聚合归并：同对设备 ≥2 条物理链路（LACP 聚合/主备上联）合并为 1 条互联线（×N 标注，
+    # 端口清单进 tooltip）——图上不重复绘制并行线，设备间只保留一条物理互联
     pair_map: dict[tuple, list[dict]] = {}
     ext_links: list[dict] = []
     for lk in links:
@@ -491,10 +491,11 @@ def build_graph(group: str) -> dict:
         pair_map.setdefault(tuple(sorted([lk["frm"], lk["to"]])), []).append(lk)
     merged_links: list[dict] = []
     for _pair, lks in pair_map.items():
-        if len(lks) >= 3:
+        if len(lks) >= 2:
             first = lks[0]
             merged_links.append({"frm": first["frm"], "to": first["to"],
-                                 "frm_port": "", "to_port": "",
+                                 "frm_port": "、".join(l["frm_port"] for l in lks if l["frm_port"]),
+                                 "to_port": "、".join(l["to_port"] for l in lks if l["to_port"]),
                                  "confirmed": all(l["confirmed"] for l in lks),
                                  "aggregated": len(lks)})
         else:
@@ -772,7 +773,14 @@ def _group_arp(group: str) -> list[dict]:
 
 
 async def topology_payload(group: str, force: bool = False) -> dict:
-    stats = await collect_group(group, force=force)
+    """拓扑数据：默认只读缓存（进页面不触发 SSH 采集，秒出图）；手动「重新采集」才全量更新。"""
+    if force:
+        stats = await collect_group(group, force=True)
+    else:
+        devices = [d for d in db.list_netdev_devices(group) if d.get('host')]
+        cached = sum(1 for d in devices if db.get_netdev_topology_cache(d['id']))
+        stats = {'total': len(devices), 'collected': 0, 'failed': 0,
+                 'skipped': len(devices) - cached, 'cached': cached, 'cache_only': True}
     graph = build_graph(group)
     graph["collect_stats"] = stats
     graph["groups"] = sorted({d.get("group_name", "") for d in db.list_netdev_devices()})
