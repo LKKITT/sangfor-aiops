@@ -4,6 +4,27 @@
 
 ---
 ## 2026-10-05
+### fix: 接口配置查询一次性正确化（定位→查配置流程优化）
+
+复盘会话「定位172.20.10.23 → 查看这个接口的配置」：LLM 3 轮 7 次工具调用反复试错
+（netdev_get_config 的 include 过滤只返回匹配行拿不到配置块；接口缩写 GE1/0/21 查详情
+报参数错误；中途文字解释 + 最终重复结论形成“重复回答”），未能一次性答对。三项根治：
+
+**① 接口名缩写自动展开**：GE→GigabitEthernet、XGE→Ten-GigabitEthernet、BAgg→
+Bridge-Aggregation 等 12 组映射（expand_ifname）；接口配置查看优先用展开名（避免注定
+失败的设备往返），回显报参数错误时回退原名重试；netdev_get_interfaces 详情查询同样展开
+
+**② 一次性序列修正**：H3C/华为的 interface 命令必须先 system-view（用户视图下不可用——
+此前序列直接进视图会失败）；新序列 = display interface（状态/计数）→ system-view → 
+interface（接口视图）→ display this（生效配置）→ return，一次调用同时拿配置与状态
+
+**③ 流程衔接引导**：定位结果 _llm_summary 直接指路“下一步查接口配置用
+netdev_get_interface_config，不要用 netdev_get_config 的 keyword 过滤”；
+netdev_get_config 描述注明 include 过滤的局限
+
+**验证**：更新/新增 2 项测试（一次性序列断言、缩写展开与回退重试），258/258、ruff 全过
+
+---
 ### feat: 网络设备四项修复——控制台分页/退格、终端定位增强、AI 查询能力扩展、批量截断治理
 
 **控制台（172.16.118.254 反馈）**：① WebSocket 控制台连接后自动下发厂家分页关闭命令
