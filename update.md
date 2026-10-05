@@ -4,6 +4,21 @@
 
 ---
 ## 2026-10-05
+### fix: 暗色对话页表格/代码修复 + AI 对话 UI 层次与科技感增强
+
+**暗色显示修复**：md-body 表格斑马纹硬编码 #FAFBFD（暗色下偶数行整行白底）改
+ panel-soft token；行内代码底/文字（#EEF1FA/#3346B8）、pre 边框、引用块底色、滚动条
+（全局 #C7CEDC → scrollbar token，暗色深色系）、工具轨迹芯片（#F2F5FC/#3D5BD8/#DFE6F8
+ → tint/chip-border token，完成态图标 accent 色）全部 token 化——新增 code-ink/
+scrollbar/scrollbar-hover 3 组 token，亮色值不变、暗色自动适配
+
+**对话 UI 层次与科技感**：AI 气泡改纵向渐变（surface→bg-deep）+ 顶部内高光 + 
+ 暗色专属描边色，气泡间轮廓与分隔感增强；AI 头像加主色光环（3px 柔和 ring）；
+ 欢迎区标题渐变文字（primary→accent background-clip）；输入台 focus 光环与渐变遮罩维持
+
+**验证**：暗色对话页截图逐项核对（表格无白底行/芯片轮廓清晰/气泡层次分明），亮色回归无差异
+
+---
 ### feat: 工作台三页支持网络设备（配置可视化/配置体检/备份与恢复）
 
 **后端**：新增 services/netdev_ops_service 与 /api/netdev 运维端点——

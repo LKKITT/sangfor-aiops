@@ -672,7 +672,12 @@ function allPlanItems(plan) {
 .chat-col { max-width: 920px; margin: 0 auto; padding: 10px 4px 18px; }
 
 .chat-hero { padding: 14px 2px 18px; }
-.ch-title { font-size: 22px; font-weight: 750; letter-spacing: -.02em; margin: 0 0 6px; }
+.ch-title {
+  font-size: 22px; font-weight: 750; letter-spacing: -.02em; margin: 0 0 6px;
+  background: linear-gradient(120deg, var(--sfa-primary), var(--sfa-accent));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
 .ch-desc { color: var(--sfa-text-3); font-size: 13px; margin: 0; line-height: 1.7; }
 
 .chat-avatar.ai svg { width: 100%; height: 100%; padding: 5.5px; }
