@@ -76,6 +76,8 @@ async def lifespan(app: FastAPI):
     await wecom_bot_service.stop()
     scheduler.shutdown(wait=False)
     await close_all_clients()
+    from app.services import mcp_service
+    mcp_service.shutdown()
 
 
 def _remove_demo_devices() -> None:

@@ -7,8 +7,11 @@
 - 资源发现：代理 MCP 官方注册表（registry.modelcontextprotocol.io）搜索；
   支持粘贴 Claude Desktop / Cursor 格式 mcpServers JSON 一键导入。
 """
+import asyncio
 import json
 import re
+
+from contextlib import AsyncExitStack
 
 from app import db
 from app.agent.tools import Tool
@@ -82,59 +85,83 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "_", s)[:24] or "server"
 
 
-# ---------------- 会话管理（懒连接 + 常驻） ----------------
+# ---------------- 会话管理（每服务驻留后台任务：MCP 上下文 enter/exit 必须同任务） ----------------
 
-_sessions: dict[str, dict] = {}   # server_id → {"session": ClientSession, "stack": AsyncExitStack}
-_locks: dict[str, "asyncio.Lock"] = {}
-import asyncio  # noqa: E402
+_sessions: dict[str, dict] = {}   # server_id → {"session": ClientSession, "task": Task}
+_locks: dict[str, asyncio.Lock] = {}
 _locks_lock = asyncio.Lock()
 
 
+async def _open_and_park(server: dict, ready: asyncio.Future) -> None:
+    """专属任务内建立会话并驻留：进入全部上下文后挂起，直到被取消
+    （取消发生在同一任务内，满足 anyio 取消作用域约束）。"""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async with AsyncExitStack() as stack:
+        if server["transport"] == "stdio":
+            params = StdioServerParameters(command=server["command"],
+                                           args=server.get("args") or [],
+                                           env=server.get("env") or None)
+            read, write = await stack.enter_async_context(stdio_client(params))
+        else:
+            read, write, _ = await stack.enter_async_context(
+                streamablehttp_client(server["url"], headers=server.get("headers") or None))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        _sessions[server["id"]] = {"session": session, "task": asyncio.current_task()}
+        if not ready.done():
+            ready.set_result(session)
+        await asyncio.Event().wait()   # 驻留
+
+
 def _reset_sessions() -> None:
-    """配置变更：关闭全部既有会话（下次调用懒重建）。"""
+    """配置变更/停机：取消各驻留任务（上下文在其自身任务内干净退出）。"""
     for sid, item in list(_sessions.items()):
-        try:
-            item["stack"].close()
-        except Exception:   # noqa: BLE001
-            pass
+        task = item.get("task")
+        if task and not task.done():
+            task.cancel()
         _sessions.pop(sid, None)
+    _locks.clear()
 
 
 async def _get_session(server: dict):
-    """取（或建立）该服务的 MCP 会话；AsyncExitStack 常驻保活。"""
+    """取（或建立）该服务的 MCP 会话：懒连接 + 30s 建立超时 + 失败自清理。"""
     try:
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-        from mcp.client.streamable_http import streamablehttp_client
-    except ImportError as e:
-        raise RuntimeError(MCP_SDK_HINT) from e
+        import importlib.util
+        if importlib.util.find_spec("mcp") is None:
+            raise RuntimeError(MCP_SDK_HINT)
+    except RuntimeError:
+        raise
 
     sid = server["id"]
     existing = _sessions.get(sid)
-    if existing:
+    if existing and existing.get("task") and not existing["task"].done():
         return existing["session"]
     async with _locks_lock:
         lock = _locks.setdefault(sid, asyncio.Lock())
     async with lock:
-        if sid in _sessions:
-            return _sessions[sid]["session"]
-        stack = asyncio.AsyncExitStack()
+        existing = _sessions.get(sid)
+        if existing and existing.get("task") and not existing["task"].done():
+            return existing["session"]
+        ready = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(_open_and_park(server, ready))
         try:
-            if server["transport"] == "stdio":
-                params = StdioServerParameters(command=server["command"],
-                                               args=server.get("args") or [],
-                                               env=server.get("env") or None)
-                read, write = await stack.enter_async_context(stdio_client(params))
-            else:
-                read, write, _ = await stack.enter_async_context(
-                    streamablehttp_client(server["url"], headers=server.get("headers") or None))
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-            _sessions[sid] = {"session": session, "stack": stack}
-            return session
-        except Exception:
-            await stack.aclose()
+            session = await asyncio.wait_for(ready, timeout=30)
+        except BaseException:
+            task.cancel()
+            try:
+                await task
+            except Exception:   # noqa: BLE001
+                pass
             raise
+        return session
+
+
+def shutdown() -> None:
+    """应用停机：关闭全部 MCP 会话（由各驻留任务在自身上下文内退出）。"""
+    _reset_sessions()
 
 
 # ---------------- Agent 工具桥接 ----------------

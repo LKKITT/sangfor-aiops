@@ -4,6 +4,23 @@
 
 ---
 ## 2026-10-05
+### fix: MCP 调用失效修复——会话管理两处根因（AsyncExitStack 误导入 + 跨任务取消作用域）
+
+复盘：配置的 acheck-readonly MCP 服务在对话中完全不可用。两个叠加根因：
+① AsyncExitStack 误从 asyncio 导入（该类在 contextlib）→ 会话建立必抛 AttributeError
+ → _tool_scope 捕获后仅缺失注入，MCP 工具全程未出现；② 会话关闭（配置变更/停机）
+ 从其它任务退出 anyio 取消作用域 → cancel scope in a different task 报错
+
+**修复**：① import 改 contextlib；② 会话管理重写为驻留后台任务模式——每服务一个
+ 专属 asyncio 任务内建立上下文并挂起（enter/exit 同任务，满足 anyio 约束），
+ 对话任务只借用 session；重置=取消驻留任务（在自身任务内干净退出）；
+ 建立 30s 超时 + 失败自清理；③ 应用停机时关闭全部 MCP 会话
+
+**验证（真实 acheck-readonly 服务）**：连接成功并列出 35 个工具，桥接为 Agent 工具；
+ 真实调用 platform_version 返回平台构建信息；跨任务复用会话正常；重置无跨任务报错、
+ 重连正常。后端 272/272、ruff 全过
+
+---
 ### fix: `/` 命令菜单位置改为浮层显示在输入框上方
 
 此前菜单在输入台内联渲染（挤在左下、随输入框换行），现改为绝对定位浮层——
