@@ -8,6 +8,7 @@
   支持粘贴 Claude Desktop / Cursor 格式 mcpServers JSON 一键导入。
 """
 import asyncio
+import logging
 import json
 import re
 
@@ -176,7 +177,7 @@ def invalidate_tools_cache() -> None:
 
 
 async def agent_tools(server_ids=None) -> list[Tool]:
-    """已启用 MCP 服务的工具桥接为 Agent Tool（缓存；配置变更后失效）。
+    """已启用 MCP 服务的工具桥接为 Agent Tool（全部成功才缓存；失败不缓存、下次重试）。
 
     server_ids=None 表示全部已启用；传 id 列表则只返回指定服务（对话级选用）。"""
     global _tools_cache
@@ -186,6 +187,7 @@ async def agent_tools(server_ids=None) -> list[Tool]:
             return tools
         return [t for t in tools if getattr(t, "_mcp_server_id", "") in set(server_ids)]
     tools: list[Tool] = []
+    failed: list[str] = []
     for server in get_servers():
         if not server.get("enabled"):
             continue
@@ -194,8 +196,12 @@ async def agent_tools(server_ids=None) -> list[Tool]:
             session = await _get_session(server)
             listing = await session.list_tools()
         except Exception as e:   # noqa: BLE001 —— 单服务失联不拖垮其它
+            logging.getLogger("sangfor-agent").warning(
+                "MCP 服务「%s」连接失败，本次以不可用占位返回（下次调用自动重试）: %s",
+                server["name"], e)
+            failed.append(server["name"])
             unavail = Tool(name=f"mcp_{_slug(server['name'])}_unavailable",
-                           description=f"MCP 服务「{server['name']}」不可用：{e}",
+                           description=f"MCP 服务「{server['name']}」当前不可用：{e}",
                            parameters={"type": "object", "properties": {}},
                            handler=_mk_unavailable(server["name"]),
                            device_type=None, needs_device=False, batch_devices=False)
@@ -206,7 +212,8 @@ async def agent_tools(server_ids=None) -> list[Tool]:
             bridged = _bridge_tool(server, t)
             bridged._mcp_server_id = server_id   # 对话级选用过滤用
             tools.append(bridged)
-    _tools_cache = tools
+    if not failed:   # 仅全部成功才缓存——失败不缓存，下次调用自动重试
+        _tools_cache = tools
     return tools
 
 
