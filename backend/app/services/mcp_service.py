@@ -9,6 +9,8 @@
 """
 import asyncio
 import logging
+
+mcp_log = logging.getLogger("sangfor-agent.mcp")
 import json
 import re
 
@@ -100,17 +102,23 @@ async def _open_and_park(server: dict, ready: asyncio.Future) -> None:
     from mcp.client.stdio import stdio_client
     from mcp.client.streamable_http import streamablehttp_client
 
+    mcp_log.info("MCP[%s]: 启动子进程 %s %s (CWD=%s)", server["name"],
+                 server.get("command"), " ".join(server.get("args") or []),
+                 __import__("os").getcwd())
     async with AsyncExitStack() as stack:
         if server["transport"] == "stdio":
             params = StdioServerParameters(command=server["command"],
                                            args=server.get("args") or [],
                                            env=server.get("env") or None)
             read, write = await stack.enter_async_context(stdio_client(params))
+            mcp_log.info("MCP[%s]: stdio 通道已建立", server["name"])
         else:
             read, write, _ = await stack.enter_async_context(
                 streamablehttp_client(server["url"], headers=server.get("headers") or None))
         session = await stack.enter_async_context(ClientSession(read, write))
+        mcp_log.info("MCP[%s]: ClientSession 已进入，开始 initialize", server["name"])
         await session.initialize()
+        mcp_log.info("MCP[%s]: initialize 完成", server["name"])
         _sessions[server["id"]] = {"session": session, "task": asyncio.current_task()}
         if not ready.done():
             ready.set_result(session)

@@ -4,6 +4,20 @@
 
 ---
 ## 2026-10-05
+### fix: MCP 会话建立挂起——venv 解析到 mcp 2.x 与 uvicorn 后端不兼容，锁定 1.x
+
+复盘：用户后端（launcher 启动的 .venv 环境）MCP 测试稳定 30s 超时，而系统 Python
+ 环境 2-4s 成功。对比发现 .venv 将 requirements 的 mcp>=1.2 解析为 **mcp 2.3.0**
+（大版本升级，anyio 4.14），其在 uvicorn 后端上下文中 stdio initialize 挂起
+（独立 asyncio.run 可复现成功，差异锁定为后端事件循环 + mcp 2.x 组合）。
+
+**修复**：requirements 锁定 mcp>=1.2,<2（附原因注释），.venv 安装 mcp 1.30.0，
+ requirements.lock 用 venv 实际版本重新生成（64 包）
+
+**验证**：重启 .venv 后端后 mcp/test 3.8s 返回 35 工具；后端 272/272（venv 运行时）、
+ 前端 35/35、构建通过
+
+---
 ### fix: MCP 失败占位被无限缓存（服务恢复后仍不可用）
 
 复盘真实对话「通过MCP调取最近一次巡检报告」：模型调用 mcp_acheck-readonly_unavailable
