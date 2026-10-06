@@ -854,6 +854,7 @@ function allPlanItems(plan) {
   pointer-events: none;
 }
 .chat-composer {
+  position: relative;
   background: var(--sfa-surface);
   border: 1px solid var(--sfa-border);
   border-radius: 18px;
@@ -951,9 +952,11 @@ function allPlanItems(plan) {
 
 /* ===== `/` 命令菜单 ===== */
 .slash-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 10px);
+  z-index: 30;
   border: 1px solid var(--sfa-border); border-radius: 12px; background: var(--sfa-surface);
-  box-shadow: var(--sfa-shadow-2); padding: 5px; margin-bottom: 8px;
-  max-height: 240px; overflow-y: auto;
+  box-shadow: var(--sfa-shadow-3); padding: 5px;
+  max-height: 300px; overflow-y: auto;
 }
 .slash-item {
   display: flex; align-items: center; gap: 8px; padding: 6px 10px;
