@@ -99,9 +99,19 @@
             <el-button text size="small" type="danger" @click="queuedText = ''">取消</el-button>
           </div>
           <div class="input-row">
+            <div v-if="slashOpen && slashItems.length" class="slash-menu">
+              <div v-for="(it, i) in slashItems" :key="it.kind + it.token" class="slash-item"
+                   :class="{ hl: i === slashIdx }" @mousedown.prevent="applySlash(it)">
+                <el-tag size="small" :type="it.kind === 'skill' ? 'success' : 'primary'" effect="plain">
+                  {{ it.kind === 'skill' ? '技能' : 'MCP' }}
+                </el-tag>
+                <span class="slash-token mono">/{{ it.token }}</span>
+              </div>
+              <div class="slash-hint">↑↓ 选择 · Enter/Tab 确认 · Esc 关闭 · 确认后输入要咨询的内容</div>
+            </div>
             <el-input v-model="input" type="textarea" :autosize="{ minRows: 1, maxRows: 6 }"
                       :placeholder="inputPlaceholder" resize="none"
-                      @keydown.enter.exact.prevent="send()" />
+                      @keydown="onComposerKeydown" />
             <button v-if="!streaming" class="send-btn" :class="{ ready: !!input.trim() }" @click="send()" title="发送（Enter 发送 / Shift+Enter 换行）">
               <el-icon :size="17"><Promotion /></el-icon>
             </button>
@@ -124,18 +134,13 @@
                       <el-button size="small" text type="primary" @click="resetExt">恢复全部</el-button>
                     </div>
                     <el-checkbox-group v-model="selMcps" class="ext-opts">
-                      <el-checkbox v-for="m in extMcps" :key="m.id" :value="m.id">
-                        <span class="ext-name">{{ m.name }}</span>
-                      </el-checkbox>
+                      <el-checkbox v-for="m in extMcps" :key="m.id" :value="m.id">{{ m.name }}</el-checkbox>
                     </el-checkbox-group>
                   </div>
                   <div class="ext-sec" v-if="extSkills.length">
                     <div class="ext-sec-title">Agent Skills</div>
                     <el-checkbox-group v-model="selSkills" class="ext-opts">
-                      <el-checkbox v-for="s in extSkills" :key="s.folder" :value="s.folder">
-                        <span class="ext-name">{{ s.name }}</span>
-                        <span class="ext-desc">{{ (s.description || '').slice(0, 64) }}{{ (s.description || '').length > 64 ? '…' : '' }}</span>
-                      </el-checkbox>
+                      <el-checkbox v-for="s in extSkills" :key="s.folder" :value="s.folder">{{ s.name }}</el-checkbox>
                     </el-checkbox-group>
                   </div>
                   <div v-if="!extMcps.length && !extSkills.length" class="ext-none">
@@ -249,7 +254,7 @@ let currentConvId = null
 let abortController = null
 const queuedText = ref('')   // 流式期间排队的待发送消息
 
-// ---- 扩展能力选用（MCP 服务 / Agent Skills；null=全部已启用） ----
+// ---- 扩展能力选用（MCP 服务 / Agent Skills） + `/` 命令菜单 ----
 const extMcps = ref([])      // 全部已启用服务 [{id, name}]
 const extSkills = ref([])    // 全部已启用技能 [{folder, name}]
 const selMcps = ref([])      // 选中的服务 id 列表（全选=默认；清空=本次不使用）
@@ -272,6 +277,61 @@ async function loadExtCapabilities() {
 function resetExt() {
   selMcps.value = extMcps.value.map(x => x.id)
   selSkills.value = extSkills.value.map(x => x.folder)
+}
+
+// `/` 命令菜单：输入以 / 开头的单令牌时弹出，列出可用的技能与 MCP 服务
+const slashIdx = ref(0)
+const slashQuery = computed(() => {
+  const t = input.value.trim()
+  return /^\/([\w.-]*)$/.test(t) ? t.slice(1).toLowerCase() : null
+})
+const slashOpen = computed(() => slashQuery.value !== null && !streaming.value)
+const slashItems = computed(() => {
+  const q = slashQuery.value || ''
+  const items = []
+  for (const s of extSkills.value) {
+    if (s.name.toLowerCase().includes(q) || s.folder.toLowerCase().includes(q))
+      items.push({ kind: 'skill', token: s.folder, name: s.name })
+  }
+  for (const m of extMcps.value) {
+    if (m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q))
+      items.push({ kind: 'mcp', token: m.id, name: m.name })
+  }
+  return items
+})
+watch(() => slashItems.value.length, () => { slashIdx.value = 0 })
+
+function onComposerKeydown(e) {
+  if (slashOpen.value && slashItems.value.length) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      slashIdx.value = (slashIdx.value + 1) % slashItems.value.length
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      slashIdx.value = (slashIdx.value - 1 + slashItems.value.length) % slashItems.value.length
+      return
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      applySlash(slashItems.value[slashIdx.value])
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      input.value = ''
+      return
+    }
+  }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault()
+    send()
+  }
+}
+
+function applySlash(it) {
+  input.value = '/' + it.token + ' '
 }
 
 const scrollRef = ref(null)
@@ -574,8 +634,25 @@ async function scrollBottom() {
 }
 
 function send(preset) {
-  const text = (preset || input.value || '').trim()
+  let text = (preset || input.value || '').trim()
   if (!text) return
+  // 消息开头的 /令牌 = 本次对话指定使用的技能/MCP（如 "/find-skills 帮我..."）
+  const capSkills = new Set()
+  const capMcps = new Set()
+  let m
+  while ((m = text.match(/^\/([\w.-]+)(?:\s+|$)/))) {
+    const tok = m[1].toLowerCase()
+    const sk = extSkills.value.find(s => s.folder.toLowerCase() === tok)
+    const mp = extMcps.value.find(x => x.id.toLowerCase() === tok || x.name.toLowerCase() === tok)
+    if (!sk && !mp) break   // 非能力令牌：作为普通文本发送
+    if (sk) capSkills.add(sk.folder)
+    if (mp) capMcps.add(mp.id)
+    text = text.slice(m[0].length).trim()
+  }
+  if (!text) {
+    ElMessage.info('请输入要咨询的内容（/令牌 仅用于指定使用的技能或 MCP 服务）')
+    return
+  }
   const dev = currentDevice()
   if (!dev) return ElMessage.warning('请先选择设备')
   if (streaming.value) {   // 流式期间可继续输入，发送改为排队（回答结束自动发出）
@@ -594,8 +671,11 @@ function send(preset) {
   scrollBottom()
 
   abortController = new AbortController()
-  const body = { message: text, device_id: dev.id, use_knowledge: useKnowledge.value,
-                 mcps: selMcps.value, skills: selSkills.value }
+  const body = {
+    message: text, device_id: dev.id, use_knowledge: useKnowledge.value,
+    mcps: Array.from(new Set([...(selMcps.value || []), ...capMcps])),
+    skills: Array.from(new Set([...(selSkills.value || []), ...capSkills])),
+  }
   if (currentConvId) body.conv_id = currentConvId
   chatStream('/api/chat', body, ev => handleEvent(ev, aiMsg), abortController.signal)
     .catch(e => {
@@ -863,14 +943,27 @@ function allPlanItems(plan) {
 .ext-opts .el-checkbox { height: 26px; margin-right: 0; }
 .ext-none { font-size: 12px; color: var(--sfa-text-4); text-align: center; padding: 8px 0; }
 .ext-name { font-size: 12.5px; }
-.ext-desc {
-  display: block; font-size: 11px; color: var(--sfa-text-4);
-  line-height: 1.5; margin-top: 1px; white-space: normal;
-}
 .queued-hint {
   display: flex; align-items: center; gap: 4px; margin-bottom: 6px;
   font-size: 12px; color: var(--sfa-warning, var(--sfa-warn-ink)); background: var(--sfa-warn-bg);
   border: 1px dashed var(--sfa-warn-border); border-radius: 8px; padding: 4px 9px;
+}
+
+/* ===== `/` 命令菜单 ===== */
+.slash-menu {
+  border: 1px solid var(--sfa-border); border-radius: 12px; background: var(--sfa-surface);
+  box-shadow: var(--sfa-shadow-2); padding: 5px; margin-bottom: 8px;
+  max-height: 240px; overflow-y: auto;
+}
+.slash-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-radius: 8px; cursor: pointer; font-size: 12.5px;
+}
+.slash-item.hl { background: var(--sfa-tint-primary); }
+.slash-token { color: var(--sfa-primary); }
+.slash-hint {
+  padding: 5px 10px 3px; font-size: 11px; color: var(--sfa-text-4);
+  border-top: 1px solid var(--sfa-border-soft); margin-top: 3px;
 }
 
 /* ===== 历史会话抽屉 ===== */
