@@ -8,16 +8,15 @@
   支持粘贴 Claude Desktop / Cursor 格式 mcpServers JSON 一键导入。
 """
 import asyncio
-import logging
-
-mcp_log = logging.getLogger("sangfor-agent.mcp")
 import json
+import logging
 import re
-
 from contextlib import AsyncExitStack
 
 from app import db
 from app.agent.tools import Tool
+
+mcp_log = logging.getLogger("sangfor-agent.mcp")
 
 MCP_CONFIG_KEY = "mcp_servers"
 MCP_SDK_HINT = "未安装 mcp Python SDK（backend: pip install mcp），MCP 功能不可用"
