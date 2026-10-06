@@ -74,7 +74,7 @@
 | 层        | 选型                                          | 理由                                                                                                     |
 | -------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | 后端框架     | Python 3.12 + FastAPI                       | 异步原生（设备 IO + SSE 流式），自动 OpenAPI 文档，生态成熟                                                                |
-| LLM 接入   | openai SDK（OpenAI 兼容协议）                     | 一套代码适配智谱 GLM / DeepSeek / 通义等，比赛指定模型可一键切换（`.env` 配 base\_url/model）                                    |
+| LLM 接入   | openai SDK（OpenAI 兼容协议）                     | 一套代码适配智谱 GLM / DeepSeek / 通义等，任意模型可一键切换（`.env` 配 base\_url/model）                                    |
 | Agent 编排 | 自研轻量状态机（LangGraph 同构设计）                     | 核心是"工具循环 + 人工确认挂起/恢复"，自研实现约 300 行，零框架锁定、全链路可持久化（SQLite）、便于评审代码；工具协议为标准 function-calling，可平移至 LangGraph |
 | 设备接入     | httpx + 官方 REST API + 内置模拟器                 | 模拟器与官方 API 同构（同 URL/响应封套/错误码），适配层同一套代码双后端；进程内 ASGI 传输免端口依赖                                             |
 | 数据库      | SQLite（WAL）                                 | 单文件零运维，满足演示与中小规模部署；备份文件落盘 + SHA256                                                                     |
@@ -141,7 +141,7 @@
 
 **AcApiClient** 按 AC 开放接口规范实现：md5 共享密钥签名（params 排序 + md5）、HTTP 9999 端口、GET/POST 双模式、`_method=GET` 参数注入、空响应/非 JSON 响应兼容。覆盖：在线用户（`/api/onlineuser`）、网络策略（`/api/sysconf`）、流控策略（`/api/flowctrl`）、IP/MAC 绑定（`/api/ipmac-bindinfo`、`/api/user-bindinfo`）、应用流量排行、用户流量排行、吞吐量等数据采集。
 
-**AF 模拟器**是保证比赛演示可离线完整跑通的关键：
+**AF 模拟器**是保证离线完整演示可跑通的关键：
 
 - 与官方 API **同构**（相同 URL 结构、响应封套、错误码 1002/1003/1404/1409），`AfRestClient` 无差别访问；
 

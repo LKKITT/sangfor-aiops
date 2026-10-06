@@ -3,6 +3,14 @@
 本项目所有代码提交的更新记录，按时间倒序排列。
 
 ---
+
+## 2026-10-06
+
+### chore: 开源准备（MIT LICENSE、免责声明、CI、贡献指南）
+- 新增 MIT LICENSE、CONTRIBUTING.md、GitHub Actions（后端 pytest + 前端构建）
+- README 增加开源与贡献、免责声明章节（商标归属/逆向参数仅供学习/设备操作风险自担）
+- design.md 与模拟器 state.py 去除"比赛"等内部措辞，中性化表述
+
 ## 2026-10-05
 ### fix: MCP 会话建立挂起——venv 解析到 mcp 2.x 与 uvicorn 后端不兼容，锁定 1.x
 
