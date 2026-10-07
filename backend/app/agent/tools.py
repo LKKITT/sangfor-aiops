@@ -733,13 +733,13 @@ TOOLS: list[Tool] = [
         "type": "object",
         "properties": {"keyword": {"type": "string", "description": "过滤关键词"}},
     }, _h_acl),
-    Tool("get_user_bindings", "获取用户绑定信息（AC，来自user-bindinfo接口），包含用户名、IP、MAC、绑定类型、备注。可按IP/MAC/用户名关键词过滤。", {
+    Tool("get_user_bindings", "获取用户绑定信息（AC，来自user-bindinfo接口），包含用户名、IP、MAC、绑定类型、备注。必须提供关键词（用户名/IP/MAC，支持模糊匹配），接口不支持查询全部；用户未说明时请先询问要查什么。", {
     "type": "object",
-    "properties": {"keyword": {"type": "string", "description": "搜索关键词（IP/MAC/用户名），为空则返回全部"}},
+    "properties": {"keyword": {"type": "string", "description": "搜索关键词（用户名/IP/MAC，必填）：AC 接口不支持空关键词查询全部"}},
 }, _h_bindings),
-    Tool("get_ipmac_bindings", "获取纯IP/MAC绑定信息（AC，来自ipmac-bindinfo接口），包含IP、MAC地址、描述。可按IP/MAC关键词过滤。需与get_user_bindings配合使用，分别展示用户绑定和IP/MAC绑定结果。", {
+    Tool("get_ipmac_bindings", "获取纯IP/MAC绑定信息（AC，来自ipmac-bindinfo接口），包含IP、MAC地址、描述。必须提供关键词，且需接近完整的 IP 或 MAC 地址（过短子串会被设备校验拒绝）。需与get_user_bindings配合使用，分别展示用户绑定和IP/MAC绑定结果。", {
         "type": "object",
-        "properties": {"keyword": {"type": "string", "description": "搜索关键词（IP/MAC），为空则返回全部"}},
+        "properties": {"keyword": {"type": "string", "description": "搜索关键词（IP/MAC，必填，需接近完整格式）"}},
     }, _h_ipmac_bindings, device_type='ac'),
     Tool("get_network_objects", "获取网络对象（IP 地址组/范围组）列表，可按关键词过滤", {
         "type": "object",

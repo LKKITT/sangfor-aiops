@@ -427,9 +427,12 @@ class AcApiClient(DeviceClient):
     async def get_user_bindings(self, keyword: str = "") -> list[UserBinding]:
         """按关键词（用户名/IP/MAC）查询绑定关系。
 
-        keyword 为空时查询全部；有 keyword 时按其搜索（只读）。
+        keyword 必填：官方接口 search 参数必选，**不支持查询全部**
+        （空关键词会被设备以「校验参数失败」拒绝，曾因吞错表现为"无绑定"）。
         先查询 bindinfo/user-bindinfo（用户+IP/MAC 绑定），再查 ipmac-bindinfo（纯IP/MAC 绑定），合并去重。
         """
+        if not keyword:
+            raise DeviceError("AC 绑定查询需要提供关键词（用户名 / IP / MAC，支持模糊匹配），官方接口不支持查询全部；请引导用户提供要查询的对象")
         out: list[UserBinding] = []
         seen: set[str] = set()
         # 有 keyword 时按关键词搜索，否则传空字符串（设备 API 会返回全部）
@@ -462,10 +465,10 @@ class AcApiClient(DeviceClient):
                         binding_type=addr_type, enabled=bool(row.get("enable", True)),
                         source="user_bindinfo", comment=str(row.get("desc", ""))))
             except DeviceError as e:
-                if "不存在" in str(e) or "no data" in str(e).lower() or "校验" in str(e):
-                    pass
+                if "不存在" in str(e) or "no data" in str(e).lower():
+                    pass  # 无匹配视为空结果（设备对查无目标的返回）
                 else:
-                    raise
+                    raise  # 校验失败/连接失败等真实错误不再静默吞掉（曾致空关键词查询表现为"无绑定"）
             # 2) 再查询 ipmac-bindinfo（纯IP/MAC 绑定），与 user-bindinfo 结果合并去重
             try:
                 params = {}
@@ -495,10 +498,14 @@ class AcApiClient(DeviceClient):
         return out
 
     async def get_ipmac_bindings(self, keyword: str = "") -> list[UserBinding]:
-        """按关键词（IP/MAC）查询纯IP/MAC绑定信息（来自 ipmac-bindinfo 接口），与 get_user_bindings 分开使用。"""
+        """按关键词（IP/MAC）查询纯IP/MAC绑定信息（来自 ipmac-bindinfo 接口），与 get_user_bindings 分开使用。
+
+        keyword 必填，且需接近完整的 IP / MAC 格式（过短的模糊子串会被设备校验拒绝）。
+        """
         out: list[UserBinding] = []
         if not keyword:
-            return out
+            raise DeviceError("AC IP/MAC 绑定查询需要提供关键词（尽量完整的 IP 或 MAC 地址），官方接口不支持查询全部；请引导用户提供")
+
         try:
             ipmac_data = await self._get("ipmac-bindinfo", {"search": keyword})
             # ipmac-bindinfo 返回单个对象时包装为列表
@@ -516,8 +523,8 @@ class AcApiClient(DeviceClient):
                     user="", ip=str(row.get("ip", "")), mac=str(row.get("mac", "")),
                     binding_type="ipmac", enabled=True, source="ipmac_bindinfo",
                     comment=str(row.get("desc", ""))))
-        except Exception:
-            pass  # ipmac-bindinfo 接口可能不存在或出错，安静忽略
+        except DeviceError:
+            pass  # 补充查询：无匹配 / 该关键词形态不被 ipmac 接口接受时安静跳过（连接类错误仍为 DeviceError 之上不吞 HTTPError）
         return out
 
     async def apply_change(self, change: ChangeOp) -> dict:

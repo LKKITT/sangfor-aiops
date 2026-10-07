@@ -647,7 +647,14 @@ class AgentOrchestrator:
                     db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
                                                      "content": content})
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
-                    if r["dup"]:   # 重复调用：提示 LLM 直接使用已有结果
+                    if r["dup"]:   # 重复调用：复用结果，并向模型注入防循环提示
+                        # 坑：提示原先只发前端预览，模型每轮看到的仍是原样结果，
+                        # 会原样重试到轮次上限（AC 绑定查询曾连续空转 7 轮无答复）。
+                        content = (content + "\n〔重复调用已合并：结果与上次相同，请勿原样重试——"
+                                   "请基于已有结果作答，或调整参数 / 向用户说明需要补充信息〕")
+                        db.add_message(conv_id, "tool", {"tool_call_id": call["id"], "name": name,
+                                                         "content": content})
+                        messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
                         yield {"type": "tool_result", "name": name,
                                "preview": f"（重复调用已合并，请直接使用已有结果）{preview}"}
                         continue
