@@ -655,8 +655,15 @@ class AcApiClient(DeviceClient):
         return {"ok": True, "message": f"已删除用户 {name}", "data": data}
 
     async def snapshot_config(self) -> dict:
-        """AC 快照：包含绑定关系、上网策略、流控策略、在线用户等 AC 特有数据。"""
-        bindings = [b.to_dict() for b in await self.get_user_bindings()]
+        """AC 快照：包含绑定关系、上网策略、流控策略、在线用户等 AC 特有数据。
+
+        绑定枚举依赖必选 search 参数（官方接口无"查询全部"），快照场景无法给出关键词，
+        失败时如实留空——否则备份/变更计划（prepare 依赖快照）会整体失败。
+        """
+        try:
+            bindings = [b.to_dict() for b in await self.get_user_bindings()]
+        except DeviceError:
+            bindings = []
         net_policies = await self.get_net_policies()
         flux_policies = await self.get_flux_policies()
         online_users = await self.get_online_users()

@@ -141,3 +141,9 @@ def test_write_intent_only_readonly_hit_falls_back_to_full_mode():
     skill = skills.select_skill("改一下系统时间看看", "ac")
     assert skill is None or skill.tools, \
         f"写意图消息路由到只读技能 {skill and skill.id}，写工具未注入"
+
+
+def test_bind_to_phrase_is_write_intent():
+    """「绑定到」是写意图口语，应命中策略变更而非只读技能。"""
+    skill = skills.select_skill("把192.168.13.133绑定到11-22-33-33-22-11", "ac")
+    assert skill is not None and skill.id == "policy-change"

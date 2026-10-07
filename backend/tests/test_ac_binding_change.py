@@ -119,3 +119,30 @@ async def test_update_user_binding_delete_then_create_via_user_interface(client)
     assert calls[0][0] == "bindinfo/user-bindinfo" and calls[0][2] == "DELETE"
     assert calls[1][0] == "bindinfo/user-bindinfo"
     assert calls[1][1]["addr"] == "2.2.2.2+22-22-22-22-22-22"
+
+
+async def test_snapshot_tolerates_unenumerable_bindings(client):
+    """AC 快照：绑定枚举因 search 必选失败时留空，快照/备份/变更计划不整体失败。"""
+    from app.adapters.base import DeviceError
+
+    async def fail_bindings():
+        raise DeviceError("AC 绑定查询需要提供关键词（用户名 / IP / MAC，支持模糊匹配），官方接口不支持查询全部")
+
+    async def ok_list(*a, **k):
+        return []
+
+    async def ok_status():
+        class S:
+            sw_version, model = "AC12.0.40", "AC"
+        return S()
+
+    client.get_user_bindings = fail_bindings
+    client.get_net_policies = ok_list
+    client.get_flux_policies = ok_list
+    client.get_online_users = ok_list
+    client.get_throughput = ok_list
+    client.get_app_rank = ok_list
+    client.get_status = ok_status
+    snap = await client.snapshot_config()
+    assert snap["user_bindings"] == []          # 如实留空，不抛异常
+    assert snap["meta"]["device_type"] == "ac"  # 其余快照内容正常

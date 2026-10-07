@@ -6,6 +6,7 @@ import re
 from typing import AsyncGenerator
 
 from app import db
+from app.adapters.base import DeviceError
 from app.adapters.factory import get_client
 from app.services.device_scope import device_kind
 
@@ -78,7 +79,10 @@ async def offline_answer(message: str, device_id: str, device: dict) -> str:
                   for r in rules]
         return "**访问控制策略**\n" + "\n".join(lines)
     if re.search(r"绑定", m):
-        rows = [b.to_dict() for b in await client.get_user_bindings()]
+        try:
+            rows = [b.to_dict() for b in await client.get_user_bindings()]
+        except DeviceError as e:
+            return "**IP-MAC 绑定**\n" + str(e)
         lines = ["| 用户 | IP | MAC | 类型 | 启用 |", "|---|---|---|---|---|"]
         lines += [f"| {r['user']} | {r['ip']} | {r['mac'] or '-'} | {r['binding_type']} "
                   f"| {'✓' if r['enabled'] else '✗'} |" for r in rows]
