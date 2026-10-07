@@ -90,3 +90,28 @@ async def test_double_confirm_rejected(device_id):
             got_error = True
             break
     assert got_error
+
+
+@pytest.mark.asyncio
+async def test_confirm_flow_bookkeeping_error_still_reports_success(device_id, monkeypatch):
+    """收尾步骤（审计等）出错不得掩盖「已成功执行」：仍返回确认成功并附内部错误备注。"""
+    from app.agent import guardrails
+    from app.agent.orchestrator import AgentOrchestrator
+    conv = db.create_conversation("收尾异常不掩盖执行成功")
+    action_id = await _prepare_pending(
+        conv["id"], device_id, "update_acl_rule",
+        {"rule_id": "acl-005", "data": {"log": True}})
+
+    def boom(*a, **k):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(guardrails, "audit_tool", boom)
+    orch = AgentOrchestrator()
+    got = None
+    async for ev in orch.resume_confirm(conv["id"], action_id, True, device_id):
+        if ev["type"] == "confirm_result":
+            got = ev
+            break
+    assert got is not None and got["approved"] is True, f"执行成功却未返回确认结果: {got}"
+    assert "内部错误" in got.get("note", ""), f"缺少收尾错误备注: {got}"
+    assert db.get_pending_action(action_id)["status"] == "executed"

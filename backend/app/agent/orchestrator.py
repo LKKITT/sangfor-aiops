@@ -264,21 +264,33 @@ class AgentOrchestrator:
                                                  "content": err})
                 yield {"type": "confirm_result", "action_id": action_id, "approved": True, "failed": True}
                 return
-            device_cache.invalidate(device_id)   # 配置已变更：可视化缓存失效（含批量在 _execute_write_batch 内逐台失效）
-            db.update_pending_action(action_id, status="failed" if batch_all_failed else "executed",
-                                     result_json=json.dumps(result, ensure_ascii=False)[:4000])
-            guardrails.audit_tool(action["tool_name"], tool_args,
-                                  "failed" if batch_all_failed else "executed", conv_id, device_id,
-                                  duration_ms=write_duration_ms)
-            # 用户明确要求沉淀（record_to_kb 执行成功）：登记后触发后台提炼
-            if action["tool_name"] == skills.KB_RECORD_TOOL_NAME:
-                personal_kb_service.schedule_sediment(conv_id)
-            db.add_message(conv_id, "tool", {
-                "tool_call_id": tool_call_id, "name": action["tool_name"],
-                "content": json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT]})
-            yield {"type": "confirm_result", "action_id": action_id, "approved": True,
-                   "result": _compact_result(action["tool_name"], result),
-                   "safety_backup_id": safety_backup_id}
+            # 执行成功后的收尾（缓存失效/状态落库/审计/沉淀）：任何意外都不应掩盖
+            # 「已成功执行」的事实——曾因审计变量未定义，成功下发的变更被误报为服务异常。
+            bookkeeping_note = ""
+            try:
+                device_cache.invalidate(device_id)   # 配置已变更：可视化缓存失效（批量在 _execute_write_batch 内逐台失效）
+                db.update_pending_action(action_id, status="failed" if batch_all_failed else "executed",
+                                         result_json=json.dumps(result, ensure_ascii=False)[:4000])
+                guardrails.audit_tool(action["tool_name"], tool_args,
+                                      "failed" if batch_all_failed else "executed", conv_id, device_id,
+                                      duration_ms=write_duration_ms)
+                # 用户明确要求沉淀（record_to_kb 执行成功）：登记后触发后台提炼
+                if action["tool_name"] == skills.KB_RECORD_TOOL_NAME:
+                    personal_kb_service.schedule_sediment(conv_id)
+            except Exception as bk_err:   # noqa: BLE001 —— 收尾失败不改变执行成功的事实
+                bookkeeping_note = f"〔变更已执行，但结果登记出现内部错误：{bk_err}〕"
+            try:
+                db.add_message(conv_id, "tool", {
+                    "tool_call_id": tool_call_id, "name": action["tool_name"],
+                    "content": json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_LIMIT] + bookkeeping_note})
+            except Exception:   # noqa: BLE001 —— 回填失败也不阻断确认结果
+                pass
+            ev = {"type": "confirm_result", "action_id": action_id, "approved": True,
+                  "result": _compact_result(action["tool_name"], result),
+                  "safety_backup_id": safety_backup_id}
+            if bookkeeping_note:
+                ev["note"] = bookkeeping_note
+            yield ev
 
         if self._llm() is None:
             yield {"type": "done"}
