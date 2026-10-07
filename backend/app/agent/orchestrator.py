@@ -220,13 +220,16 @@ class AgentOrchestrator:
                                              "content": "用户在界面上审阅变更计划后拒绝执行。"})
             yield {"type": "confirm_result", "action_id": action_id, "approved": False}
         else:
+            write_duration_ms = 0.0
             try:
                 batch_targets = (resolve_batch_targets(tool_args)
                                  if tool and tool.needs_device and tool.device_type != "netdev" else [])
                 if batch_targets:
                     # 批量写操作：逐台下发（每台独立护栏检查与连接），聚合结果
+                    _tb0 = time.perf_counter()
                     result = await self._execute_write_batch(action["tool_name"], tool_args,
                                                              batch_targets, conv_id)
+                    write_duration_ms = (time.perf_counter() - _tb0) * 1000
                 else:
                     guardrails.check_tool_call(
                         action["tool_name"], tool_args,
@@ -565,8 +568,8 @@ class AgentOrchestrator:
             db.add_message(conv_id, "assistant", {
                 "text": final_text, "tool_calls": [{"id": c["id"], "name": c["name"],
                                                     "arguments": c["arguments"]} for c in calls]})
-            if final_text:
-                yield {"type": "token", "text": final_text}
+            # 注：增量 token 已在上方流式下发，这里不再重发整段 final_text——
+            # 前端与企微渠道均按事件累加文本，重发会造成每轮回答整体重复。
 
             # ---- 只读整轮快路径：一轮内全部为可执行只读调用时并发执行 ----
             # 写操作 / 未知工具 / 全局模式缺 devices 引导的轮次不进入（走下方串行路径，确认流零改动）。
