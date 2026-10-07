@@ -215,7 +215,7 @@ NAT_FIELDS = ("type", "src_zone", "dst_zone", "src_addr", "dst_addr", "service",
               "translated_addr", "translated_port", "name", "comment", "log", "enabled")
 ACL_FIELDS = ("src_zone", "dst_zone", "src_addr", "dst_addr", "service", "app",
               "action", "name", "comment", "log", "enabled")
-BIND_FIELDS = ("user", "ip", "mac", "binding_type", "comment", "enabled", "noauth", "limitlogon")
+BIND_FIELDS = ("user", "ip", "mac", "binding_type", "comment", "purpose", "enabled", "noauth", "limitlogon")
 OBJECT_FIELDS = ("name", "type", "members", "comment")
 SERVICE_FIELDS = ("name", "protocol", "ports", "comment")
 WHITEBLACKLIST_FIELDS = ("url", "type", "enable", "description")

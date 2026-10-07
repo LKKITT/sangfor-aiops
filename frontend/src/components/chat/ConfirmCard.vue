@@ -125,9 +125,15 @@ const formRef = ref(null)
 const showSecondConfirm = ref(false)
 const secondConfirmReason = ref('')
 
-// 表单类型判定（迁移自 ChatView：绑定创建 / NAT / ACL / 网络对象 / 自定义服务 编辑）
-const isBindingCreate = computed(() =>
-  props.confirm?.op === 'create' && (props.confirm?.resource === 'binding' || props.confirm?.tool_name === 'create_user_binding'))
+// 表单类型判定（迁移自 ChatView：绑定新增/修改 / NAT / ACL / 网络对象 / 自定义服务 编辑）
+// 绑定的 create 与 update 均出可编辑表单（update 按「删除+重建」语义，用户可在卡片上改字段）
+const isBindingEdit = computed(() => {
+  const c = props.confirm
+  if (!c) return false
+  const op = c.op || ''
+  if (op !== 'create' && op !== 'update') return false
+  return c.resource === 'binding' || (c.tool_name || '').includes('user_binding')
+})
 
 function isResourceEdit(type) {
   const c = props.confirm
@@ -139,7 +145,7 @@ function isResourceEdit(type) {
 
 const formType = computed(() => {
   const c = props.confirm
-  if (isBindingCreate.value) return 'binding'
+  if (isBindingEdit.value) return 'binding'
   if (isResourceEdit('nat')) return 'nat'
   if (isResourceEdit('acl')) return 'acl'
   if (isResourceEdit('object')) return 'object'

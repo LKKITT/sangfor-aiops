@@ -36,6 +36,22 @@ async def test_create_ipmac_binding_uses_ipmac_interface(client):
                       {"ip": "10.68.5.16", "mac": "94-37-f7-98-93-64", "desc": "测试"}, None)]
 
 
+async def test_create_composes_purpose_into_desc(client):
+    """描述与绑定目的组合落库到唯一的 desc 字段（卡片两字段 → 接口单字段）。"""
+    calls = _record_posts(client)
+    await client._apply_binding_change(ChangeOp(
+        op="create", resource="binding",
+        data={"ip": "10.68.5.16", "mac": "94-37-f7-98-93-64",
+              "comment": "办公区打印机", "purpose": "固定 IP 准入"}))
+    assert calls[0][1]["desc"] == "办公区打印机；目的：固定 IP 准入"
+    # 仅目的无描述时也要落 desc
+    calls.clear()
+    await client._apply_binding_change(ChangeOp(
+        op="create", resource="binding",
+        data={"ip": "10.68.5.17", "mac": "AA-BB-CC-DD-EE-01", "purpose": "访客终端"}))
+    assert calls[0][1]["desc"] == "目的：访客终端"
+
+
 async def test_create_user_binding_still_uses_user_interface(client):
     calls = _record_posts(client)
     r = await client._apply_binding_change(ChangeOp(

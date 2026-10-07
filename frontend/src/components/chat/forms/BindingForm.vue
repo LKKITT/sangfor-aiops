@@ -23,6 +23,9 @@
     <el-form-item label="描述">
       <el-input v-model="form.comment" placeholder="选填" />
     </el-form-item>
+    <el-form-item label="绑定目的">
+      <el-input v-model="form.purpose" placeholder="选填，如：办公终端准入" />
+    </el-form-item>
   </el-form>
 </template>
 
@@ -33,7 +36,7 @@ import { required, validAddrField, validMac } from './validators'
 const props = defineProps({ action: { type: Object, required: true } })
 
 const formRef = ref(null)
-const form = reactive({ user: '', ip: '', mac: '', noauth: false, limitlogon: false, comment: '' })
+const form = reactive({ user: '', ip: '', mac: '', noauth: false, limitlogon: false, comment: '', purpose: '' })
 
 const rules = {
   user: [required('请填写用户名')],
@@ -50,6 +53,7 @@ watch(() => props.action, (a) => {
   form.noauth = !!after.noauth
   form.limitlogon = !!after.limitlogon
   form.comment = after.comment || after.desc || ''
+  form.purpose = after.purpose || ''
 }, { immediate: true })
 
 async function validate() {
@@ -58,7 +62,7 @@ async function validate() {
 
 function getData() {
   return { user: form.user, ip: form.ip, mac: form.mac, noauth: form.noauth,
-           limitlogon: form.limitlogon, comment: form.comment }
+           limitlogon: form.limitlogon, comment: form.comment, purpose: form.purpose }
 }
 
 defineExpose({ validate, getData })

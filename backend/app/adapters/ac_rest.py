@@ -551,12 +551,17 @@ class AcApiClient(DeviceClient):
         # （官方接口分两族：user-bindinfo 管用户绑定 4.3/4.5，ipmac-bindinfo 管纯绑定 4.4/4.6）
         is_ipmac = (str(d.get("binding_type", "")) == "ipmac"
                     or (not name and bool(ip) and bool(mac)))
+        # 描述/绑定目的：厂商接口只有一个 desc 字段，组合落库（如「备注；目的：办公准入」）
+        purpose = str(d.get("purpose", "") or "").strip()
+        desc_full = str(d.get("comment", "") or "").strip()
+        if purpose:
+            desc_full = (desc_full + "；" if desc_full else "") + f"目的：{purpose}"
         if change.op == "create":
             if is_ipmac:
                 if not ip or not mac:
                     raise DeviceError("IP/MAC 绑定缺少必要字段（ip 与 mac 都必填）")
                 await self._post("bindinfo/ipmac-bindinfo",
-                                 {"ip": ip, "mac": mac, "desc": d.get("comment", "")})
+                                 {"ip": ip, "mac": mac, "desc": desc_full})
                 return {"ok": True, "message": f"已添加 IP/MAC 绑定：{ip} ← {mac}",
                         "data": {"ip": ip, "mac": mac}}
             if not name:
@@ -566,7 +571,7 @@ class AcApiClient(DeviceClient):
             addr = f"{ip}+{mac}" if (ip and mac) else (ip or mac)
             addr_type = "ipmac" if (ip and mac) else ("ip" if ip else "mac")
             body = {"enable": True, "name": name, "addr_type": addr_type, "addr": addr,
-                    "desc": d.get("comment", ""),
+                    "desc": desc_full,
                     "limitlogon": self._to_bool(d.get("limitlogon", False)),
                     "noauth": {"enable": self._to_bool(d.get("noauth", False)), "expire_time": 0}}
             await self._post("bindinfo/user-bindinfo", body)
@@ -608,7 +613,7 @@ class AcApiClient(DeviceClient):
                     if not ip or not mac:
                         raise DeviceError("新绑定缺少必要字段（ip 与 mac 都必填）")
                     await self._post("bindinfo/ipmac-bindinfo",
-                                     {"ip": ip, "mac": mac, "desc": d.get("comment", "")})
+                                     {"ip": ip, "mac": mac, "desc": desc_full})
                 else:
                     if not name:
                         raise DeviceError("新绑定缺少用户名（user）")
@@ -616,7 +621,7 @@ class AcApiClient(DeviceClient):
                     addr_type = "ipmac" if (ip and mac) else ("ip" if ip else "mac")
                     await self._post("bindinfo/user-bindinfo",
                                      {"enable": True, "name": name, "addr_type": addr_type,
-                                      "addr": addr, "desc": d.get("comment", ""),
+                                      "addr": addr, "desc": desc_full,
                                       "limitlogon": self._to_bool(d.get("limitlogon", False)),
                                       "noauth": {"enable": self._to_bool(d.get("noauth", False)),
                                                  "expire_time": 0}})
