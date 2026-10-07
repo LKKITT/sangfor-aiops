@@ -107,3 +107,37 @@ def test_kb_skill_exposes_kb_tool():
     names = {t.name for t in skills.resolve_skill_tools(kb, "af")}
     # 只读全量下知识库工具本来就在（若已注册）；技能本身声明了它
     assert skills.KB_TOOL_NAME in kb.tools or skills.KB_TOOL_NAME in names
+
+
+# ---------- 写意图路由：写操作消息不得落入只读技能 ----------
+
+def test_write_intent_binding_message_routes_to_policy_change():
+    """「绑定为××」含写意图，应命中策略变更（解锁写工具）而非只读的配置查询。"""
+    skill = skills.select_skill("绑定为11-22-33-33-22-11", "ac")
+    assert skill is not None and skill.id == "policy-change", \
+        f"写意图绑定消息路由到 {skill and skill.id}，写工具未注入"
+
+
+def test_make_a_binding_routes_to_policy_change():
+    """「做个绑定」是写意图口语，应命中策略变更。"""
+    skill = skills.select_skill("把192.168.133.133做个绑定", "ac")
+    assert skill is not None and skill.id == "policy-change"
+
+
+def test_modify_binding_message_routes_to_policy_change():
+    skill = skills.select_skill("修改10.68.5.16的绑定信息", "ac")
+    assert skill is not None and skill.id == "policy-change"
+
+
+def test_read_intent_binding_still_routes_to_config_query():
+    """纯查询（无写意图）保持原路由：查看绑定 → 配置查询（只读）。"""
+    skill = skills.select_skill("查看绑定列表", "ac")
+    assert skill is not None and skill.id == "config-query"
+
+
+def test_write_intent_only_readonly_hit_falls_back_to_full_mode():
+    """写意图但只有只读技能命中 → 返回 None（全量工具模式，保证写工具可用）。"""
+    # 「改一下系统时间」：无绑定/策略类写技能关键词，仅只读技能可能命中
+    skill = skills.select_skill("改一下系统时间看看", "ac")
+    assert skill is None or skill.tools, \
+        f"写意图消息路由到只读技能 {skill and skill.id}，写工具未注入"

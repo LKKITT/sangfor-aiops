@@ -102,7 +102,7 @@ SKILLS: list[Skill] = [
         id="policy-change", name="策略变更",
         description="新建/修改/删除 NAT、访问控制、用户绑定、网络对象、服务、黑白名单等配置变更",
         keywords=("新建", "创建", "添加", "新增", "停用", "启用", "禁用", "修改", "删除", "变更",
-                  "放行", "封禁", "阻断", "收紧", "加一条", "删掉"),
+                  "放行", "封禁", "阻断", "收紧", "加一条", "删掉", "绑定"),
         device_types=("af", "ac", "scp"),
         tools=("create_nat_rule", "update_nat_rule", "delete_nat_rule",
                "create_acl_rule", "update_acl_rule", "delete_acl_rule",
@@ -147,9 +147,10 @@ def is_kb_intent(message: str) -> bool:
 # 纯查询/问答直接走全量工具模式，省去一次串行前置 LLM 调用（关键词路由未命中时）。
 # 误伤方向安全：漏判 → 全量模式（现状兜底行为）；误判 → 仅多一次快速路由调用。
 WRITE_INTENT_PATTERN = re.compile(
-    r"新建|创建|添加|新增|加一条|加个|删除|删掉|删了|去掉|移除|清除|清空|"
+    r"新建|创建|添加|新增|加一条|加个|做个|删除|删掉|删了|去掉|移除|清除|清空|"
     r"修改|改成|改为|改一下|改下|编辑|更新|调整|停用|启用|禁用|开启|关闭|"
-    r"放行|封禁|阻断|封锁|收紧|放开|还原|恢复|回滚|回退|重置|变更|下发|执行|保存配置",
+    r"放行|封禁|阻断|封锁|收紧|放开|还原|恢复|回滚|回退|重置|变更|下发|执行|保存配置|"
+    r"绑定为|绑定成|绑上|绑到",
     re.I)
 
 
@@ -169,14 +170,22 @@ def _skills_for(device_type: str) -> list[Skill]:
 
 
 def select_skill(message: str, device_type: str = "") -> Skill | None:
-    """关键词路由：命中即返回，零延迟、离线可用；未命中返回 None。"""
+    """关键词路由：命中即返回，零延迟、离线可用；未命中返回 None。
+
+    写意图消息跳过只读技能（如「修改绑定信息」含「绑定」会先命中只读的配置查询，
+    导致写工具未注入、模型误称"只读模式"）：继续扫描能解锁写工具的技能；
+    写意图但只有只读技能命中时返回 None（全量工具模式，保证写工具可用）。
+    """
     text = (message or "").lower()
     if not text:
         return None
+    write = looks_like_write_intent(message)
     for skill in _skills_for(device_type):
-        for kw in skill.keywords:
-            if kw in text:
-                return skill
+        if not any(kw in text for kw in skill.keywords):
+            continue
+        if write and not skill.tools:
+            continue
+        return skill
     return None
 
 
