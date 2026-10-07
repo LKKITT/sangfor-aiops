@@ -887,9 +887,9 @@ def _register_write_tools() -> None:
         rule_tool("update_acl_rule", "acl", "update", "修改访问控制策略字段（如停用 enabled=false、收紧匹配域）", ACL_FIELDS),
         rule_tool("delete_acl_rule", "acl", "delete", "删除访问控制策略", ACL_FIELDS),
         # 用户绑定：AF 和 AC 均支持
-        rule_tool("create_user_binding", "binding", "create", "新建 IP-MAC 绑定（user/ip/mac 必填；AC 设备可带 noauth=免认证、limitlogon=限制登录，布尔值，默认均关闭即永久有效仅绑定）", BIND_FIELDS),
-        rule_tool("update_user_binding", "binding", "update", "修改用户绑定", BIND_FIELDS),
-        rule_tool("delete_user_binding", "binding", "delete", "删除用户绑定", BIND_FIELDS),
+        rule_tool("create_user_binding", "binding", "create", "新建 IP-MAC 绑定（user/ip/mac 必填；AC 设备可带 noauth=免认证、limitlogon=限制登录，布尔值，默认均关闭即永久有效仅绑定）。AC 上不带用户名且 ip+mac 齐全时创建纯 IP/MAC 绑定", BIND_FIELDS),
+        rule_tool("update_user_binding", "binding", "update", "修改用户绑定。注意：AC 官方接口无修改语义，系统按「删除+重建」实现（确认卡片会如实标注）；需在 data 或 orig_ip/orig_mac 中指明原绑定，new 值放 ip/mac/user/comment", BIND_FIELDS),
+        rule_tool("delete_user_binding", "binding", "delete", "删除用户绑定（AC 上纯 IP/MAC 绑定按 IP 删除）", BIND_FIELDS),
         # 网络对象：仅 AF 防火墙支持
         rule_tool("create_network_object", "object", "create",
                   "新建网络对象（IP组）。data：name 必填，members 为网段/IP 逗号分隔，comment 建议填写",

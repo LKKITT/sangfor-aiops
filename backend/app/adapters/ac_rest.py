@@ -547,7 +547,18 @@ class AcApiClient(DeviceClient):
         d = change.data or {}
         name = d.get("user") or d.get("name") or ""
         ip, mac = str(d.get("ip", "")), str(d.get("mac", ""))
+        # 纯 IP/MAC 绑定判定：显式 binding_type=ipmac，或无用户名且 ip/mac 齐全
+        # （官方接口分两族：user-bindinfo 管用户绑定 4.3/4.5，ipmac-bindinfo 管纯绑定 4.4/4.6）
+        is_ipmac = (str(d.get("binding_type", "")) == "ipmac"
+                    or (not name and bool(ip) and bool(mac)))
         if change.op == "create":
+            if is_ipmac:
+                if not ip or not mac:
+                    raise DeviceError("IP/MAC 绑定缺少必要字段（ip 与 mac 都必填）")
+                await self._post("bindinfo/ipmac-bindinfo",
+                                 {"ip": ip, "mac": mac, "desc": d.get("comment", "")})
+                return {"ok": True, "message": f"已添加 IP/MAC 绑定：{ip} ← {mac}",
+                        "data": {"ip": ip, "mac": mac}}
             if not name:
                 raise DeviceError("缺少用户名（user）")
             if not ip and not mac:
@@ -562,6 +573,11 @@ class AcApiClient(DeviceClient):
             self._managed_bindings.append({"user": name, "ip": ip or addr, "mac": mac})
             return {"ok": True, "message": f"已添加绑定：{name} ← {addr}", "data": {"addr": addr}}
         if change.op == "delete":
+            if is_ipmac and ip:
+                # 文档 4.4：删除 IPMAC 绑定 POST bindinfo/ipmac-bindinfo?_method=DELETE，按 ip
+                await self._post("bindinfo/ipmac-bindinfo", {"ip": ip}, method_override="DELETE")
+                return {"ok": True, "message": f"已删除 IP/MAC 绑定：{ip} ← {mac}".rstrip(" ←"),
+                        "data": {"ip": ip}}
             addr = d.get("ip") or ip
             if not addr:
                 managed = next((m for m in self._managed_bindings
@@ -573,9 +589,59 @@ class AcApiClient(DeviceClient):
             self._managed_bindings = [m for m in self._managed_bindings if m["ip"] != addr]
             return {"ok": True, "message": f"已删除绑定：{addr}", "data": {"addr": addr}}
         if change.op == "update":
-            raise DeviceError(
-                "绑定修改请按文档 2.4 修改用户信息的 bind_cfg（需 orig_ip/orig_mac 指示原绑定）；"
-                "或先删除后新增")
+            # 官方接口无「修改」语义（文档 4.1~4.6 仅查/增/删），按文档口径以删除+重建实现。
+            current = change.current or {}
+            old_ip = str(current.get("ip") or d.get("orig_ip") or ip)
+            old_mac = str(current.get("mac") or d.get("orig_mac") or mac)
+            old_user = current.get("user") or ""
+            old_is_ipmac = not old_user
+            if old_is_ipmac and not old_ip:
+                raise DeviceError("缺少原绑定 IP（orig_ip），无法定位要修改的 IP/MAC 绑定")
+            # 1) 删除旧绑定（按旧绑定的类型走对应接口）
+            if old_is_ipmac:
+                await self._post("bindinfo/ipmac-bindinfo", {"ip": old_ip}, method_override="DELETE")
+            else:
+                await self._post("bindinfo/user-bindinfo", {"addr": old_ip}, method_override="DELETE")
+            # 2) 创建新绑定；失败时尽力回滚旧绑定并如实报告
+            try:
+                if is_ipmac:
+                    if not ip or not mac:
+                        raise DeviceError("新绑定缺少必要字段（ip 与 mac 都必填）")
+                    await self._post("bindinfo/ipmac-bindinfo",
+                                     {"ip": ip, "mac": mac, "desc": d.get("comment", "")})
+                else:
+                    if not name:
+                        raise DeviceError("新绑定缺少用户名（user）")
+                    addr = f"{ip}+{mac}" if (ip and mac) else (ip or mac)
+                    addr_type = "ipmac" if (ip and mac) else ("ip" if ip else "mac")
+                    await self._post("bindinfo/user-bindinfo",
+                                     {"enable": True, "name": name, "addr_type": addr_type,
+                                      "addr": addr, "desc": d.get("comment", ""),
+                                      "limitlogon": self._to_bool(d.get("limitlogon", False)),
+                                      "noauth": {"enable": self._to_bool(d.get("noauth", False)),
+                                                 "expire_time": 0}})
+            except Exception as e:
+                try:  # 回滚：用原数据重建旧绑定，避免变更半途丢失绑定
+                    if old_is_ipmac:
+                        await self._post("bindinfo/ipmac-bindinfo",
+                                         {"ip": old_ip, "mac": old_mac,
+                                          "desc": str(current.get("comment", ""))})
+                    else:
+                        old_addr = f"{old_ip}+{old_mac}" if (old_ip and old_mac) else (old_ip or old_mac)
+                        await self._post("bindinfo/user-bindinfo",
+                                         {"enable": True, "name": old_user,
+                                          "addr_type": "ipmac" if (old_ip and old_mac) else "ip",
+                                          "addr": old_addr,
+                                          "desc": str(current.get("comment", ""))})
+                except Exception as re_err:
+                    return {"ok": False,
+                            "message": (f"修改失败且自动回滚未成功：{e}；回滚错误：{re_err}。"
+                                        f"旧绑定（{old_ip} ← {old_mac}）可能已丢失，请到设备界面核实！"),
+                            "data": {"rolled_back": False}}
+                raise DeviceError(f"修改失败，已回滚保留原绑定（{old_ip} ← {old_mac}）：{e}")
+            return {"ok": True,
+                    "message": f"已按「删除+重建」完成修改：{old_ip} ← {old_mac} 变更为 {ip} ← {mac}",
+                    "data": {"old": {"ip": old_ip, "mac": old_mac}, "new": {"ip": ip, "mac": mac}}}
         raise DeviceError(f"不支持的操作：{change.op}")
 
     async def delete_test_user(self, name: str) -> dict:
