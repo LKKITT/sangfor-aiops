@@ -255,6 +255,44 @@
         {{ consoleWsOk ? '已连接设备 CLI（输入 help 或 ? 可查看命令）' : '连接中…' }}
         · 关闭弹窗即断开 SSH 会话
         <span class="nd-copy-hint">鼠标选中即复制 · Ctrl+Shift+C 复制 · Ctrl+V 粘贴</span>
+        <el-button size="small" :type="aiPanel === 'cmd' ? 'primary' : 'default'"
+                   @click="aiPanel = aiPanel === 'cmd' ? '' : 'cmd'">命令速查</el-button>
+        <el-button size="small" :type="aiPanel === 'ai' ? 'primary' : 'default'"
+                   :loading="aiBusy" @click="runAiAnalysis">AI 分析最近回显</el-button>
+      </div>
+      <div v-if="aiPanel" class="nd-aipanel"
+           style="margin-top: 8px; border: 1px solid #d8dfec; border-radius: 8px; padding: 10px; max-height: 300px; overflow: auto">
+        <template v-if="aiPanel === 'cmd'">
+          <el-input v-model="cmdQuery" size="small" clearable placeholder="过滤命令（如 display / interface / show）"
+                    style="max-width: 300px; margin-bottom: 8px" />
+          <div style="display: flex; flex-wrap: wrap; gap: 6px">
+            <button v-for="c in consoleSuggests" :key="c.cmd" type="button"
+                    style="cursor: pointer; border: 1px solid #c9d4e8; background: #f4f7fd; border-radius: 6px; padding: 3px 8px; font-family: Consolas, monospace; font-size: 12px"
+                    :title="c.desc" @click="insertToTerm(c.cmd)">
+              {{ c.cmd }}<span style="opacity: .65; margin-left: 6px">{{ c.desc }}</span>
+            </button>
+            <span v-if="!consoleSuggests.length" style="opacity: .65; font-size: 12px">无匹配命令</span>
+          </div>
+          <div style="margin-top: 6px; font-size: 12px; opacity: .7">点击命令仅插入终端，回车执行由你确认</div>
+        </template>
+        <template v-else>
+          <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px">
+            <el-input v-model="aiCurrentCmd" size="small" placeholder="当前命令（可选，帮助 AI 定位上下文）"
+                      style="max-width: 300px" />
+            <el-button size="small" type="primary" :loading="aiBusy" @click="runAiAnalysis">分析最近回显</el-button>
+          </div>
+          <div v-if="aiError" style="color: #c0392b; font-size: 13px">{{ aiError }}</div>
+          <template v-else-if="aiResult">
+            <pre style="white-space: pre-wrap; font-family: inherit; margin: 0 0 8px; font-size: 13px; line-height: 1.6">{{ aiResult.analysis }}</pre>
+            <div v-if="aiResult.commands && aiResult.commands.length" style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+              <span style="font-size: 12px; opacity: .7">建议命令（点击插入终端，回车执行）：</span>
+              <button v-for="c in aiResult.commands" :key="c" type="button"
+                      style="cursor: pointer; border: 1px solid #9fd6cb; background: #eefaf7; border-radius: 6px; padding: 3px 8px; font-family: Consolas, monospace; font-size: 12px"
+                      @click="insertToTerm(c)">{{ c }}</button>
+            </div>
+          </template>
+          <div v-else style="font-size: 13px; opacity: .7">将把最近约 150 行终端回显（已脱敏）交给 AI 分析；建议命令只插入终端，回车执行由你确认。</div>
+        </template>
       </div>
     </el-dialog>
   </div>
@@ -267,6 +305,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Monitor, Plus, Promotion, CaretRight, DataLine, Download, Upload, Search } from '@element-plus/icons-vue'
 import { NetDev } from '../api.js'
 import NetDevTopology from './NetDevTopology.vue'
+import { suggestCommands } from './netdevConsoleDict'
 
 const tab = ref('devices')
 const devices = ref([])
@@ -294,6 +333,50 @@ const consoleVisible = ref(false)
 const consoleDevice = ref(null)
 const consoleWsOk = ref(false)
 const termEl = ref(null)
+// ---- 控制台 AI 辅助状态（命令速查 / 回显分析；建议命令仅插入终端，不自动执行） ----
+const aiPanel = ref('')
+const cmdQuery = ref('')
+const aiBusy = ref(false)
+const aiCurrentCmd = ref('')
+const aiResult = ref(null)
+const aiError = ref('')
+const consoleSuggests = computed(() => suggestCommands(consoleDevice.value?.vendor || '', cmdQuery.value))
+
+function insertToTerm(text) {
+  if (!consoleTerm) { ElMessage.warning('控制台未连接'); return }
+  consoleTerm.write(text)
+  ElMessage.success('已插入终端，回车执行')
+}
+
+function readTermTail(lines = 150) {
+  try {
+    if (!consoleTerm) return ''
+    const buf = consoleTerm.buffer.active
+    const out = []
+    for (let i = Math.max(0, buf.length - lines); i < buf.length; i++) {
+      const l = buf.getLine(i)
+      if (l) out.push(l.translateToString(true))
+    }
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').slice(-8000)
+  } catch { return '' }
+}
+
+async function runAiAnalysis() {
+  if (!consoleDevice.value) return
+  aiPanel.value = 'ai'
+  const output = readTermTail(150)
+  if (!output.trim()) { aiError.value = '终端回显为空：请先执行一条命令再分析'; return }
+  aiBusy.value = true
+  aiError.value = ''
+  aiResult.value = null
+  try {
+    aiResult.value = await NetDev.consoleAnalyze(consoleDevice.value.id, output, aiCurrentCmd.value)
+  } catch (e) {
+    aiError.value = String(e.message || e)
+  } finally {
+    aiBusy.value = false
+  }
+}
 let consoleWs = null
 let consoleTerm = null
 

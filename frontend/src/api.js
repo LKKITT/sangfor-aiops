@@ -18,9 +18,12 @@ async function request(method, path, body, timeout = 45000) {
   try {
     const resp = await fetch(BASE + path, {
       method,
-      ...(body !== undefined
-        ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-        : {}),
+      headers: {
+        // 多租户：所有请求携带当前客户（工作区切换器写入 localStorage）
+        'X-Tenant-Id': localStorage.getItem('sfa_tenant') || 'default',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {})
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal
     })
     if (!resp.ok) throw new Error(await readError(resp))
@@ -144,7 +147,11 @@ export const KB = {
 }
 
 // 网络设备管理（SSH 交换机/路由器）
+export const Tenants = { list: () => apiGet('/api/tenants') }
+
 export const NetDev = {
+  consoleAnalyze: (device_id, output, current_command) =>
+    apiPost('/api/netdev/console/analyze', { device_id, output, current_command }, 90000),
   devices: (group = '') => apiGet(`/api/netdev/devices${group ? `?group=${encodeURIComponent(group)}` : ''}`),
   vendors: () => apiGet('/api/netdev/vendors'),
   add: (dev) => apiPost('/api/netdev/devices', dev, 30000),

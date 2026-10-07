@@ -6,10 +6,12 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import re as _re
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db
+from app import db, dbcore
 from app.adapters.factory import close_all_clients, start_keepalive
 from app.api import backups, chat, devices, updates
 from app.api import channel, knowledge, netdev, settings as settings_api
@@ -33,7 +35,7 @@ async def scheduled_backup_all() -> None:
             except Exception as e:   # noqa: BLE001
                 log.warning("定时备份失败 device=%s: %s", device["id"], e)
 
-    await asyncio.gather(*(_one(d) for d in db.list_devices()))
+    await asyncio.gather(*(_one(d) for d in db.list_devices(all_tenants=True)))
 
 
 async def scheduled_cleanup() -> None:
@@ -108,6 +110,26 @@ async def request_context_middleware(request, call_next):
     return response
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def _tenant_context_middleware(request: Request, call_next):
+    """从 X-Tenant-Id 头注入当前租户（缺省 default；非法字符一律回落 default）。"""
+    raw = (request.headers.get("x-tenant-id") or "").strip()
+    dbcore.set_tenant(raw if _re.fullmatch(r"[A-Za-z0-9_\-]{1,32}", raw) else "default")
+    return await call_next(request)
+
+
+@app.get("/api/tenants")
+def list_tenants() -> dict:
+    """已知客户列表：设备/网络设备/会话中出现过的租户并集（含 default）。"""
+    with db._connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT tenant_id FROM devices"
+            " UNION SELECT DISTINCT tenant_id FROM netdev_devices"
+            " UNION SELECT DISTINCT tenant_id FROM conversations").fetchall()
+    tenants = sorted({(r[0] or "default") for r in rows} | {"default"})
+    return {"tenants": tenants}
 app.include_router(devices.router)
 app.include_router(backups.router)
 app.include_router(chat.router)

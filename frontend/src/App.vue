@@ -25,6 +25,15 @@
         </div>
       </header>
 
+      <div class="device-panel" style="margin-bottom: 8px">
+        <div class="device-panel-head"><span class="device-label">客户</span></div>
+        <el-select v-model="tenantSel" filterable allow-create default-first-option
+                   placeholder="选择客户" aria-label="切换客户" @change="setTenant"
+                   style="width: 100%">
+          <el-option v-for="t in store.tenants" :key="t" :value="t"
+                     :label="t === 'default' ? '默认客户' : t" />
+        </el-select>
+      </div>
       <div class="device-panel">
         <div class="device-panel-head">
           <span class="device-label">目标设备</span>
@@ -214,11 +223,12 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+const tenantSel = ref(store.tenant)
 import { useRoute } from 'vue-router'
 import { router } from './router'
 import { useTheme } from './composables/useTheme'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { store, loadDevices, loadHealth, currentDevice, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from './store.js'
+import { store, loadDevices, loadHealth, currentDevice, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES, setTenant, refreshTenants } from './store.js'
 import { Devices } from './api.js'
 
 // 视图路由化：URL 可寻址（刷新保持/可分享），组件按路由级动态 import 分片加载
@@ -282,6 +292,7 @@ function onGlobalKeydown(e) {
 }
 
 onMounted(async () => {
+  refreshTenants()
   window.addEventListener('keydown', onGlobalKeydown)
   await Promise.all([loadDevices(), loadHealth()])
 })

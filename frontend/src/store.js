@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { Devices, Health, NetDev } from './api.js'
+import { Devices, Health, NetDev, Tenants } from './api.js'
 
 // 全局模式：不绑定单一设备，AI 对话覆盖全部深信服 + 网络设备
 export const GLOBAL_DEVICE_ID = 'global'
@@ -13,6 +13,8 @@ export const NETDEV_VENDOR_NAMES = { huawei: '华为', h3c: 'H3C', ruijie: '锐�
 
 // 全局状态：当前设备（全局/深信服/网络设备）、健康信息
 export const store = reactive({
+  tenant: localStorage.getItem('sfa_tenant') || 'default',
+  tenants: ['default'],
   devices: [],
   netdevDevices: [],
   currentDeviceId: GLOBAL_DEVICE_ID,
@@ -54,4 +56,21 @@ export function currentDevice() {
 // AI 对话可选的网络设备（限华为/H3C/锐捷；其他厂家在网络设备管理页操作）
 export function aiNetdevs() {
   return store.netdevDevices.filter(d => AI_NETDEV_VENDORS.includes(d.vendor))
+}
+
+
+// ---------- 多租户：客户（工作区）切换 ----------
+export async function refreshTenants() {
+  try {
+    const d = await Tenants.list()
+    store.tenants = d.tenants || ['default']
+  } catch { /* 拉取失败保持现状（至少含 default） */ }
+}
+
+export function setTenant(t) {
+  if (!t || t === store.tenant) return
+  localStorage.setItem('sfa_tenant', t)
+  store.tenant = t
+  // 切换客户：整页刷新，全部视图按新租户重新加载（设备/会话/记忆天然隔离）
+  window.location.reload()
 }

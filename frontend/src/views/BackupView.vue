@@ -4,6 +4,10 @@
     <div class="page-head">
       <div>
         <h2 class="ph-title">备份与恢复</h2>
+        <el-select v-model="store.currentDeviceId" size="small" style="width: 210px; margin-left: 12px"
+                   placeholder="选择设备" aria-label="选择设备">
+          <el-option v-for="d in store.devices" :key="d.id" :value="d.id" :label="d.name" />
+        </el-select>
         <p class="ph-desc">结构化配置快照（可对比 / 可恢复）+ 设备配置文件归档（.conf，SHA256 校验）· 每日 02:00 自动备份</p>
       </div>
       <div class="ph-actions" v-if="!netdevMode">

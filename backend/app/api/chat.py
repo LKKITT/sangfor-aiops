@@ -112,10 +112,15 @@ def conversations() -> list[dict]:
 
 @router.get("/conversations/detail")
 def conversation_detail_list(page: int = 1, page_size: int = 20, keyword: str = "",
-                             device_id: str = "", start: str = "", end: str = "") -> dict:
-    """分页会话列表（含消息数/最后消息/摘要/设备名），支持关键词/设备/时间范围筛选。"""
+                             device_id: str = "", start: str = "", end: str = "",
+                             all_tenants: bool = False) -> dict:
+    """分页会话列表（含消息数/最后消息/摘要/设备名），支持关键词/设备/时间范围筛选。
+
+    all_tenants=True 为共享审计视角：跨客户查看全部会话日志（会话日志全局共享口径）。
+    """
     return db.list_conversations_paged(page=page, page_size=page_size, keyword=keyword,
-                                       device_id=device_id, start=start, end=end)
+                                       device_id=device_id, start=start, end=end,
+                                       all_tenants=all_tenants)
 
 
 @router.get("/conversations/{conv_id}")

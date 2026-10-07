@@ -3,6 +3,7 @@
 领域 repo（当前集中于 db.py，后续可按域渐进拆分至 app/repos/）一律从本模块
 取基础设施，禁止 repo 之间互相 import。db.py 顶部 re-export 保持调用方零改动。
 """
+from contextvars import ContextVar
 import json
 import sqlite3
 import threading
@@ -212,6 +213,25 @@ CREATE INDEX IF NOT EXISTS idx_conversations_device ON conversations(device_id);
 """
 
 
+# 当前租户（请求中间件注入；后台/定时任务默认 default）
+_tenant_var: ContextVar[str] = ContextVar("sfa_tenant", default="default")
+TENANT_TABLES = ["devices", "netdev_devices", "conversations", "memory_items",
+                 "conv_summaries", "pending_actions", "backups", "netdev_tasks",
+                 "netdev_task_items", "channel_bindings"]
+
+
+def get_tenant() -> str:
+    return _tenant_var.get() or "default"
+
+
+def set_tenant(tenant: str) -> object:
+    return _tenant_var.set((tenant or "default").strip() or "default")
+
+
+def reset_tenant(token: object) -> None:
+    _tenant_var.reset(token)
+
+
 def _connect() -> sqlite3.Connection:
     conn = getattr(_local, "conn", None)
     if conn is None:
@@ -239,6 +259,11 @@ def init_db() -> None:
         topo_cols = [r["name"] for r in conn.execute("PRAGMA table_info(netdev_topology_cache)")]
         if topo_cols and "mac_json" not in topo_cols:
             conn.execute("ALTER TABLE netdev_topology_cache ADD COLUMN mac_json TEXT NOT NULL DEFAULT '[]'")
+        # 多租户：隔离表补 tenant_id（存量数据归 default 租户；知识库/审计/设置全局共享）
+        for t in TENANT_TABLES:
+            tcols = [r["name"] for r in conn.execute(f"PRAGMA table_info({t})")]
+            if tcols and "tenant_id" not in tcols:
+                conn.execute(f"ALTER TABLE {t} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
 
 
 def now() -> str:

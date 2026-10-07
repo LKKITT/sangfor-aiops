@@ -3,12 +3,15 @@ WebSocket 交互式控制台（浏览器 xterm.js 直连设备 CLI）。"""
 import asyncio
 import json
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app import db
 from app.services import netdev_ops_service, netdev_service
+from app.services.app_settings import get_llm_config
+from openai import AsyncOpenAI
 
 log = logging.getLogger("sangfor-agent.netdev")
 
@@ -395,3 +398,95 @@ async def save_topology_positions(payload: TopologyPositionsIn) -> dict:
 async def clear_topology_positions(group: str = "") -> dict:
     db.save_netdev_topology_positions(group, {})
     return {"ok": True}
+
+
+# ================= 控制台 AI 辅助：回显分析/排错建议（只读；建议命令不自动执行） =================
+
+class ConsoleAnalyzeIn(BaseModel):
+    device_id: str
+    output: str = ""
+    current_command: str = ""
+
+
+_OUTPUT_MAX_LINES = 200
+_OUTPUT_MAX_CHARS = 12000
+_SECRET_HINTS = ("password", "passwd", "secret", "community", "凭证", "pin")
+
+
+def sanitize_terminal_output(text: str, max_lines: int = _OUTPUT_MAX_LINES,
+                             max_chars: int = _OUTPUT_MAX_CHARS) -> str:
+    """回显脱敏：疑似口令/密钥行打码；行数与体积截断（控制喂给 LLM 的成本）。"""
+    lines = []
+    for ln in text.splitlines()[-max_lines:]:
+        low = ln.lower()
+        if any(h in low for h in _SECRET_HINTS):
+            ln = re.sub(r"\S+\s*$", "******", ln)
+        lines.append(ln)
+    return "\n".join(lines)[-max_chars:]
+
+
+def build_console_prompt(dev: dict, output: str, current_command: str) -> str:
+    prof = netdev_service.profile_of(dev.get("vendor", ""))
+    return (
+        f"你是资深网络设备排错助手。设备：{prof.display}（管理地址 {dev.get('host', '')}:{dev.get('port', 22)}，"
+        f"型号 {dev.get('model') or '未知'}）。\n"
+        f"最近执行的命令：{current_command or '（无）'}\n"
+        f"终端回显（已脱敏，可能被截断）：\n{output}\n\n"
+        "请分析：1) 回显说明设备处于什么状态（正常/异常及依据）；"
+        "2) 可能原因按概率排序最多 3 条；"
+        "3) 建议下一步命令最多 4 条（仅该厂商 CLI 语法，commands 数组只放命令本身，不要解释）。\n"
+        '只输出 JSON：{"analysis": "markdown 文本", "commands": ["命令1", "命令2"]}'
+    )
+
+
+@router.post("/console/analyze")
+async def console_analyze(payload: ConsoleAnalyzeIn):
+    """控制台 AI 分析：终端回显 → 状态研判 + 可能原因 + 建议命令。
+
+    只读能力：分析文本由前端渲染，建议命令仅“插入终端”由用户人工回车执行，绝不代发。
+    """
+    dev = db.get_netdev_device(payload.device_id)
+    if not dev:
+        raise HTTPException(404, "设备不存在")
+    output = sanitize_terminal_output(payload.output)
+    if not output.strip():
+        raise HTTPException(400, "终端回显为空：请先在控制台执行一条命令，再做 AI 分析")
+    llm = get_llm_config()
+    if not (llm.get("api_key") and llm.get("base_url")):
+        raise HTTPException(409, "未配置大模型（平台设置 → 大模型接入），AI 分析不可用")
+
+    client = AsyncOpenAI(api_key=llm["api_key"], base_url=llm["base_url"], timeout=60)
+    resp = await client.chat.completions.create(
+        model=llm["model"], temperature=0.2, max_tokens=1200,
+        messages=[{"role": "system", "content": "你是网络设备排错助手，只输出 JSON。"},
+                  {"role": "user", "content": build_console_prompt(dev, output, payload.current_command)}])
+    text = (resp.choices[0].message.content or "").strip()
+    analysis, commands = text, []
+    # 模型常把 JSON 包进 ```json 围栏、且 analysis 值里带真实换行（JSON 规范不允许）——
+    # 剥围栏 + strict=False 容忍字符串内控制字符，双保险提升解析成功率
+    stripped = re.sub(r"```(?:json)?", "", text).strip()
+    try:
+        m = re.search(r"\{.*\}", stripped, re.S)
+        parsed = json.loads(m.group(0), strict=False) if m else None
+    except Exception:   # noqa: BLE001 —— 非 JSON 回退为纯文本分析
+        parsed = None
+    if isinstance(parsed, dict):
+        analysis = str(parsed.get("analysis") or stripped)
+        commands = [str(c).strip() for c in (parsed.get("commands") or []) if str(c).strip()][:4]
+    else:
+        # 宽松提取兜底：模型输出常是"伪 JSON"（analysis 值里带未转义引号/换行，json.loads 必败）。
+        # 按字段标记做正则提取，保证 analysis 与 commands 不因格式问题整体丢失。
+        m_analysis = re.search(r'"analysis"\s*:\s*"(.*?)"\s*,\s*"commands"', stripped, re.S)
+        m_commands = re.search(r'"commands"\s*:\s*\[(.*?)\]', stripped, re.S)
+        if m_analysis or m_commands:
+            if m_analysis:
+                analysis = m_analysis.group(1).replace('\\n', '\n').replace('\\"', '"')
+            if m_commands:
+                commands = [c.strip().strip('"').replace('\\"', '"')
+                            for c in re.split(r'"\s*,\s*"?', m_commands.group(1))
+                            if c.strip().strip('"')][:4]
+    db.audit("netdev.console.ai",
+             {"args": {"device": dev.get("name", ""), "cmd": payload.current_command[:120],
+                       "output_chars": len(output)}},
+             device_id=payload.device_id)
+    return {"analysis": analysis, "commands": commands}

@@ -200,6 +200,12 @@ def _resolve_device(binding: dict) -> tuple[Optional[dict], str]:
 
     与 Web 端一致，企微渠道默认即为全局对话。
     """
+    # 企微渠道为后台任务（无请求头）：按绑定记录恢复租户上下文，保证隔离查询生效
+    try:
+        from app import dbcore
+        dbcore.set_tenant(binding.get("tenant_id") or "default")
+    except Exception:
+        pass
     dev = _load_bound_device(binding.get("device_id", ""))
     if dev is None:
         dev = _global_context()

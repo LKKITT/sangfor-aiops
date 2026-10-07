@@ -5,6 +5,10 @@
       <div class="page-head">
         <div>
           <h2 class="ph-title">配置体检</h2>
+          <el-select v-model="store.currentDeviceId" size="small" style="width: 210px; margin-left: 12px"
+                     placeholder="选择设备" aria-label="选择设备">
+            <el-option v-for="d in store.devices" :key="d.id" :value="d.id" :label="d.name" />
+          </el-select>
           <p class="ph-desc">确定性规则引擎：规则冲突（遮蔽 / 矛盾）/ 空策略 / 过宽权限 / 高危端口暴露 / 资源异常。风险项附带修复建议，变更请通过 AI 对话（走确认卡片）执行。</p>
         </div>
         <div class="ph-actions">

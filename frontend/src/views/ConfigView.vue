@@ -4,6 +4,10 @@
     <div class="page-head">
       <div>
         <h2 class="ph-title">配置可视化</h2>
+        <el-select v-model="store.currentDeviceId" size="small" style="width: 210px; margin-left: 12px"
+                   placeholder="选择设备" aria-label="选择设备">
+          <el-option v-for="d in store.devices" :key="d.id" :value="d.id" :label="d.name" />
+        </el-select>
         <p class="ph-desc">设备状态、接口、安全区域与策略全景视图 · 数据缓存于页面，点击刷新重新获取</p>
       </div>
       <div class="ph-actions">

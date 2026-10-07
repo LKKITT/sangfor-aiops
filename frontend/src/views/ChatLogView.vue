@@ -14,6 +14,11 @@
       <div class="filter-bar">
         <el-input v-model="filters.keyword" clearable placeholder="搜索标题 / 消息内容"
                   class="fb-input" :prefix-icon="Search" @keyup.enter="applyFilters" @clear="applyFilters" />
+        <el-select v-model="tenantFilter" clearable placeholder="全部客户" style="width: 130px"
+                   @change="loadLogs" aria-label="按客户筛选">
+          <el-option v-for="t in tenants" :key="t" :value="t"
+                     :label="t === 'default' ? '默认客户' : t" />
+        </el-select>
         <el-select v-model="filters.device_id" clearable placeholder="全部设备（含全局会话）"
                    style="width: 190px" @change="applyFilters">
           <el-option value="global" label="全局会话（未绑定设备）" />
@@ -63,6 +68,9 @@
               <span v-if="row.device_name"><el-icon style="vertical-align: -2px"><Monitor /></el-icon> {{ row.device_name }}</span>
               <span v-else class="muted">—</span>
             </template>
+          </el-table-column>
+          <el-table-column label="客户" width="100">
+            <template #default="{ row }">{{ row.tenant_id === 'default' ? '默认客户' : (row.tenant_id || '—') }}</template>
           </el-table-column>
           <el-table-column prop="msg_count" label="消息" width="60" align="center" />
           <el-table-column prop="last_message" label="最后提问" min-width="200" show-overflow-tooltip />
@@ -126,6 +134,9 @@
 import { ref, reactive, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { apiGet } from '../api.js'
+const tenants = ref(['default'])
+const tenantFilter = ref('')
+apiGet('/api/tenants').then(d => { tenants.value = d.tenants || ['default'] }).catch(() => {})
 import { renderMarkdown } from '../chat/markdown'
 import { store, loadDevices, NETDEV_VENDOR_NAMES } from '../store.js'
 
@@ -175,10 +186,12 @@ async function loadLogs() {
     const params = new URLSearchParams({
       page: String(page.value), page_size: String(pageSize.value),
       keyword: filters.keyword || '', device_id: filters.device_id || '',
-      start: filters.range?.[0] || '', end: filters.range?.[1] || ''
+      start: filters.range?.[0] || '', end: filters.range?.[1] || '',
+      all_tenants: '1'   // 会话日志全局共享：跨客户查看，再按客户前端过滤
     })
     const data = await apiGet(`/api/chat/conversations/detail?${params}`)
-    conversations.value = data.items || []
+    conversations.value = (data.items || [])
+      .filter(c => !tenantFilter.value || c.tenant_id === tenantFilter.value)
     total.value = data.total || 0
     loadError.value = ''
   } catch (e) {

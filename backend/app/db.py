@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 # 共享基础设施 re-export：保持 db.* 调用方（services/api/tests）零改动
+from app.dbcore import get_tenant
 from app.dbcore import (SCHEMA, _connect, _local, _row_to_dict, audit, backup_file_path,  # noqa: F401
                         get_setting, get_settings, init_db, new_id, now, set_setting)  # noqa: F401
 
@@ -20,23 +21,31 @@ from app.dbcore import (SCHEMA, _connect, _local, _row_to_dict, audit, backup_fi
 
 # ---------------- devices ----------------
 
-def list_devices() -> list[dict]:
+def list_devices(all_tenants: bool = False) -> list[dict]:
+    """设备列表；all_tenants 供定时任务等后台路径跨租户枚举。"""
     with _connect() as conn:
-        rows = conn.execute("SELECT * FROM devices ORDER BY created_at").fetchall()
+        if all_tenants:
+            rows = conn.execute("SELECT * FROM devices ORDER BY created_at").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM devices WHERE tenant_id=? ORDER BY created_at",
+                                (get_tenant(),)).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
 def get_device(device_id: str) -> Optional[dict]:
     with _connect() as conn:
-        row = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
-    return _row_to_dict(row) if row else None
+        row = conn.execute("SELECT * FROM devices WHERE id=? AND tenant_id=?",
+                           (device_id, get_tenant())).fetchone()
+    return _row_to_dict(row) if row else None  # 跨租户 id 视为不存在（隔离边界）
 
 
 def upsert_device(device: dict) -> dict:
+    # 新增时打租户标；更新（ON CONFLICT）不改归属
+    device = {**device, "tenant_id": device.get("tenant_id") or get_tenant()}
     with _connect() as conn:
         conn.execute(
-            """INSERT INTO devices (id,name,type,mode,base_url,username,password,readonly,settings_json,created_at)
-               VALUES (:id,:name,:type,:mode,:base_url,:username,:password,:readonly,:settings_json,:created_at)
+            """INSERT INTO devices (id,name,type,mode,base_url,username,password,readonly,settings_json,created_at,tenant_id)
+               VALUES (:id,:name,:type,:mode,:base_url,:username,:password,:readonly,:settings_json,:created_at,:tenant_id)
                ON CONFLICT(id) DO UPDATE SET name=:name, type=:type, mode=:mode, base_url=:base_url,
                  username=:username, password=:password, readonly=:readonly, settings_json=:settings_json""",
             device,
@@ -52,10 +61,11 @@ def delete_device(device_id: str) -> None:
 # ---------------- backups ----------------
 
 def create_backup(rec: dict) -> dict:
+    rec = {**rec, "tenant_id": rec.get("tenant_id") or get_tenant()}
     with _connect() as conn:
         conn.execute(
-            """INSERT INTO backups (id,device_id,label,kind,sw_version,snapshot_json,file_path,file_sha256,created_at,created_by)
-               VALUES (:id,:device_id,:label,:kind,:sw_version,:snapshot_json,:file_path,:file_sha256,:created_at,:created_by)""",
+            """INSERT INTO backups (id,device_id,label,kind,sw_version,snapshot_json,file_path,file_sha256,created_at,created_by,tenant_id)
+               VALUES (:id,:device_id,:label,:kind,:sw_version,:snapshot_json,:file_path,:file_sha256,:created_at,:created_by,:tenant_id)""",
             rec,
         )
     return get_backup(rec["id"])
@@ -85,10 +95,11 @@ def delete_backup(backup_id: str) -> None:
 # ---------------- pending actions（变更确认流） ----------------
 
 def create_pending_action(rec: dict) -> dict:
+    rec = {**rec, "tenant_id": rec.get("tenant_id") or get_tenant()}
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO pending_actions (id,conv_id,tool_name,args_json,summary,status,created_at)"
-            " VALUES (:id,:conv_id,:tool_name,:args_json,:summary,:status,:created_at)",
+            "INSERT INTO pending_actions (id,conv_id,tool_name,args_json,summary,status,created_at,tenant_id)"
+            " VALUES (:id,:conv_id,:tool_name,:args_json,:summary,:status,:created_at,:tenant_id)",
             rec,
         )
     return get_pending_action(rec["id"])
@@ -193,11 +204,11 @@ def list_audit(limit: int = 200) -> list[dict]:
 
 def create_conversation(title: str = "新对话", device_id: str = "") -> dict:
     conv = {"id": new_id("conv_"), "title": title[:40], "device_id": device_id,
-            "created_at": now(), "updated_at": now()}
+            "tenant_id": get_tenant(), "created_at": now(), "updated_at": now()}
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO conversations (id,title,device_id,created_at,updated_at)"
-            " VALUES (:id,:title,:device_id,:created_at,:updated_at)", conv)
+            "INSERT INTO conversations (id,title,device_id,created_at,updated_at,tenant_id)"
+            " VALUES (:id,:title,:device_id,:created_at,:updated_at,:tenant_id)", conv)
     return conv
 
 
@@ -220,20 +231,26 @@ def touch_conversation(conv_id: str, title: Optional[str] = None,
             conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), conv_id))
 
 
-def list_conversations(limit: int = 50) -> list[dict]:
+def list_conversations(limit: int = 50, all_tenants: bool = False) -> list[dict]:
     with _connect() as conn:
-        rows = conn.execute("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        if all_tenants:
+            rows = conn.execute("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM conversations WHERE tenant_id=? ORDER BY updated_at DESC LIMIT ?",
+                                (get_tenant(), limit)).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
 def list_conversations_paged(page: int = 1, page_size: int = 20, keyword: str = "",
-                             device_id: str = "", start: str = "", end: str = "") -> dict:
+                             device_id: str = "", start: str = "", end: str = "",
+                             all_tenants: bool = False) -> dict:
     """分页会话列表（含消息数/最后一条用户消息/摘要/设备名），支持筛选。
 
     单条 SQL 聚合完成，替代旧的“逐会话全量拉消息”实现。
+    all_tenants=True：共享审计视角，跨客户查看全部会话日志。
     """
     page, page_size = max(1, page), min(max(1, page_size), 100)
-    where, args = "1=1", []
+    where, args = ("1=1" if all_tenants else "c.tenant_id=?"), ([] if all_tenants else [get_tenant()])
     if keyword:
         where += " AND (c.title LIKE ? OR c.id IN (SELECT conv_id FROM messages WHERE content_json LIKE ?))"
         args += [f"%{keyword}%", f"%{keyword}%"]
@@ -250,7 +267,7 @@ def list_conversations_paged(page: int = 1, page_size: int = 20, keyword: str = 
         total = conn.execute(f"SELECT COUNT(*) AS c FROM conversations c WHERE {where}",
                              args).fetchone()["c"]
         rows = conn.execute(
-            f"""SELECT c.id, c.title, c.device_id, c.created_at, c.updated_at,
+            f"""SELECT c.id, c.tenant_id, c.title, c.device_id, c.created_at, c.updated_at,
                   (SELECT COUNT(*) FROM messages m WHERE m.conv_id = c.id) AS msg_count,
                   (SELECT content_json FROM messages m
                     WHERE m.conv_id = c.id AND m.role = 'user' ORDER BY id DESC LIMIT 1) AS last_user_json,
@@ -337,8 +354,8 @@ def latest_conversation_by_device(device_id: str) -> Optional[dict]:
     """该设备最近一次会话（按 updated_at），用于对话历史恢复。"""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT * FROM conversations WHERE device_id=? ORDER BY updated_at DESC LIMIT 1",
-            (device_id,)).fetchone()
+            "SELECT * FROM conversations WHERE device_id=? AND tenant_id=? ORDER BY updated_at DESC LIMIT 1",
+            (device_id, get_tenant())).fetchone()
     return _row_to_dict(row) if row else None
 
 
@@ -384,11 +401,11 @@ def upsert_channel_binding(channel: str, sender_id: str,
         if row is None:
             rec = {"id": new_id("chn_"), "channel": channel, "sender_id": sender_id,
                    "conv_id": conv_id or "", "device_id": device_id or "",
-                   "last_active_at": now(), "updated_at": now()}
+                   "last_active_at": now(), "updated_at": now(), "tenant_id": get_tenant()}
             conn.execute(
                 "INSERT INTO channel_bindings (id,channel,sender_id,conv_id,device_id,"
-                "last_active_at,updated_at)"
-                " VALUES (:id,:channel,:sender_id,:conv_id,:device_id,:last_active_at,:updated_at)",
+                "last_active_at,updated_at,tenant_id)"
+                " VALUES (:id,:channel,:sender_id,:conv_id,:device_id,:last_active_at,:updated_at,:tenant_id)",
                 rec)
             return rec
         sets = {k: v for k, v in {"conv_id": conv_id, "device_id": device_id}.items()
@@ -413,11 +430,12 @@ def upsert_channel_binding(channel: str, sender_id: str,
 
 def save_conv_summary(conv_id: str, summary: str, device_id: str = "") -> dict:
     rec = {"id": new_id("mem_"), "conv_id": conv_id, "summary": summary,
-           "device_id": device_id, "created_at": now(), "updated_at": now()}
+           "device_id": device_id, "created_at": now(), "updated_at": now(),
+           "tenant_id": get_tenant()}
     with _connect() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO conv_summaries (id,conv_id,summary,device_id,created_at,updated_at)"
-            " VALUES (:id,:conv_id,:summary,:device_id,:created_at,:updated_at)", rec)
+            "INSERT OR REPLACE INTO conv_summaries (id,conv_id,summary,device_id,created_at,updated_at,tenant_id)"
+            " VALUES (:id,:conv_id,:summary,:device_id,:created_at,:updated_at,:tenant_id)", rec)
     return rec
 
 
@@ -440,7 +458,7 @@ def save_memory_item(device_id: str, category: str, content: str,
                      source_conv_id: str = "") -> dict:
     rec = {"id": new_id("mem_"), "device_id": device_id, "category": category,
            "content": content, "source_conv_id": source_conv_id,
-           "created_at": now(), "updated_at": now()}
+           "created_at": now(), "updated_at": now(), "tenant_id": get_tenant()}
     with _connect() as conn:
         conn.execute(
             "INSERT INTO memory_items (id,device_id,category,content,source_conv_id,created_at,updated_at)"
@@ -823,20 +841,23 @@ def kb_stats() -> dict:
 
 # ---------------- 网络设备管理（SSH 交换机/路由器） ----------------
 
-def list_netdev_devices(group: str = "") -> list[dict]:
+def list_netdev_devices(group: str = "", all_tenants: bool = False) -> list[dict]:
     with _connect() as conn:
+        conds = ([] if all_tenants else ["tenant_id=?"])
+        args = ([] if all_tenants else [get_tenant()])
         if group:
-            rows = conn.execute("SELECT * FROM netdev_devices WHERE group_name=? ORDER BY created_at",
-                                (group,)).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM netdev_devices ORDER BY created_at").fetchall()
+            conds.append("group_name=?")
+            args.append(group)
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        rows = conn.execute("SELECT * FROM netdev_devices" + where + " ORDER BY created_at", args).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
 def get_netdev_device(device_id: str) -> Optional[dict]:
     with _connect() as conn:
-        row = conn.execute("SELECT * FROM netdev_devices WHERE id=?", (device_id,)).fetchone()
-    return _row_to_dict(row) if row else None
+        row = conn.execute("SELECT * FROM netdev_devices WHERE id=? AND tenant_id=?",
+                           (device_id, get_tenant())).fetchone()
+    return _row_to_dict(row) if row else None  # 跨租户 id 视为不存在（隔离边界）
 
 
 def save_netdev_device(data: dict) -> dict:
@@ -859,11 +880,12 @@ def save_netdev_device(data: dict) -> dict:
                            (data["host"], data["port"])).fetchone()
         if row:
             data["id"] = row["id"]
+        data = {**data, "tenant_id": data.get("tenant_id") or get_tenant()}
         conn.execute(
             "INSERT INTO netdev_devices (id,name,vendor,model,host,port,username,password,"
-            "enable_password,group_name,last_ok_at,created_at)"
+            "enable_password,group_name,last_ok_at,created_at,tenant_id)"
             " VALUES (:id,:name,:vendor,:model,:host,:port,:username,:password,"
-            ":enable_password,:group_name,:last_ok_at,:created_at)"
+            ":enable_password,:group_name,:last_ok_at,:created_at,:tenant_id)"
             " ON CONFLICT(host, port) DO UPDATE SET name=:name, vendor=:vendor, model=:model,"
             " username=:username, password=:password, enable_password=:enable_password,"
             " group_name=:group_name",
@@ -885,11 +907,12 @@ def create_netdev_task(task: dict) -> dict:
     rec = {"id": new_id("ndt_"), "name": task.get("name", ""), "status": "running",
            "timeout": float(task.get("timeout", 30)), "created_at": now(), "finished_at": "",
            "commands": json.dumps(task.get("commands") or [], ensure_ascii=False),
-           "device_ids": json.dumps(task.get("device_ids") or [], ensure_ascii=False)}
+           "device_ids": json.dumps(task.get("device_ids") or [], ensure_ascii=False),
+           "tenant_id": get_tenant()}
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO netdev_tasks (id,name,commands,device_ids,status,timeout,created_at,finished_at)"
-            " VALUES (:id,:name,:commands,:device_ids,:status,:timeout,:created_at,:finished_at)", rec)
+            "INSERT INTO netdev_tasks (id,name,commands,device_ids,status,timeout,created_at,finished_at,tenant_id)"
+            " VALUES (:id,:name,:commands,:device_ids,:status,:timeout,:created_at,:finished_at,:tenant_id)", rec)
     return rec
 
 

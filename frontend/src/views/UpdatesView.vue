@@ -4,6 +4,10 @@
     <div class="page-head">
       <div>
         <h2 class="ph-title">软件更新建议</h2>
+        <el-select v-model="store.currentDeviceId" size="small" style="width: 210px; margin-left: 12px"
+                   placeholder="选择设备" aria-label="选择设备">
+          <el-option v-for="d in store.devices" :key="d.id" :value="d.id" :label="d.name" />
+        </el-select>
         <p class="ph-desc">数据来源：深信服技术支持平台版本发布说明（免认证抓取）+ 官网 PSIRT 安全公告（公开）+ 内置版本知识库快照</p>
       </div>
       <div class="ph-actions">
