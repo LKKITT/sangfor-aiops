@@ -31,14 +31,13 @@
 
     <template v-else>
       <!-- 对话区 -->
-      <div class="chat-scroll" ref="scrollRef">
-        <div class="chat-col">
+      <div class="chat-scroll" ref="scrollRef" @scroll.passive="onScroll">        <div class="chat-col" role="log" aria-live="polite" aria-relevant="additions text" aria-label="对话消息">
           <div class="chat-hero" v-if="messages.length <= 1">
             <h2 class="ch-title">全局运维 AI 助手</h2>
             <p class="ch-desc">统一对话管理深信服设备（AF/AC/SCP）与网络设备（华为/H3C/锐捷）· 查询与配置变更 · 批量操作 · 体检备份 · 终端定位 · 升级建议，修改类操作会先生成确认卡片。</p>
           </div>
 
-          <div v-for="(m, i) in messages" :key="i" class="chat-row" :class="m.role">
+          <div v-for="m in messages" :key="m._id" class="chat-row" :class="m.role">
             <div v-if="m.role === 'assistant'" class="chat-avatar ai" title="SFA Agent">
               <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
                 <path d="M20 5.5 32.6 12.8v14.4L20 34.5 7.4 27.2V12.8L20 5.5Z" stroke="#5F79E8" stroke-width="2.6" stroke-linejoin="round" />
@@ -47,19 +46,35 @@
             </div>
 
             <div v-if="m.role === 'assistant'" class="bubble-ai">
-              <div v-if="m.text" class="bubble-actions">
-                <button class="ba-btn" title="复制全文" @click="copyText(m.text)">
+              <!-- 消息头：作者 + 时间戳 + 操作（运维场景需追溯"何时给出的建议"） -->
+              <div class="msg-head">
+                <span class="who">SFA Agent</span>
+                <span v-if="m.ts" class="ts">{{ m.ts }}</span>
+                <span class="spacer"></span>
+                <button v-if="m.text" class="ba-btn" title="复制全文" @click="copyText(m.text)">
                   <el-icon><CopyDocument /></el-icon><span class="ba-tip">复制</span>
                 </button>
               </div>
-              <div v-if="m.trace?.length" class="trace">
-                <span v-for="(t, j) in m.trace" :key="j" class="tool-chip">
-                  <el-icon v-if="t.endsWith('✓')" class="chip-ok"><CircleCheckFilled /></el-icon>
-                  <span v-else class="chip-dot"></span>
-                  {{ t.replace(' …', '').replace(' ✓', '') }}
-                </span>
-              </div>
-              <div class="md-body" v-html="render(m.text)"></div>
+
+              <!-- 工具轨迹：默认折叠为一行摘要，点击展开（原为芯片堆叠，多轮调用时噪音大） -->
+              <template v-if="m.trace?.length">
+                <button class="trace-fold" :aria-expanded="String(!!m._traceOpen)"
+                        @click="m._traceOpen = !m._traceOpen">
+                  <el-icon class="chip-ok"><CircleCheckFilled /></el-icon>
+                  已执行 {{ m.trace.length }} 步工具调用
+                  <span class="tf-tools">{{ traceSummary(m.trace) }}</span>
+                  <span class="caret">▾</span>
+                </button>
+                <div class="trace trace-fold-body" :class="{ open: m._traceOpen }">
+                  <span v-for="(t, j) in m.trace" :key="j" class="tool-chip">
+                    <el-icon v-if="t.endsWith('✓')" class="chip-ok"><CircleCheckFilled /></el-icon>
+                    <span v-else class="chip-dot"></span>
+                    {{ t.replace(' …', '').replace(' ✓', '') }}
+                  </span>
+                </div>
+              </template>
+
+              <div class="md-body" v-html="render(m.text)" @click="onMdClick"></div>
 
               <!-- 变更确认卡片（组件化：表单校验/高危二次确认内聚在 ConfirmCard） -->
               <ConfirmCard v-if="m.confirm" :confirm="m.confirm" :confirming="confirming"
@@ -77,7 +92,7 @@
           </div>
 
           <div v-if="streaming" class="chat-row assistant">
-            <div class="chat-avatar ai">
+            <div class="chat-avatar ai" title="SFA Agent"><span class="sr-only">SFA Agent 正在回复</span>
               <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
                 <path d="M20 5.5 32.6 12.8v14.4L20 34.5 7.4 27.2V12.8L20 5.5Z" stroke="#5F79E8" stroke-width="2.6" stroke-linejoin="round" />
                 <circle cx="20" cy="20" r="4" fill="#0FB9A4" />
@@ -85,6 +100,13 @@
             </div>
             <div class="bubble-ai"><span class="typing-dots"><i></i><i></i><i></i></span></div>
           </div>
+        </div>
+
+        <!-- 回到底部：用户上滚查看历史时浮出，避免被流式输出反复拽回 -->
+        <div v-if="!atBottom" class="scroll-bottom">
+          <button type="button" @click="jumpToBottom">
+            <el-icon><ArrowDown /></el-icon> 回到底部
+          </button>
         </div>
       </div>
 
@@ -226,16 +248,17 @@
 <script setup>
 import { ref, reactive, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import MarkdownIt from 'markdown-it'
 import { store, currentDevice, loadDevices, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES } from '../store.js'
 import { apiGet, chatStream, Devices, Settings } from '../api.js'
 import ConfirmCard from '../components/chat/ConfirmCard.vue'
 import { applyEvent, toolLabel } from '../chat/agentStream'
+// Markdown 增强渲染（代码高亮 / 表格样式 / 外链 target / DOMPurify 净化）
+import { renderMarkdown, copyCodeBlock } from '../chat/markdown'
+import { isNearBottom } from '../chat/scrollGuard'
 
 // 会话缓存（模块级）：切视图/切设备不丢；页面刷新后由后端 last-conversation 接口兜底恢复
 const convCache = {}
-const md = new MarkdownIt({ breaks: true })
-const render = (text) => md.render(text || '')
+const render = renderMarkdown
 const input = ref('')
 const streaming = ref(false)
 const confirming = ref(false)
@@ -398,13 +421,13 @@ function mapHistoryMessages(rawMsgs) {
   for (const m of rawMsgs) {
     const c = m.content || {}
     if (m.role === 'user') {
-      out.push({ role: 'user', text: c.text || '' })
+      out.push({ _id: nextMsgId(), role: 'user', text: c.text || '' })
     } else if (m.role === 'assistant' && (c.text || c.tool_calls?.length)) {
       const trace = (c.tool_calls || []).map(tc => {
         const cn = toolLabel(tc.name)
         return doneCalls.has(tc.id) ? `${cn} ✓` : `${cn} …`
       })
-      out.push({ role: 'assistant', text: c.text || '', trace, confirm: null })
+      out.push({ _id: nextMsgId(), role: 'assistant', text: c.text || '', trace, confirm: null })
     }
   }
   return out
@@ -420,7 +443,7 @@ async function restoreFromBackend(devId) {
     const restored = mapHistoryMessages(data.messages)
     if (data.pending_action) {
       restored.push({
-        role: 'assistant', text: '', trace: [],
+        _id: nextMsgId(), role: 'assistant', text: '', trace: [],
         confirm: {
           action_id: data.pending_action.action_id,
           title: data.pending_action.summary,
@@ -605,6 +628,7 @@ function pushHello(devId) {
       : (HELLO_BY_TYPE[dev.type] || HELLO_BY_TYPE.af)
   const vendorText = isNetDev(dev) ? `，${vendorName(dev.vendor)} ${dev.host}` : ''
   messages.value = [{
+    _id: nextMsgId(),
     role: 'assistant',
     text: `您好！我是全局运维 AI 助手，当前目标：**${dev.name}**（${h.label}${vendorText}）。\n\n可以试试：\n- ${h.tips.join('\n- ')}\n\n${h.note}`,
     trace: [], confirm: null
@@ -628,9 +652,26 @@ async function retryLast() {
   if (lastUserText.value) send(lastUserText.value)
 }
 
-async function scrollBottom() {
+// ---- 滚动：贴底跟随 + 上滚保护 ----
+// 用户回看历史时不该被流式输出反复拽回底部；仅当原本贴底时才自动跟随
+const atBottom = ref(true)
+
+function onScroll() {
+  atBottom.value = isNearBottom(scrollRef.value)
+}
+
+/** @param {boolean} force 为 true 时无视上滚保护强制回底（用户发消息/点按钮时） */
+async function scrollBottom(force = false) {
   await nextTick()
-  if (scrollRef.value) scrollRef.value.scrollTop = scrollRef.value.scrollHeight
+  if (!atBottom.value && !force) return
+  const el = scrollRef.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+/** 「回到底部」按钮 */
+async function jumpToBottom() {
+  atBottom.value = true
+  await scrollBottom(true)
 }
 
 function send(preset) {
@@ -661,14 +702,15 @@ function send(preset) {
     ElMessage.info('已排队：当前回答结束后自动发送')
     return
   }
-  if (preset) input.value = ''
-  else input.value = ''
+  input.value = ''
   lastUserText.value = text
-  messages.value.push({ role: 'user', text })
+  // 用户主动发消息 → 强制回到底部（覆盖「上滚保护」）
+  atBottom.value = true
+  messages.value.push({ _id: nextMsgId(), role: 'user', text })
   streaming.value = true
   const aiMsg = reactiveMsg()
   messages.value.push(aiMsg)
-  scrollBottom()
+  scrollBottom(true)
 
   abortController = new AbortController()
   const body = {
@@ -713,9 +755,33 @@ async function stopChat() {
   }
 }
 
+/** 消息唯一 id：列表 key 用（避免索引 key 导致 DOM 复用错乱、展开态串位） */
+let _msgSeq = 0
+function nextMsgId() {
+  return `m${++_msgSeq}_${Date.now().toString(36)}`
+}
+
 function reactiveMsg() {
   // Vue reactive：流式 token 逐段触发重渲染（自定义 Proxy 会绕过响应式导致一次性出现）
-  return reactive({ role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null, failed: null })
+  return reactive({
+    _id: nextMsgId(),                        // 稳定唯一 key
+    role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null, failed: null,
+    _traceOpen: false,                       // 轨迹展开状态（默认折叠）
+    ts: new Date().toTimeString().slice(0, 8),   // 消息时间戳（运维追溯用）
+  })
+}
+
+/** 轨迹摘要：取工具名去重后拼接，供折叠行展示（避免整排芯片堆叠） */
+function traceSummary(trace) {
+  const names = [...new Set((trace || []).map(t => t.replace(' …', '').replace(' ✓', '')))]
+  const text = names.join(' / ')
+  return text.length > 42 ? `${text.slice(0, 42)}…` : text
+}
+
+/** Markdown 区点击委托：代码块复制按钮 */
+function onMdClick(e) {
+  const btn = e.target.closest?.('[data-copy]')
+  if (btn) copyCodeBlock(btn)
 }
 
 function handleEvent(ev, aiMsg) {
@@ -764,22 +830,6 @@ async function copyText(text) {
     catch { ElMessage.error('复制失败，请手动选择复制') }
     document.body.removeChild(ta)
   }
-}
-
-function fmtRule(r) {
-  if (!r) return ''
-  return Object.entries(r).filter(([k]) => !['comment'].includes(k))
-    .map(([k, v]) => `${k}=${v === null ? '' : v}`).join('  ')
-}
-
-function allPlanItems(plan) {
-  const out = []
-  for (const g of ['delete', 'update', 'create']) {
-    for (const it of plan[g] || []) {
-      out.push(`[${{ delete: '删除', update: '修改', create: '重建' }[g]}] ${it.resource_cn} ${it.name}（${it.target_id}）`)
-    }
-  }
-  return out
 }
 </script>
 

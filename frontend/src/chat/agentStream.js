@@ -35,7 +35,11 @@ export function toolLabel(name) {
 }
 
 export function createAssistantMsg() {
-  return { role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null, failed: null }
+  return {
+    role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null, failed: null,
+    _traceOpen: false,                                  // 轨迹折叠状态（UI 增强）
+    ts: new Date().toTimeString().slice(0, 8),          // 消息时间戳（UI 增强）
+  }
 }
 
 /**

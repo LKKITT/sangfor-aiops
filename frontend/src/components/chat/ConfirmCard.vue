@@ -98,7 +98,7 @@
         <div class="sc-note">此操作可能影响业务，请确认已充分评估风险</div>
       </div>
       <template #footer>
-        <el-button @click="showSecondConfirm = false">取消</el-button>
+        <el-button @click="cancelSecondConfirm">取消</el-button>
         <el-button type="danger" @click="doSecondConfirm">确认执行高危操作</el-button>
       </template>
     </el-dialog>
@@ -188,33 +188,51 @@ function fmtRule(r) {
 }
 
 // ---- 确认/拒绝：表单校验 → 高危二次确认 → 上抛 ----
+// 上锁标志：防止高危场景下连点「确认执行」重复提交（后端会收到两次 /api/chat/confirm）
+const deciding = ref(false)
+
 async function decide(approved) {
-  let edited = null
-  if (approved && formType.value && formRef.value) {
-    try {
-      await formRef.value.validate()
-    } catch {
-      ElMessage.warning('请先修正表单中标红的字段')
+  // 入口即上锁：连点第二次直接丢弃，避免 await 校验期间产生竞态
+  if (deciding.value) return
+  deciding.value = true
+  try {
+    let edited = null
+    if (approved && formType.value && formRef.value) {
+      try {
+        await formRef.value.validate()
+      } catch {
+        ElMessage.warning('请先修正表单中标红的字段')
+        return
+      }
+      edited = { data: formRef.value.getData() }
+    }
+    if (approved && isHighRisk.value) {
+      secondConfirmReason.value = highRiskReason.value
+      showSecondConfirm.value = true
       return
     }
-    edited = { data: formRef.value.getData() }
+    emit('decide', approved, edited)
+  } finally {
+    // 进入二次确认弹窗时立即解锁：用户仍需在弹窗内二次确认，此处放行不影响防重
+    if (!showSecondConfirm.value) deciding.value = false
   }
-  if (approved && isHighRisk.value) {
-    secondConfirmReason.value = highRiskReason.value
-    pendingApproved = true
-    showSecondConfirm.value = true
-    return
-  }
-  emit('decide', approved, edited)
 }
 
-let pendingApproved = true
-function doSecondConfirm() {
+function cancelSecondConfirm() {
   showSecondConfirm.value = false
-  if (pendingApproved) {
+  deciding.value = false
+}
+
+function doSecondConfirm() {
+  if (deciding.value) return
+  deciding.value = true
+  try {
+    showSecondConfirm.value = false
     let edited = null
     if (formType.value && formRef.value) edited = { data: formRef.value.getData() }
     emit('decide', true, edited)
+  } finally {
+    deciding.value = false
   }
 }
 </script>
@@ -227,7 +245,7 @@ function doSecondConfirm() {
 .cf-warning { color: var(--sfa-warn-ink); margin-bottom: 8px; font-size: 12.5px; }
 .cf-highrisk {
   margin-bottom: 10px; padding: 7px 11px; border-radius: 8px;
-  background: #FDEEEF; border: 1px solid #FBD8D9; font-size: 12px; color: #D33A40;
+  background: var(--sfa-danger-bg); border: 1px solid var(--sfa-danger-border); font-size: 12px; color: var(--sfa-danger-ink);
   display: flex; align-items: center; gap: 4px;
 }
 .cf-conflicts { margin-bottom: 10px; }
@@ -263,5 +281,5 @@ function doSecondConfirm() {
 .sc-ico { color: var(--sfa-danger); margin-bottom: 10px; }
 .sc-title { font-weight: 700; font-size: 15px; margin-bottom: 8px; }
 .sc-reason { color: var(--sfa-text-2); font-size: 13px; margin-bottom: 14px; }
-.sc-note { color: var(--sfa-danger); font-size: 12px; background: #FDEEEF; padding: 9px; border-radius: 8px; }
+.sc-note { color: var(--sfa-danger-ink); font-size: 12px; background: var(--sfa-danger-bg); padding: 9px; border-radius: 8px; }
 </style>

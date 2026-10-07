@@ -1,6 +1,6 @@
 <template>
   <div class="app-shell" :class="{ 'side-open': mobileOpen }">
-    <div class="side-scrim" @click="mobileOpen = false"></div>
+    <div class="side-scrim" @click="mobileOpen = false" aria-hidden="true"></div>
 
     <aside class="side">
       <header class="brand">
@@ -36,7 +36,8 @@
             <span class="nd-hint" title="网络设备请在「网络设备管理」页维护">网络设备</span>
           </span>
         </div>
-        <el-select v-model="store.currentDeviceId" placeholder="选择设备" class="device-select" popper-class="sfa-device-popper">
+        <el-select v-model="store.currentDeviceId" placeholder="选择设备" class="device-select"
+                   popper-class="sfa-device-popper" aria-label="选择当前设备">
           <el-option :value="GLOBAL_DEVICE_ID" label="全局（所有设备）">
             <span>全局（所有设备）</span>
             <span class="dev-opt-meta">全部深信服 + 网络设备</span>
@@ -63,14 +64,15 @@
         </div>
       </div>
 
-      <nav class="nav">
+      <nav class="nav" aria-label="主导航">
         <template v-for="group in navGroups" :key="group.label">
           <div class="nav-group-label">{{ group.label }}</div>
           <button v-for="item in group.items" :key="item.key" class="nav-item"
                   :class="{ active: route.path === item.to }" :title="item.label"
+                  :aria-current="route.path === item.to ? 'page' : undefined"
                   @click="router.push(item.to); mobileOpen = false">
-            <span class="nav-bar"></span>
-            <el-icon class="nav-ico"><component :is="item.icon" /></el-icon>
+            <span class="nav-bar" aria-hidden="true"></span>
+            <el-icon class="nav-ico" aria-hidden="true"><component :is="item.icon" /></el-icon>
             <span class="nav-label">{{ item.label }}</span>
           </button>
         </template>
@@ -211,7 +213,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { router } from './router'
 import { useTheme } from './composables/useTheme'
@@ -235,6 +237,7 @@ const navGroups = [
   ]},
   { label: '知识沉淀', items: [
     { key: 'knowledge', to: '/knowledge', label: '个人知识库', icon: 'Collection' },
+    { key: 'graph', to: '/graph', label: '知识图谱', icon: 'Share' },
     { key: 'chatlog', to: '/chatlog', label: '对话日志', icon: 'Notebook' },
   ]},
   { label: '系统', items: [
@@ -273,8 +276,18 @@ const editForm = ref({ id: '', name: '', type: 'af', mode: 'real', base_url: '',
 const editTesting = ref(false)
 const editTestResult = ref(null)
 
+// 移动端抽屉：Esc 键关闭（当前仅能点遮罩，键盘用户无法退出）
+function onGlobalKeydown(e) {
+  if (e.key === 'Escape' && mobileOpen.value) mobileOpen.value = false
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', onGlobalKeydown)
   await Promise.all([loadDevices(), loadHealth()])
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
 })
 
 // 其他视图（如空状态引导）请求打开「添加设备」弹窗

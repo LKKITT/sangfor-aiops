@@ -38,7 +38,10 @@ describe('applyEvent: token / offline / error', () => {
   it('done 无副作用', () => {
     const m = msg()
     applyEvent(m, { type: 'done' })
-    expect(m).toEqual({ role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null, failed: null })
+    // 断言业务字段不变（_traceOpen / ts 为 UI 增强字段，分别校验存在性与类型）
+    expect(m).toMatchObject({ role: 'assistant', text: '', trace: [], confirm: null, _currentTool: null, failed: null })
+    expect(m._traceOpen).toBe(false)
+    expect(m.ts).toMatch(/^\d{2}:\d{2}:\d{2}$/)
   })
 })
 

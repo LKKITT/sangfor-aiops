@@ -11,6 +11,7 @@ const routes = [
   { path: '/updates', name: 'updates', component: () => import('../views/UpdatesView.vue') },
   { path: '/netdev', name: 'netdev', component: () => import('../views/NetDevView.vue') },
   { path: '/knowledge', name: 'knowledge', component: () => import('../views/KnowledgeView.vue') },
+  { path: '/graph', name: 'graph', component: () => import('../views/GraphView.vue') },
   { path: '/chatlog', name: 'chatlog', component: () => import('../views/ChatLogView.vue') },
   { path: '/settings', name: 'settings', component: () => import('../views/SettingsView.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/chat' },

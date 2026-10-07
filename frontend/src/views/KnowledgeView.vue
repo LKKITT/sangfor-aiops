@@ -85,21 +85,22 @@
     </el-empty>
 
     <template v-if="stats.total">
-      <!-- 可视化：知识图谱 + 分类分布 + 沉淀时间线 -->
+      <!-- 可视化：分类分布 + 沉淀时间线（知识图谱已独立为 /graph 页面） -->
       <div class="kb-charts">
-        <div class="page-card chart-card" style="flex: 1.5">
-          <div class="col-title"><el-icon><Share /></el-icon> 知识图谱 <span class="kb-sub">（节点=词条，连线=共享标签，点击节点查看详情）</span></div>
-          <div ref="graphRef" class="chart chart-graph"></div>
+        <div class="page-card chart-card">
+          <div class="col-title"><el-icon><Histogram /></el-icon> 分类分布</div>
+          <div ref="catRef" class="chart chart-small"></div>
         </div>
-        <div style="flex: 1; display: flex; flex-direction: column; gap: 12px">
-          <div class="page-card chart-card">
-            <div class="col-title"><el-icon><Histogram /></el-icon> 分类分布</div>
-            <div ref="catRef" class="chart chart-small"></div>
-          </div>
-          <div class="page-card chart-card">
-            <div class="col-title"><el-icon><TrendCharts /></el-icon> 沉淀时间线</div>
-            <div ref="timeRef" class="chart chart-small"></div>
-          </div>
+        <div class="page-card chart-card">
+          <div class="col-title"><el-icon><TrendCharts /></el-icon> 沉淀时间线</div>
+          <div ref="timeRef" class="chart chart-small"></div>
+        </div>
+        <div class="page-card chart-card kb-graph-entry">
+          <div class="col-title"><el-icon><Share /></el-icon> 知识图谱</div>
+          <p class="kb-entry-desc">以词条为节点、共享标签为连线，查看知识之间的关联脉络</p>
+          <el-button type="primary" @click="router.push('/graph')">
+            打开知识图谱&nbsp;<el-icon><Right /></el-icon>
+          </el-button>
         </div>
       </div>
 
@@ -217,23 +218,16 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import MarkdownIt from 'markdown-it'
 import * as echarts from 'echarts'
 import { store } from '../store.js'
+import { renderMarkdown } from '../chat/markdown'
 import AsyncSection from '../components/AsyncSection.vue'
 import { useTheme } from '../composables/useTheme'
 import { router } from '../router'
 import { KB } from '../api.js'
 
-const md = new MarkdownIt({ breaks: true })
-// 正文里的链接新窗口打开，避免点走整个应用页面
-const defaultLinkOpen = md.renderer.rules.link_open || ((tokens, idx, opts, _, self) => self.renderToken(tokens, idx, opts))
-md.renderer.rules.link_open = (tokens, idx, opts, _, self) => {
-  tokens[idx].attrSet('target', '_blank')
-  tokens[idx].attrSet('rel', 'noopener noreferrer')
-  return defaultLinkOpen(tokens, idx, opts, _, self)
-}
-const render = (text) => md.render(text || '')
+// 统一走 chat/markdown：含代码高亮 + DOMPurify 净化 + 链接 target/rel + 代码块复制按钮
+const render = renderMarkdown
 
 // 引用条目兼容两种形态：{title, url?} 对象（新）与纯字符串（历史数据）
 const refUrl = (r) => {
@@ -296,46 +290,22 @@ const rangeShortcuts = [
 ]
 // 点击图谱节点：按 id 取词条并打开详情抽屉
 async function openEntryById(id) {
-  try { detail.value = await KB.entry(id) } catch { /* 静默 */ }
+  try {
+    detail.value = await KB.entry(id)
+  } catch (e) {
+    // 原实现静默失败 → 用户以为点击无效；此处给出明确反馈
+    ElMessage.error(`打开知识词条失败：${e?.message || '请稍后重试'}`)
+  }
 }
 
 // ---------- ECharts ----------
-const graphRef = ref(null)
 const catRef = ref(null)
 const timeRef = ref(null)
-let graphChart = null
 let catChart = null
 let timeChart = null
-const PALETTE = ['#3B63FF', '#0FB9A4', '#7C5CFC', '#F5A90B', '#E5484D', '#6A87FF', '#12B0A0', '#9AA5BB']
 
 function renderCharts() {
-  const { graph, categories, timeline } = stats.value
-  if (graphRef.value) {
-    if (!graphChart) {
-      graphChart = echarts.init(graphRef.value, theme.value === 'dark' ? 'dark' : undefined)
-      // 点击图谱节点 → 打开对应词条详情
-      graphChart.on('click', (p) => { if (p.dataType === 'node' && p.data?.id) openEntryById(p.data.id) })
-    }
-    graphChart.setOption({
-      backgroundColor: 'transparent',
-      tooltip: { formatter: (p) => p.dataType === 'node' ? `${p.data.category || ''} · ${p.name}` : '' },
-      legend: [{ data: graph.categories, bottom: 0, type: 'scroll', textStyle: { fontSize: 11 } }],
-      series: [{
-        type: 'graph', layout: 'force', roam: true, draggable: true,
-        data: graph.nodes.map(n => ({
-          id: n.id, name: n.name,
-          category: Math.max(0, graph.categories.indexOf(n.category)),
-          symbolSize: n.symbolSize,
-          label: { show: true, position: 'right', fontSize: 10 }
-        })),
-        links: graph.edges,
-        categories: graph.categories.map((c, i) => ({ name: c, itemStyle: { color: PALETTE[i % PALETTE.length] } })),
-        force: { repulsion: 300, edgeLength: [70, 140], gravity: 0.08 },
-        lineStyle: { color: '#C6CEDD', curveness: 0.15 },
-        emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
-      }]
-    })
-  }
+  const { categories, timeline } = stats.value
   if (catRef.value) {
     catChart = catChart || echarts.init(catRef.value, theme.value === 'dark' ? 'dark' : undefined)
     const cats = [...categories].sort((a, b) => a.value - b.value)
@@ -362,14 +332,14 @@ function renderCharts() {
 }
 
 function resizeAll() {
-  graphChart?.resize(); catChart?.resize(); timeChart?.resize()
+  catChart?.resize(); timeChart?.resize()
 }
 
 // 主题切换：echarts 的文字/轴色注册在 init，需销毁重建（renderCharts 内部懒加载重建）
 const { theme } = useTheme()
 watch(theme, () => {
-  graphChart?.dispose(); catChart?.dispose(); timeChart?.dispose()
-  graphChart = catChart = timeChart = null
+  catChart?.dispose(); timeChart?.dispose()
+  catChart = timeChart = null
   if (stats.value) nextTick(renderCharts)
 })
 
@@ -500,7 +470,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeAll)
   clearTimeout(pendingTimer)   // 待沉淀轮询定时器：卸载时清理，避免对已卸载组件补发请求
-  graphChart?.dispose(); catChart?.dispose(); timeChart?.dispose()
+  catChart?.dispose(); timeChart?.dispose()
 })
 </script>
 
@@ -513,11 +483,21 @@ onBeforeUnmount(() => {
 .sfa-stat.stat-warn { background: var(--sfa-warn-bg); border-color: var(--sfa-warn-border); }
 .sfa-stat.stat-warn .num { color: var(--sfa-warn-ink); }
 
-.kb-charts { display: flex; gap: 16px; margin-top: 16px; }
+.kb-charts {
+  display: grid; gap: 16px; margin-top: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
 .chart-card { padding: 14px 16px; }
 .chart { width: 100%; }
-.chart-graph { height: 380px; }
 .chart-small { height: 172px; }
+
+/* 图谱入口卡：图谱已独立为 /graph，这里只留一个引导入口 */
+.kb-graph-entry { display: flex; flex-direction: column; }
+.kb-entry-desc {
+  flex: 1; color: var(--sfa-text-3); font-size: 12.5px; line-height: 1.72;
+  margin: 0 0 12px;
+}
+.kb-graph-entry .el-button { align-self: flex-start; }
 
 .entry-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }
 .entry-card {

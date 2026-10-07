@@ -486,7 +486,12 @@ async function testOne(row) {
 }
 
 async function removeOne(row) {
-  await ElMessageBox.confirm(`确定删除设备「${row.name}」吗？`, '删除设备', { type: 'warning' })
+  // ElMessageBox.confirm 在用户点「取消」时 reject 'cancel'，必须捕获，否则产生未捕获 rejection
+  try {
+    await ElMessageBox.confirm(`确定删除设备「${row.name}」吗？`, '删除设备', { type: 'warning' })
+  } catch {
+    return   // 用户取消，静默返回
+  }
   await NetDev.remove(row.id)
   ElMessage.success('已删除')
   await loadDevices()

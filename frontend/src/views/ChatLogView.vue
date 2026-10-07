@@ -37,6 +37,12 @@
         <div>加载对话日志…</div>
       </div>
 
+      <div v-else-if="loadError" class="state-block">
+        <el-icon class="state-ico is-error" :size="30"><WarningFilled /></el-icon>
+        <p>{{ loadError }}</p>
+        <el-button size="small" @click="loadLogs">重新加载</el-button>
+      </div>
+
       <div v-else-if="!conversations.length" class="state-block">
         <svg viewBox="0 0 40 40" fill="none" class="state-mark" aria-hidden="true">
           <path d="M20 3.5 34.3 11.8v16.4L20 36.5 5.7 28.2V11.8L20 3.5Z" stroke="#C6CEDD" stroke-width="2.5" stroke-linejoin="round" />
@@ -77,10 +83,10 @@
         </el-table>
         <div style="display: flex; justify-content: flex-end; margin-top: 10px">
           <el-pagination layout="total, prev, pager, next, sizes" :total="total"
-                         :current-page="page" :page-size="pageSize"
+                         v-model:current-page="page" v-model:page-size="pageSize"
                          :page-sizes="[10, 20, 50]" background
-                         @current-change="p => { page = p; loadLogs() }"
-                         @size-change="s => { pageSize = s; page = 1; loadLogs() }" />
+                         @current-change="loadLogs"
+                         @size-change="() => { page = 1; loadLogs() }" />
         </div>
       </template>
     </div>
@@ -119,16 +125,17 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
-import MarkdownIt from 'markdown-it'
 import { apiGet } from '../api.js'
+import { renderMarkdown } from '../chat/markdown'
 import { store, loadDevices, NETDEV_VENDOR_NAMES } from '../store.js'
 
-const md = new MarkdownIt({ breaks: true })
-const render = (text) => md.render(text || '')
+// 统一走 chat/markdown：含代码高亮 + DOMPurify 净化 + 代码块复制按钮
+const render = renderMarkdown
 
 const loading = ref(false)
 const conversations = ref([])
 const total = ref(0)
+const loadError = ref('')   // 区分「加载失败」与「确实没有数据」
 const page = ref(1)
 const pageSize = ref(20)
 const filters = reactive({ keyword: '', device_id: '', range: null })
@@ -173,9 +180,12 @@ async function loadLogs() {
     const data = await apiGet(`/api/chat/conversations/detail?${params}`)
     conversations.value = data.items || []
     total.value = data.total || 0
+    loadError.value = ''
   } catch (e) {
+    // 原实现静默清空 → 后端故障被伪装成「没有符合条件的对话日志」，误导排查方向
     conversations.value = []
     total.value = 0
+    loadError.value = e?.message || '加载失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -224,6 +234,7 @@ onMounted(() => { if (!store.netdevDevices.length) loadDevices(); loadLogs() })
 
 .state-block { text-align: center; padding: 48px 0; color: var(--sfa-text-3); font-size: 13px; }
 .state-ico { font-size: 26px; color: var(--sfa-primary); }
+.state-ico.is-error { color: var(--sfa-danger-ink); }
 .state-mark { width: 52px; height: 52px; margin-bottom: 12px; }
 
 .detail-messages { max-height: 65vh; overflow-y: auto; padding-right: 6px; }
