@@ -102,7 +102,7 @@ async def confirm(payload: ConfirmIn):
     return _sse_events(orchestrator.resume_confirm(action["conv_id"], payload.action_id,
                                                    payload.approved, payload.device_id,
                                                    edited=payload.edited,
-                                                   mcps=payload.mcps, skills=payload.skills))
+                                                   mcps=payload.mcps, skill_folders=payload.skills))
 
 
 @router.get("/conversations")

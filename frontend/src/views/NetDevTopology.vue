@@ -3,7 +3,7 @@
     <div class="page-card nt-toolbar">
       <div class="nt-left">
         <el-select v-model="group" placeholder="全部分组" clearable filterable
-                   style="width: 190px" @change="loadGraph(false)">
+                   :teleported="false" style="width: 190px" @change="loadGraph(false)">
           <el-option v-for="g in groups" :key="g" :label="g || '（未分组）'" :value="g" />
         </el-select>
         <el-input v-model="query" placeholder="输入 IP / MAC / 设备名，定位资产所在设备与端口"
@@ -102,7 +102,6 @@ import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import { NetDev } from '../api.js'
 import { useTheme } from '../composables/useTheme'
-import { shortPort, shortPortPair } from './portLabel'
 
 const emit = defineEmits(['edit', 'console'])
 
@@ -355,10 +354,9 @@ function buildOption(hitSet) {
       emphasis: {
         lineStyle: { width: agg ? 5.5 : 3.4, opacity: 1 },
       },
-      tooltip: {
-        formatter: () => `${e.source_name}  ${shortPort(e.from_port) || '?'}\n        <->\n${e.target_name}  ${shortPort(e.to_port) || '?'}`
-          + (agg ? `\n链路聚合 ×${agg}` : e.confirmed === false ? '\n（单侧 LLDP，未互证）' : ''),
-      },
+      // 边级 tooltip 关闭：完整接口信息由自绘悬停胶囊承载（原先两者同时弹出，
+      // 出现一大一小两个气泡；且此处的「链路聚合 ×N」摘要不符合查阅习惯）
+      tooltip: { show: false },
     }
   })
   return {
@@ -502,6 +500,18 @@ watch(theme, () => {
   if (graph.value?.nodes?.length) nextTick(() => renderChart(_lastHitSet, _hoverEdge))
 })
 
+// 卸载清理：组件随页签 v-if 反复销毁/重建，必须释放 ECharts 实例与自绘图元，
+// 否则 canvas 实例与悬停胶囊跨挂载残留（曾致下拉浮层 popper 堆积出现重复框）。
+onBeforeUnmount(() => {
+  try {
+    if (_edgeOverlay && chart) chart.getZr().remove(_edgeOverlay)
+  } catch { /* 实例已释放 */ }
+  _edgeOverlay = null
+  try { chart?.dispose() } catch { /* 已释放 */ }
+  chart = null
+  if (typeof window !== 'undefined') delete window.__topoChart
+})
+
 // 悬停链路的接口简写 → 在链路中点绘制**水平胶囊**。
 // 为什么不用 ECharts 自带 label：graph 边的 label 恒按链路切向旋转
 // （Line.js#updateLayout 里 label.rotation = -atan2(...)），近垂直链路上
@@ -514,6 +524,7 @@ function portLabelWidth(text) {
   for (const ch of text) {
     if (ch === '/' || ch === '↔' || ch === ' ') w += 7.2
     else if (ch === 'X' || ch === 'G') w += 7.4
+    else if (ch.codePointAt(0) > 0x2e7f) w += 10.5
     else w += 6.5
   }
   return w
@@ -527,8 +538,11 @@ function drawHoverEdgeLabel(hoverEdge) {
     if (hoverEdge < 0) return
     const e = graph.value.edges[hoverEdge]
     if (!e) return
-    const pair = shortPortPair(e.from_port, e.to_port)
-    if (!pair) return
+    const pairLines = (e.links?.length ? e.links : [{ frm_port: e.from_port, to_port: e.to_port }])
+      .map(l => `${l.frm_port || '?'}  ↔  ${l.to_port || '?'}`)
+    if (e.confirmed === false) pairLines.push('（单侧 LLDP，未互证）')
+    const pair = pairLines.join('\n')
+    if (!pair.trim()) return
 
     // 取两端节点的像素坐标。
     // 踩坑 1：graph 节点的 getLayout() 返回**归一化 0~1 坐标**
@@ -590,10 +604,11 @@ function drawHoverEdgeLabel(hoverEdge) {
     // 上的投影」。胶囊是水平矩形，斜线场景下其左右端仍会与斜线相交，所以投影
     // 长度取 (bw/2)*|nx| + (bh/2)*|ny|，再加安全间隙。
     const fs = 10.5
-    const textW = portLabelWidth(pair)
+    const lineH = fs + 4
+    const textW = Math.max(...pairLines.map(portLabelWidth))
     const padX = 7, padY = 3.5
     const bw = textW + padX * 2
-    const bh = fs + padY * 2 + 2
+    const bh = pairLines.length * lineH + padY * 2
     // 胶囊在法向上的半投影 + 连线半宽 + 间隙
     const proj = (bw / 2) * Math.abs(nx) + (bh / 2) * Math.abs(ny)
     const OFF = proj + 6
@@ -619,6 +634,7 @@ function drawHoverEdgeLabel(hoverEdge) {
       style: {
         text: pair, x: 0, y: 0, textAlign: 'center', textVerticalAlign: 'middle',
         fill: ink, font: `600 ${fs}px "JetBrains Mono", Consolas, monospace`,
+        lineHeight: lineH,
       },
     }))
     zr.add(g)

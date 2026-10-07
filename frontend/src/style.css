@@ -417,6 +417,7 @@ body {
   display: flex; align-items: center; justify-content: center;
   font-size: 12px; font-weight: 700; color: #fff;
   margin-top: 2px;
+  overflow: hidden; /* 兜底：任何内部内容不得溢出头像框 */
 }
 .chat-avatar.ai {
   background: var(--sfa-avatar-ai-bg);
@@ -816,3 +817,14 @@ html[data-theme='dark'] {
 
 /* 只对新追加的消息播放入场动画（原实现无条件动画 → 恢复历史会话整屏飘入） */
 .chat-row.is-new { animation: sfa-fade-up .32s var(--ease-out) both; }
+
+/* 无障碍隐藏：仅供读屏设备，视觉上完全移除（含布局空间） */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

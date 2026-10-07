@@ -33,7 +33,8 @@
           <div class="gv-tools">
             <el-select v-model="activeCat" placeholder="全部分类" clearable size="small"
                        style="width: 150px">
-              <el-option v-for="c in stats.categories || []" :key="c" :label="c" :value="c" />
+              <el-option v-for="c in stats.categories || []" :key="c.name"
+                       :label="`${c.name}（${c.value}）`" :value="c.name" />
             </el-select>
             <el-input v-model="keyword" placeholder="搜索词条" clearable size="small"
                       style="width: 170px">

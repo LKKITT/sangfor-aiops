@@ -497,7 +497,10 @@ def build_graph(group: str) -> dict:
                                  "frm_port": "、".join(l["frm_port"] for l in lks if l["frm_port"]),
                                  "to_port": "、".join(l["to_port"] for l in lks if l["to_port"]),
                                  "confirmed": all(l["confirmed"] for l in lks),
-                                 "aggregated": len(lks)})
+                                 "aggregated": len(lks),
+                                 # 逐条链路明细：供前端完整展示每对接口（不丢失配对关系）
+                                 "links": [{"frm_port": l["frm_port"], "to_port": l["to_port"],
+                                            "confirmed": l["confirmed"]} for l in lks]})
         else:
             merged_links.extend(lks)
     merged_links.extend(ext_links)
@@ -516,6 +519,9 @@ def build_graph(group: str) -> dict:
             "source_name": (by_id.get(lk["frm"]) or nodes.get(lk["frm"]) or {}).get("name", lk["frm"]),
             "target_name": (by_id.get(lk["to"]) or nodes.get(lk["to"]) or {}).get("name", lk["to"]),
             "confirmed": lk["confirmed"], "aggregated": lk.get("aggregated", 0),
+            # 统一携带链路明细（聚合边为多条，普通边为自身一条）
+            "links": lk.get("links") or [{"frm_port": lk["frm_port"], "to_port": lk["to_port"],
+                                          "confirmed": lk["confirmed"]}],
         })
 
     # 连接度统计与核心设备识别：度数按「对端邻居数」计（聚合线算 1 条）；

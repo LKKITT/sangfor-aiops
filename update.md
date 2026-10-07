@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-10-07
+
+### fix: v1 四项体验缺陷修复（确认 500 / 头像溢出 / 图谱筛选 / 拓扑双气泡与浮层泄漏）
+- 修复配置修改确认提交 HTTP 500：`api/chat.py` 确认接口传参 `skills=` 与编排器 `resume_confirm(skill_folders=)` 命名不一致（TypeError），更正为 `skill_folders=`
+- 修复 AI 对话头像文字溢出不可视：流式头像内 `sr-only` 类从未定义，"SFA Agent 正在回复"以可见文本挤进 30px 图标——style.css 补标准 `.sr-only` 定义并给头像加 overflow:hidden 兜底
+- 修复知识图谱分类筛选失效与选项乱码：GraphView 下拉把 stats.categories 的对象项当字符串绑定（选中值恒不匹配节点分类）——改为绑定 c.name 并展示「分类（数量）」
+- 网络拓扑：① 组件卸载无清理导致 el-select popper 逐次泄漏（页签反复切换后出现重复下拉框，实测堆积 6 份）——补 onBeforeUnmount（dispose 图表/移除悬浮层/清调试钩子）+ 分组下拉 teleported=false；② 链路悬停出现一大一小两个气泡——关闭边级 ECharts tooltip，自绘胶囊改为逐对渲染完整接口名（后端聚合边新增 links 明细数组保留配对），去除「链路聚合 ×N」摘要
+- 全量 272/272 测试通过；确认接口实测 200，拓扑页签反复切换 body 级 popper 0 泄漏
+
+
 ## 2026-10-06
 
 ### chore: 开源准备（MIT LICENSE、免责声明、CI、贡献指南）
