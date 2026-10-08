@@ -4,10 +4,6 @@
     <div class="page-head">
       <div>
         <h2 class="ph-title">备份与恢复</h2>
-        <el-select v-model="store.currentDeviceId" size="small" style="width: 210px; margin-left: 12px"
-                   placeholder="选择设备" aria-label="选择设备">
-          <el-option v-for="d in store.devices" :key="d.id" :value="d.id" :label="d.name" />
-        </el-select>
         <p class="ph-desc">结构化配置快照（可对比 / 可恢复）+ 设备配置文件归档（.conf，SHA256 校验）· 每日 02:00 自动备份</p>
       </div>
       <div class="ph-actions" v-if="!netdevMode">
@@ -18,7 +14,7 @@
     </div>
     <NetDevBackupPanel v-if="netdevMode" :device="currentDevice()" />
     <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
-              title="当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备" />
+              title="当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择一台深信服设备" />
 
     <div v-if="!netdevMode" class="cols">
       <div class="page-card col-list">
@@ -141,7 +137,7 @@ const netdevMode = computed(() => isNetDev(currentDevice()))
 const globalMode = computed(() => isGlobal(currentDevice()))
 const guardText = computed(() => netdevMode.value
   ? '当前选中的是网络设备：配置备份/恢复仅支持深信服设备；网络设备可用 AI 对话查询配置'
-  : '当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备')
+  : '当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择一台深信服设备')
 const kindName = k => ({ manual: '手动', scheduled: '自动', pre_change: '变更前安全备份' }[k] || k)
 const sectionName = s => ({ objects: '网络对象', services: '自定义服务', user_bindings: '用户绑定', acl_rules: '访问控制策略', nat_rules: 'NAT 策略', static_routes: '静态路由', interfaces: '网络接口' }[s] || s)
 

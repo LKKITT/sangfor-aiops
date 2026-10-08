@@ -4,10 +4,6 @@
     <div class="page-head">
       <div>
         <h2 class="ph-title">软件更新建议</h2>
-        <el-select v-model="store.currentDeviceId" size="small" style="width: 210px; margin-left: 12px"
-                   placeholder="选择设备" aria-label="选择设备">
-          <el-option v-for="d in store.devices" :key="d.id" :value="d.id" :label="d.name" />
-        </el-select>
         <p class="ph-desc">数据来源：深信服技术支持平台版本发布说明（免认证抓取）+ 官网 PSIRT 安全公告（公开）+ 内置版本知识库快照</p>
       </div>
       <div class="ph-actions">
@@ -178,7 +174,7 @@ const netdevMode = computed(() => isNetDev(currentDevice()))
 const globalMode = computed(() => isGlobal(currentDevice()))
 const guardText = computed(() => netdevMode.value
   ? '当前选中的是网络设备：升级建议仅支持深信服设备'
-  : '当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备')
+  : '当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择一台深信服设备')
 const riskType = computed(() => ({ high: 'danger', medium: 'warning', low: 'info' }[advice.value?.risk] || 'info'))
 const catIconName = cat => ({ 新增功能: 'CirclePlusFilled', 安全修复: 'WarningFilled', 已知问题修复: 'CircleCheckFilled', 优化: 'TopRight' }[cat] || 'InfoFilled')
 const catIcon = cat => ({ 新增功能: 'c-green', 安全修复: 'c-red', 已知问题修复: 'c-blue', 优化: 'c-orange' }[cat] || '')

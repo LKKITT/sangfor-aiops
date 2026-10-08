@@ -15,11 +15,12 @@ export const NETDEV_VENDOR_NAMES = { huawei: '华为', h3c: 'H3C', ruijie: '锐�
 export const store = reactive({
   tenant: localStorage.getItem('sfa_tenant') || 'default',
   tenants: ['default'],
+  tenantNames: {},      // {code: 客户显示名}（客户管理登记过的）
   devices: [],
   netdevDevices: [],
   currentDeviceId: GLOBAL_DEVICE_ID,
   health: { llm_configured: false, readonly_mode: false },
-  uiAddDeviceTick: 0,   // 触发 App 外壳打开「添加设备」弹窗（自增计数）
+  uiAddDeviceTick: 0,   // 触发跳转「安全设备管理」页（自增计数，深信服设备增删改已独立成页）
   chatSeed: null,       // { text, useKnowledge, tick } 跨视图预填 AI 对话（知识库引用「去问 Agent」）
 })
 
@@ -64,6 +65,7 @@ export async function refreshTenants() {
   try {
     const d = await Tenants.list()
     store.tenants = d.tenants || ['default']
+    store.tenantNames = d.names || {}
   } catch { /* 拉取失败保持现状（至少含 default） */ }
 }
 

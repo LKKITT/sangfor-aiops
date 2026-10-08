@@ -4,19 +4,16 @@
     <div class="page-head">
       <div>
         <h2 class="ph-title">配置可视化</h2>
-        <el-select v-model="store.currentDeviceId" size="small" style="width: 210px; margin-left: 12px"
-                   placeholder="选择设备" aria-label="选择设备">
-          <el-option v-for="d in store.devices" :key="d.id" :value="d.id" :label="d.name" />
-        </el-select>
         <p class="ph-desc">设备状态、接口、安全区域与策略全景视图 · 数据缓存于页面，点击刷新重新获取</p>
       </div>
       <div class="ph-actions">
-        <el-button :loading="refreshing" @click="load"><el-icon><Refresh /></el-icon>&nbsp;刷新数据</el-button>
+        <span v-if="fetchedAtText" class="cfg-fetched">{{ fetchedAtText }}</span>
+        <el-button :loading="refreshing" @click="load(true)"><el-icon><Refresh /></el-icon>&nbsp;刷新数据</el-button>
       </div>
     </div>
     <NetDevConfigPanel v-if="netdevMode" :device="currentDevice()" />
     <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
-              title="当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择" />
+              title="当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择" />
     <el-tabs v-else v-model="tab" class="page-card config-tabs">
       <!-- ========== 设备状态（AF / AC 通用） ========== -->
       <el-tab-pane label="设备状态" name="status">
@@ -499,6 +496,12 @@
   </div>
 </template>
 
+<script>
+// 模块级数据缓存（跨组件实例共享）：进入页面先回放缓存数据，不触发设备采集；
+// 仅点击「刷新数据」才实拉最新数据并更新缓存。
+const configDataCache = new Map()   // device_id -> {各数据源快照, fetchedAt}
+</script>
+
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
@@ -519,6 +522,12 @@ const loadErrors = ref({})
 const bindKeyword = ref('')
 const bindSearching = ref(false)
 const refreshing = ref(false)
+const fetchedAt = ref('')   // 当前数据的获取时间（缓存回放时同步回放）
+
+const fetchedAtText = computed(() => {
+  if (!fetchedAt.value) return ''
+  return `数据获取于 ${fetchedAt.value}`
+})
 
 // SCP 特有数据（只读查询：平台/集群/物理机/虚拟机/存储）
 const scpPlatform = ref({})
@@ -540,7 +549,7 @@ const currentDeviceRef = currentDevice
 const globalMode = computed(() => isGlobal(currentDevice()))
 const guardText = computed(() => netdevMode.value
   ? '当前选中的是网络设备：请在「AI 对话」中用自然语言查询/配置，或在「网络设备管理」页批量执行与控制台操作'
-  : '当前为全局模式：本页面需要指定具体设备，请在侧栏「目标设备」中选择一台深信服设备')
+  : '当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择一台深信服设备')
 const isAF = computed(() => {
   const dev = currentDevice()
   return dev && dev.type === 'af'
@@ -578,9 +587,33 @@ async function fetchOne(dev, label, path, assign) {
   }
 }
 
-async function load() {
+// 各数据源 → 页面 ref 的绑定表（缓存回放与采集写回共用）
+function dataRefs() {
+  return {
+    status, interfaces, nat, zones, acl, bindings, objects, services, routes,
+    scpPlatform, scpClusters, scpHosts, scpVms, scpStorages,
+    acOnlineUsers, acThroughput, acAppRank, acUserRank,
+  }
+}
+
+function snapshotData() {
+  const out = { loadErrors: { ...loadErrors.value }, fetchedAt: fetchedAt.value }
+  for (const [k, r] of Object.entries(dataRefs())) out[k] = r.value
+  return out
+}
+
+function hydrateData(c) {
+  for (const [k, r] of Object.entries(dataRefs())) r.value = c[k]
+  loadErrors.value = c.loadErrors || {}
+  fetchedAt.value = c.fetchedAt || ''
+}
+
+async function load(force = false) {
   const dev = currentDevice()
   if (!dev || isNetDev(dev) || isGlobal(dev)) return
+  // 有缓存且非手动刷新：直接回放，不触发采集（进入页面不再实拉设备）
+  const cached = configDataCache.get(dev.id)
+  if (!force && cached) { hydrateData(cached); return }
   refreshing.value = true
   loadErrors.value = {}
   const fetches = [
@@ -616,6 +649,8 @@ async function load() {
     )
   }
   await Promise.allSettled(fetches)
+  fetchedAt.value = new Date().toLocaleString('zh-CN', { hour12: false })
+  configDataCache.set(dev.id, snapshotData())
   refreshing.value = false
 }
 
@@ -691,12 +726,13 @@ async function openVmDetail(row) {
   } catch (e) { vmDetail.value = row }   // 失败时退回列表行数据
 }
 
-watch(() => store.currentDeviceId, load)
+watch(() => store.currentDeviceId, () => load(false))   // 切换设备：缓存回放优先，不实拉
 onMounted(() => { load() })
 </script>
 
 <style scoped>
 .config-page { animation: sfa-fade-up .3s var(--ease-out); }
+.cfg-fetched { color: var(--sfa-text-4); font-size: 11.5px; margin-right: 4px; }
 .config-tabs :deep(.el-tabs__header) { margin-bottom: 14px; }
 .config-tabs :deep(.el-tabs__item) { font-weight: 550; }
 .config-tabs :deep(.el-tabs__item.is-active) { font-weight: 700; }

@@ -25,49 +25,15 @@
         </div>
       </header>
 
-      <div class="device-panel" style="margin-bottom: 8px">
+      <div class="device-panel">
         <div class="device-panel-head"><span class="device-label">客户</span></div>
         <el-select v-model="tenantSel" filterable allow-create default-first-option
-                   placeholder="选择客户" aria-label="切换客户" @change="setTenant"
+                   placeholder="选择客户" class="device-select" aria-label="切换客户" @change="setTenant"
                    style="width: 100%">
           <el-option v-for="t in store.tenants" :key="t" :value="t"
-                     :label="t === 'default' ? '默认客户' : t" />
-        </el-select>
-      </div>
-      <div class="device-panel">
-        <div class="device-panel-head">
-          <span class="device-label">目标设备</span>
-          <span class="device-ops" v-if="device && !isNetDevDevice && !isGlobalDevice">
-            <button class="icon-ghost" title="编辑设备连接信息" aria-label="编辑设备连接信息" @click="openEditDevice"><el-icon><Edit /></el-icon></button>
-            <button class="icon-ghost is-danger" title="删除设备" aria-label="删除设备" @click="confirmDeleteDevice"><el-icon><Delete /></el-icon></button>
-          </span>
-          <span class="device-ops" v-else-if="isNetDevDevice">
-            <span class="nd-hint" title="网络设备请在「网络设备管理」页维护">网络设备</span>
-          </span>
-        </div>
-        <el-select v-model="store.currentDeviceId" placeholder="选择设备" class="device-select"
-                   popper-class="sfa-device-popper" aria-label="选择当前设备">
-          <el-option :value="GLOBAL_DEVICE_ID" label="全局（所有设备）">
-            <span>全局（所有设备）</span>
-            <span class="dev-opt-meta">全部深信服 + 网络设备</span>
-          </el-option>
-          <el-option-group label="深信服设备">
-            <el-option v-for="d in store.devices" :key="d.id" :value="d.id"
-                       :label="`${d.name}（${deviceTypeName(d)}）`">
-              <span>{{ d.name }}</span>
-              <span class="dev-opt-meta">{{ deviceTypeName(d) }} · 真实设备</span>
-            </el-option>
-          </el-option-group>
-          <el-option-group v-if="aiNetdevs().length" label="网络设备（华为/H3C/锐捷）">
-            <el-option v-for="d in aiNetdevs()" :key="d.id" :value="d.id"
-                       :label="`${d.name}（网络设备·${vendorName(d.vendor)}）`">
-              <span>{{ d.name }}</span>
-              <span class="dev-opt-meta">{{ vendorName(d.vendor) }} · {{ d.host }}</span>
-            </el-option>
-          </el-option-group>
+                     :label="tenantLabel(t)" />
         </el-select>
         <div class="device-tags">
-          <span v-if="device && !isNetDevDevice && device.readonly" class="mini-chip warn"><i class="mc-dot"></i>只读</span>
           <span class="mini-chip" :class="llmChip.cls"><i class="mc-dot"></i>{{ llmChip.text }}</span>
           <span v-if="store.health.readonly_mode" class="mini-chip danger"><i class="mc-dot"></i>全局只读</span>
         </div>
@@ -96,9 +62,6 @@
           <span class="pulse-dot" :class="store.health.llm_configured ? 'ok' : 'warn'"></span>
           <span class="health-text">{{ store.health.llm_configured ? '智能体在线' : '离线兜底模式' }}</span>
         </div>
-        <div class="foot-btns">
-          <button class="foot-btn" @click="showAdd = true"><el-icon><Plus /></el-icon><span>添加设备</span></button>
-        </div>
       </footer>
     </aside>
 
@@ -119,105 +82,6 @@
         </router-view>
       </main>
     </div>
-
-    <el-dialog v-model="showAdd" title="添加设备" width="480px" append-to-body>
-      <el-form label-width="90px">
-        <el-form-item label="名称"><el-input v-model="form.name" placeholder="如：总部-AF-01" /></el-form-item>
-        <el-form-item label="类型">
-          <el-radio-group v-model="form.type">
-            <el-radio value="af">下一代防火墙 AF</el-radio>
-            <el-radio value="ac">上网行为管理 AC</el-radio>
-            <el-radio value="scp">云计算平台 SCP</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <template v-if="form.type === 'af'">
-          <el-form-item label="设备地址"><el-input v-model="form.base_url" placeholder="https://192.168.1.1" /></el-form-item>
-          <el-form-item label="API 账号"><el-input v-model="form.username" /></el-form-item>
-          <el-form-item label="API 密码"><el-input v-model="form.password" type="password" show-password /></el-form-item>
-        </template>
-        <template v-if="form.type === 'scp'">
-          <el-form-item label="平台地址">
-            <el-input v-model="form.device_ip" placeholder="SCP 平台 IP，如 10.134.85.140（可带端口 10.1.1.1:4430）" />
-          </el-form-item>
-          <el-form-item label="AccessKey"><el-input v-model="form.username" placeholder="SCP 平台申请的 AccessKey" /></el-form-item>
-          <el-form-item label="SecretKey"><el-input v-model="form.password" type="password" show-password placeholder="SCP 平台申请的 SecretKey" /></el-form-item>
-          <el-form-item label=" ">
-            <span style="font-size: 12px; color: #909399">
-              SCP 走 OpenAPI（EC2 AK/SK 签名）只读接入：查询集群/物理机/虚拟机/存储，不支持任何变更
-            </span>
-          </el-form-item>
-        </template>
-        <template v-if="form.type === 'ac'">
-          <el-form-item label="设备 IP">
-            <el-input v-model="form.device_ip" placeholder="192.168.1.1" />
-          </el-form-item>
-          <el-form-item label="共享密钥">
-            <el-input v-model="form.password" type="password" show-password
-                      placeholder="开放接口共享密钥（无需账号密码）" />
-          </el-form-item>
-          <el-form-item label=" ">
-            <span style="font-size: 12px; color: #909399">
-              AC 走开放接口（md5 共享密钥签名），需在设备上启用开放接口并将本机 IP 加入允许列表
-            </span>
-          </el-form-item>
-        </template>
-        <el-form-item label="只读模式"><el-switch v-model="form.readonly" /></el-form-item>
-        <el-form-item v-if="testResult" label="测连接">
-          <span :style="{ color: testResult.ok ? '#0E9F6E' : '#E5484D', fontSize: '12px' }">
-            {{ testResult.message || testResult.error }}
-          </span>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button :loading="testing" @click="testConnection">测试连接</el-button>
-        <el-button @click="showAdd = false; testResult = null">取消</el-button>
-        <el-button type="primary" @click="addDevice">确定</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="showEdit" title="编辑设备连接信息" width="480px" append-to-body>
-      <el-form label-width="90px">
-        <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-        <el-form-item label="类型">
-          <el-radio-group v-model="editForm.type">
-            <el-radio value="af">下一代防火墙 AF</el-radio>
-            <el-radio value="ac">上网行为管理 AC</el-radio>
-            <el-radio value="scp">云计算平台 SCP</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <template v-if="editForm.type === 'scp'">
-          <el-form-item label="平台地址">
-            <el-input v-model="editForm.device_ip" placeholder="SCP 平台 IP（可带端口）" />
-          </el-form-item>
-          <el-form-item label="AccessKey"><el-input v-model="editForm.username" /></el-form-item>
-          <el-form-item label="SecretKey"><el-input v-model="editForm.password" type="password" show-password placeholder="留空不修改" /></el-form-item>
-        </template>
-        <template v-if="editForm.type === 'af'">
-          <el-form-item label="设备地址"><el-input v-model="editForm.base_url" placeholder="https://192.168.1.1" /></el-form-item>
-          <el-form-item label="API 账号"><el-input v-model="editForm.username" /></el-form-item>
-          <el-form-item label="API 密码"><el-input v-model="editForm.password" type="password" show-password placeholder="留空不修改" /></el-form-item>
-        </template>
-        <template v-if="editForm.type === 'ac'">
-          <el-form-item label="设备 IP">
-            <el-input v-model="editForm.device_ip" placeholder="192.168.1.1" />
-          </el-form-item>
-          <el-form-item label="共享密钥">
-            <el-input v-model="editForm.password" type="password" show-password placeholder="留空不修改" />
-          </el-form-item>
-        </template>
-        <el-form-item label="只读模式"><el-switch v-model="editForm.readonly" /></el-form-item>
-        <el-form-item v-if="editTestResult" label="测连接">
-          <span :style="{ color: editTestResult.ok ? '#0E9F6E' : '#E5484D', fontSize: '12px' }">
-            {{ editTestResult.message || editTestResult.error }}
-          </span>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button :loading="editTesting" @click="testEditConnection">测试连接</el-button>
-        <el-button @click="showEdit = false; editTestResult = null">取消</el-button>
-        <el-button type="primary" @click="saveEditDevice">保存</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -227,9 +91,7 @@ const tenantSel = ref(store.tenant)
 import { useRoute } from 'vue-router'
 import { router } from './router'
 import { useTheme } from './composables/useTheme'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { store, loadDevices, loadHealth, currentDevice, isNetDev, isGlobal, GLOBAL_DEVICE_ID, aiNetdevs, NETDEV_VENDOR_NAMES, setTenant, refreshTenants } from './store.js'
-import { Devices } from './api.js'
+import { store, loadDevices, loadHealth, setTenant, refreshTenants } from './store.js'
 
 // 视图路由化：URL 可寻址（刷新保持/可分享），组件按路由级动态 import 分片加载
 
@@ -242,6 +104,7 @@ const navGroups = [
     { key: 'backup', to: '/backup', label: '备份与恢复', icon: 'CopyDocument' },
   ]},
   { label: '资产运营', items: [
+    { key: 'security', to: '/security', label: '安全设备管理', icon: 'Lock' },
     { key: 'netdev', to: '/netdev', label: '网络设备管理', icon: 'Cpu' },
     { key: 'updates', to: '/updates', label: '软件更新建议', icon: 'Download' },
   ]},
@@ -258,12 +121,12 @@ const navGroups = [
 const mobileOpen = ref(false)
 const route = useRoute()
 const { theme, toggle: toggleTheme } = useTheme()
-const showAdd = ref(false)
-const form = ref({ name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false })
-const device = computed(currentDevice)
-const isNetDevDevice = computed(() => isNetDev(device.value))
-const isGlobalDevice = computed(() => isGlobal(device.value))
-const vendorName = (v) => NETDEV_VENDOR_NAMES[v] || v
+
+// 客户显示名：客户管理里登记过的显示名称优先（默认客户改名后侧栏同步显示），未登记回退编码
+function tenantLabel(t) {
+  return store.tenantNames?.[t] || (t === 'default' ? '默认客户' : t)
+}
+
 // LLM 徽章：后端返回 false（未配置）/ true（已接入无模型名）/ 模型名字符串
 const llmChip = computed(() => {
   const v = store.health.llm_configured
@@ -271,20 +134,6 @@ const llmChip = computed(() => {
   if (v === true) return { text: 'LLM 已接入', cls: 'ok' }
   return { text: `LLM ${v}`, cls: 'ok' }
 })
-// 设备类型中文名（与 ChatView 输入台的设备选择器保持同一文案口径）
-const deviceTypeName = (d) => {
-  if (isGlobal(d)) return '全局模式'
-  if (isNetDev(d)) return `网络设备·${vendorName(d.vendor)}`
-  return d.type === 'af' ? '防火墙' : d.type === 'scp' ? '云计算平台' : '上网行为管理'
-}
-const testing = ref(false)
-const testResult = ref(null)
-
-// 编辑设备
-const showEdit = ref(false)
-const editForm = ref({ id: '', name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false })
-const editTesting = ref(false)
-const editTestResult = ref(null)
 
 // 移动端抽屉：Esc 键关闭（当前仅能点遮罩，键盘用户无法退出）
 function onGlobalKeydown(e) {
@@ -301,130 +150,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
 })
 
-// 其他视图（如空状态引导）请求打开「添加设备」弹窗
-watch(() => store.uiAddDeviceTick, v => { if (v > 0) showAdd.value = true })
-
-async function addDevice() {
-  if (!form.value.name) return ElMessage.warning('请填写设备名称')
-  // AC 设备：将 IP 转为 http://{ip}:9999
-  const payload = { ...form.value }
-  if (payload.type === 'ac' && payload.device_ip) {
-    payload.base_url = `http://${payload.device_ip}:9999`
-  }
-  if (payload.type === 'scp' && payload.device_ip) {
-    payload.base_url = `https://${payload.device_ip}`
-  }
-  if (payload.mode === 'real' && !payload.base_url) return ElMessage.warning('请填写设备地址')
-  try {
-    await Devices.add(payload)
-    await loadDevices()
-    showAdd.value = false
-    testResult.value = null
-    form.value = { name: '', type: 'af', mode: 'real', base_url: '', device_ip: '', username: '', password: '', readonly: false }
-    ElMessage.success('设备已添加')
-  } catch (e) { ElMessage.error(String(e.message || e)) }
-}
-
-async function testConnection() {
-  if (!form.value.name) return ElMessage.warning('请先填写设备名称')
-  // AC 设备：将 IP 转为 http://{ip}:9999
-  const payload = { ...form.value }
-  if (payload.type === 'ac' && payload.device_ip) {
-    payload.base_url = `http://${payload.device_ip}:9999`
-  }
-  if (payload.type === 'scp' && payload.device_ip) {
-    payload.base_url = `https://${payload.device_ip}`
-  }
-  if (payload.mode === 'real' && !payload.base_url) return ElMessage.warning('请填写设备地址')
-  testing.value = true
-  testResult.value = null
-  try {
-    testResult.value = await Devices.testConnection(payload)
-  } catch (e) {
-    testResult.value = { ok: false, error: String(e.message || e) }
-  } finally {
-    testing.value = false
-  }
-}
-
-function openEditDevice() {
-  const d = currentDevice()
-  if (!d) return
-  // 对 AC/SCP 设备，从 base_url 中提取 IP
-  const editIp = (d.type === 'ac' || d.type === 'scp') && d.base_url
-    ? d.base_url.replace(/^https?:\/\//, '').replace(/:9999$/, '') : ''
-  editForm.value = {
-    id: d.id, name: d.name, type: d.type, mode: d.mode,
-    base_url: d.base_url, device_ip: editIp, username: d.username || '',
-    password: '', readonly: !!d.readonly
-  }
-  editTestResult.value = null
-  showEdit.value = true
-}
-
-async function testEditConnection() {
-  // AC/SCP 设备：将 IP 转为对应 base_url
-  const payload = { ...editForm.value }
-  if (payload.type === 'ac' && payload.device_ip) {
-    payload.base_url = `http://${payload.device_ip}:9999`
-  }
-  if (payload.type === 'scp' && payload.device_ip) {
-    payload.base_url = `https://${payload.device_ip}`
-  }
-  if (payload.mode === 'real' && !payload.base_url) return ElMessage.warning('请填写设备地址')
-  editTesting.value = true
-  editTestResult.value = null
-  try {
-    editTestResult.value = await Devices.testConnection(payload)
-  } catch (e) {
-    editTestResult.value = { ok: false, error: String(e.message || e) }
-  } finally {
-    editTesting.value = false
-  }
-}
-
-async function saveEditDevice() {
-  if (!editForm.value.name) return ElMessage.warning('设备名称不能为空')
-  try {
-    const payload = { name: editForm.value.name, type: editForm.value.type, mode: editForm.value.mode, readonly: editForm.value.readonly }
-    // AC/SCP 设备：将 IP 转为对应 base_url
-    if (payload.type === 'ac' && editForm.value.device_ip) {
-      payload.base_url = `http://${editForm.value.device_ip}:9999`
-    } else if (payload.type === 'scp' && editForm.value.device_ip) {
-      payload.base_url = `https://${editForm.value.device_ip}`
-    } else if (editForm.value.base_url) {
-      payload.base_url = editForm.value.base_url
-    }
-    if (editForm.value.username) payload.username = editForm.value.username
-    if (editForm.value.password) payload.password = editForm.value.password
-    await Devices.patch(editForm.value.id, payload)
-    await loadDevices()
-    showEdit.value = false
-    editTestResult.value = null
-    ElMessage.success('设备信息已更新')
-  } catch (e) { ElMessage.error(String(e.message || e)) }
-}
-
-async function confirmDeleteDevice() {
-  const d = currentDevice()
-  if (!d) return
-  try {
-    await ElMessageBox.confirm(
-      `确定要删除设备「${d.name}」吗？\n此操作不可恢复，关联的备份数据也将被删除。`,
-      '删除设备',
-      { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning' }
-    )
-    await Devices.remove(d.id)
-    await loadDevices()
-    if (store.currentDeviceId === d.id) {
-      const remaining = store.devices.filter(x => x.id !== d.id)
-      store.currentDeviceId = remaining.length > 0 ? remaining[0].id : ''
-    }
-    ElMessage.success(`设备「${d.name}」已删除`)
-  } catch (e) {
-    if (e !== 'cancel') ElMessage.error(String(e.message || e))
-  }
-}
+// 其他视图（如空状态引导）请求维护设备：深信服设备管理已独立成页，直接带跳
+watch(() => store.uiAddDeviceTick, v => { if (v > 0) router.push('/security') })
 </script>
 
 <style scoped>
@@ -455,17 +182,6 @@ async function confirmDeleteDevice() {
 .device-panel { margin: 2px 14px 12px; padding: 12px; border-radius: 12px; background: rgba(148, 163, 199, .07); border: 1px solid var(--side-line); }
 .device-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .device-label { font-size: 10.5px; letter-spacing: .14em; color: #8A96B8; font-weight: 650; }
-.nd-hint { font-size: 10.5px; color: #8A96B8; letter-spacing: .04em; }
-.device-ops { display: inline-flex; gap: 2px; }
-.icon-ghost {
-  width: 24px; height: 24px; border-radius: 7px; border: none; cursor: pointer;
-  background: transparent; color: #8A96B8;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: all var(--dur-1) var(--ease-out);
-}
-.icon-ghost .el-icon { font-size: 14px; }
-.icon-ghost:hover { background: rgba(148, 163, 199, .14); color: #DCE3F5; }
-.icon-ghost.is-danger:hover { background: rgba(229, 72, 77, .16); color: #FF7A80; }
 
 .device-select :deep(.el-select__wrapper) {
   background: rgba(10, 15, 30, .6);
@@ -486,7 +202,6 @@ async function confirmDeleteDevice() {
 }
 .mc-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 .mini-chip.ok { background: rgba(15, 185, 164, .13); color: #52D6C4; border-color: rgba(15, 185, 164, .25); }
-.mini-chip.warn { background: rgba(245, 169, 11, .13); color: #FFC65C; border-color: rgba(245, 169, 11, .25); }
 .mini-chip.danger { background: rgba(229, 72, 77, .14); color: #FF8085; border-color: rgba(229, 72, 77, .28); }
 
 /* 导航 */
@@ -499,7 +214,6 @@ async function confirmDeleteDevice() {
   margin-top: 10px;
 }
 .nav > :first-child.nav-group-label { border-top: none; margin-top: 0; padding-top: 6px; }
-.dev-opt-meta { float: right; color: var(--sfa-text-4); font-size: 11.5px; }
 .nav-item {
   position: relative; display: flex; align-items: center; gap: 10px;
   width: 100%; padding: 8.5px 10px; border: none; cursor: pointer;
@@ -525,18 +239,6 @@ async function confirmDeleteDevice() {
 .side-foot { padding: 14px 14px 14px; border-top: 1px solid var(--side-line); }
 .health-line { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; padding: 0 2px; }
 .health-text { font-size: 11px; color: #8A96B8; letter-spacing: .04em; }
-.foot-btns { display: flex; gap: 7px; }
-.foot-btn {
-  flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px;
-  padding: 7px 0; border-radius: 8px; cursor: pointer;
-  background: rgba(148, 163, 199, .08); border: 1px solid var(--side-line);
-  color: var(--side-text); font-size: 12px; font-family: var(--sfa-font);
-  transition: all var(--dur-1) var(--ease-out);
-}
-.foot-btn .el-icon { font-size: 13px; }
-.foot-btn:hover { background: rgba(148, 163, 199, .16); color: #fff; border-color: rgba(148, 163, 199, .28); }
-.foot-btn:active { transform: scale(.97); }
-
 /* ================= 工作区 ================= */
 .workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 .main { flex: 1; overflow: auto; padding: 22px 26px; position: relative; }
@@ -568,12 +270,10 @@ async function confirmDeleteDevice() {
 @media (max-width: 1060px) {
   .side { width: 68px; }
   .brand { justify-content: center; padding: 18px 0 12px; }
-  .brand-text, .device-panel, .nav-group-label, .nav-label, .health-text, .foot-btn span, .side-foot { display: none; }
+  .brand-text, .device-panel, .nav-group-label, .nav-label, .health-text, .side-foot { display: none; }
   .nav { padding: 4px 10px; align-items: center; }
   .nav-item { justify-content: center; padding: 11px 0; width: 46px; }
   .nav-item .nav-bar { left: -10px; }
-  .foot-btns { flex-direction: column; gap: 7px; }
-  .foot-btn { padding: 8px 0; }
   .side-foot { border-top: 1px solid var(--side-line); padding: 10px; }
 }
 
@@ -586,10 +286,9 @@ async function confirmDeleteDevice() {
     box-shadow: none;
   }
   .app-shell.side-open .side { transform: none; box-shadow: var(--sfa-shadow-3); }
-  .brand-text, .device-panel, .nav-group-label, .nav-label, .health-text, .foot-btn span { display: initial; }
+  .brand-text, .device-panel, .nav-group-label, .nav-label, .health-text { display: initial; }
   .nav { align-items: stretch; }
   .nav-item { justify-content: flex-start; width: 100%; padding: 8.5px 10px; }
-  .foot-btns { flex-direction: row; }
   .side-foot { display: block; }
   .side-scrim {
     display: block; position: fixed; inset: 0; z-index: 35;
@@ -616,8 +315,6 @@ async function confirmDeleteDevice() {
 </style>
 
 <style>
-/* 设备下拉（深色面板配套，非 scoped） */
-.sfa-device-popper .el-select-dropdown__item { font-size: 12.5px; }
 .theme-toggle {
   display: flex; align-items: center; gap: 7px; width: 100%;
   padding: 7px 10px; margin-bottom: 8px; border-radius: 9px; cursor: pointer;

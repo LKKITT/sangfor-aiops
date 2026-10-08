@@ -149,9 +149,19 @@ export const KB = {
 // 网络设备管理（SSH 交换机/路由器）
 export const Tenants = { list: () => apiGet('/api/tenants') }
 
+// 客户管理（平台设置）：客户档案增删改查；code 为租户编码（工作区隔离键）
+export const Customers = {
+  list: () => apiGet('/api/customers'),
+  create: (c) => apiPost('/api/customers', c),
+  update: (id, c) => apiPut(`/api/customers/${id}`, c),
+  remove: (id) => apiDelete(`/api/customers/${id}`),
+}
+
 export const NetDev = {
   consoleAnalyze: (device_id, output, current_command) =>
     apiPost('/api/netdev/console/analyze', { device_id, output, current_command }, 90000),
+  // 控制台 AI 助手：自然语言运维请求 → 决定"自动执行只读命令"或"直接回答"（规划单步）
+  consoleAssist: (payload) => apiPost('/api/netdev/console/assist', payload, 90000),
   devices: (group = '') => apiGet(`/api/netdev/devices${group ? `?group=${encodeURIComponent(group)}` : ''}`),
   vendors: () => apiGet('/api/netdev/vendors'),
   add: (dev) => apiPost('/api/netdev/devices', dev, 30000),

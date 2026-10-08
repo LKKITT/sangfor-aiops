@@ -490,3 +490,145 @@ async def console_analyze(payload: ConsoleAnalyzeIn):
                        "output_chars": len(output)}},
              device_id=payload.device_id)
     return {"analysis": analysis, "commands": commands}
+
+
+# ================= 控制台 AI 助手：自然语言运维请求 → 规划只读命令或直接作答 =================
+# 与 /console/analyze 的分工：analyze 面向"已有回显做研判"；assist 面向"用户意图"，
+# 可让前端代为执行只读查询命令（display/show 等）后再基于新回显作答。
+
+class ConsoleAssistIn(BaseModel):
+    device_id: str
+    request: str
+    output: str = ""
+    done_commands: list[str] = []   # 本轮已自动执行过的命令（防循环重复执行）
+    force_answer: bool = False      # 前端达到自动执行轮次上限时置位：要求直接基于已有回显收尾作答
+
+
+# 只读白名单：查询类首词 + MikroTik print/monitor 风格；配合危险词黑名单双保险。
+# 自动执行是代用户敲回车，必须默认拒绝——不在白单内的一律转人工确认。
+_ASSIST_READONLY_ALLOW = re.compile(
+    r"^\s*(display|show|screen-length|terminal\s+length|ping|tracert|traceroute|dir|more|head|tail)\b"
+    r"|^\s*/\S+.*\b(print|monitor)\b", re.I)
+_ASSIST_DANGEROUS = re.compile(
+    r"\b(config|conf\b|undo|reset|reboot|reload|save|delete|copy|debug|clear|shutdown"
+    r"|restore|upgrade|erase|write|system-view|patch|license)\b|^no\s", re.I)
+
+
+def filter_readonly_commands(commands: list[str]) -> tuple[list[str], list[str]]:
+    """模型给出的命令 → (可自动执行的只读命令, 需人工确认的命令)。"""
+    ok, blocked = [], []
+    for c in commands:
+        c = c.strip()
+        if not c:
+            continue
+        if _ASSIST_READONLY_ALLOW.search(c) and not _ASSIST_DANGEROUS.search(c):
+            ok.append(c)
+        else:
+            blocked.append(c)
+    return ok, blocked
+
+
+def build_assist_prompt(dev: dict, request: str, output: str,
+                        done_commands: list[str], force_answer: bool = False) -> str:
+    prof = netdev_service.profile_of(dev.get("vendor", ""))
+    done = "\n".join(f"- {c}" for c in done_commands) if done_commands else "（无）"
+    if force_answer:
+        return (
+            f"你是网络设备运维助手。设备：{prof.display}（{dev.get('host', '')}），"
+            f"用户请求：{request}\n已执行过的命令：\n{done}\n"
+            f"终端最近回显（已脱敏，可能截断）：\n{output or '（空）'}\n\n"
+            "自动执行轮次已用完，现在必须收尾作答：基于以上已采集回显直接给出结论。"
+            "只输出 {\"action\": \"answer\", \"answer\": \"markdown\"}；"
+            "已确认的信息给结论，缺失的部分在末尾用「待人工确认」短列出。"
+            "禁止 execute、禁止寒暄。"
+        )
+    return (
+        f"你是网络设备运维助手，在交互式控制台旁辅助工程师。"
+        f"设备：{prof.display}（管理地址 {dev.get('host', '')}:{dev.get('port', 22)}，型号 {dev.get('model') or '未知'}）。\n"
+        f"用户请求：{request}\n"
+        f"本轮已执行过的命令：\n{done}\n"
+        f"终端最近回显（已脱敏，可能截断）：\n{output or '（空）'}\n\n"
+        "决定下一步，只输出 JSON 之一：\n"
+        '{"action": "execute", "commands": ["命令"], "note": "≤20字执行理由"}\n'
+        '{"action": "answer", "answer": "markdown 结论/分析", "commands": ["可选建议命令"]}\n'
+        "规则：\n"
+        "1) 查看状态/日志/利用率/版本等需要设备数据 → execute：只读查询命令，"
+        f"严格 {prof.display} CLI 语法，一次最多 4 条，不得与已执行命令重复；\n"
+        "2) 巡检/多处查看类请求：规划好命令清单尽快收集（最多 3 轮），收集齐后立即 answer，不要零碎分轮；\n"
+        "3) 日志类查询优先用带条数的命令形式（如 display logbuffer size 20 / show logging | last 20），避免全量日志刷屏；\n"
+        "4) 回显信息足够作答，或请求本身是解释/建议/排查思路 → answer：直接给结论；\n"
+        "   日志/回显分析按「结论 → 关键发现（逐条，标注严重级别）→ 建议」组织，"
+        "只归纳要点，不要逐条复述原始日志；\n"
+        "5) commands 禁止任何修改/配置类命令（save/conf/undo/set/reset/reboot 等）；\n"
+        "6) 直接输出结果：禁止寒暄、禁止复述请求、禁止「我将为您」类空话。"
+    )
+
+
+@router.post("/console/assist")
+async def console_assist(payload: ConsoleAssistIn):
+    """控制台 AI 助手（规划单步）：意图 → 自动执行只读命令（前端代发）或直接回答。
+
+    安全边界：返回的 execute 命令经服务端只读白名单过滤；非只读命令降级为
+    "人工确认"清单由前端插入终端不回车，绝不代发修改类命令。
+    """
+    dev = db.get_netdev_device(payload.device_id)
+    if not dev:
+        raise HTTPException(404, "设备不存在")
+    request_text = payload.request.strip()
+    if not request_text:
+        raise HTTPException(400, "请输入运维请求，如：查看 CPU 利用率 / 分析最近的 20 条日志")
+    llm = get_llm_config()
+    if not (llm.get("api_key") and llm.get("base_url")):
+        raise HTTPException(409, "未配置大模型（平台设置 → 大模型接入），AI 助手不可用")
+
+    output = sanitize_terminal_output(payload.output)
+    client = AsyncOpenAI(api_key=llm["api_key"], base_url=llm["base_url"], timeout=60)
+    resp = await client.chat.completions.create(
+        model=llm["model"], temperature=0.2, max_tokens=1600,
+        messages=[{"role": "system", "content": "你是网络设备运维助手，只输出 JSON。"},
+                  {"role": "user", "content": build_assist_prompt(
+                      dev, request_text, output, payload.done_commands, payload.force_answer)}])
+    text = (resp.choices[0].message.content or "").strip()
+
+    def _fallback_answer() -> dict:
+        # 模型未按 JSON 输出时整段当回答兜底（分析类请求不至于空手而归）
+        return {"action": "answer", "answer": text or "（模型未返回有效内容，请重试）", "commands": []}
+
+    stripped = re.sub(r"```(?:json)?", "", text).strip()
+    try:
+        m = re.search(r"\{.*\}", stripped, re.S)
+        parsed = json.loads(m.group(0), strict=False) if m else None
+    except Exception:   # noqa: BLE001
+        parsed = None
+    if not isinstance(parsed, dict) or "action" not in parsed:
+        result = _fallback_answer()
+    elif parsed.get("action") == "execute" and not payload.force_answer:
+        cmds = [str(c).strip() for c in (parsed.get("commands") or []) if str(c).strip()][:4]
+        done = {c.strip() for c in payload.done_commands}
+        ok, blocked = filter_readonly_commands([c for c in cmds if c not in done])
+        if not ok and blocked:
+            # 只给出了非只读命令 → 不代发，转为回答并附人工确认命令
+            result = {"action": "answer",
+                      "answer": f"该请求涉及非只读命令，需要你在终端人工执行：{blocked[0]}",
+                      "commands": blocked[:4]}
+        elif not ok:
+            result = _fallback_answer()
+        else:
+            result = {"action": "execute", "commands": ok,
+                      "note": str(parsed.get("note") or "").strip()[:60]}
+    else:
+        # answer；force_answer 下模型仍返回 execute 时降级为文本回答，保证收尾
+        answer = str(parsed.get("answer") or "").strip()
+        if not answer and payload.force_answer:
+            answer = "自动执行轮次已用完。请查看上方已采集的回显继续人工分析，或换一个更具体的请求。"
+        if not answer:
+            result = _fallback_answer()
+        else:
+            commands = [str(c).strip() for c in (parsed.get("commands") or []) if str(c).strip()][:4]
+            result = {"action": "answer", "answer": answer, "commands": commands}
+
+    db.audit("netdev.console.assist",
+             {"args": {"device": dev.get("name", ""), "request": request_text[:120],
+                       "action": result["action"], "output_chars": len(output)}},
+             device_id=payload.device_id)
+    return result

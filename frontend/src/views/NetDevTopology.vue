@@ -518,8 +518,18 @@ onBeforeUnmount(() => {
 // 文字会竖排并与连线重叠。自绘到 zrender 顶层（z:10）可完全掌控水平排布，
 // 并保证胶囊始终压在所有图元之上，不被节点/连线遮挡。
 let _edgeOverlay = null
-// 胶囊宽度估算：端口简写用等宽字体，逐字符宽度不同（'/' 比数字宽）。
+// 胶囊宽度：canvas measureText 实测（与绘制同一字体栈，像素级贴合）；
+// canvas 不可用时回退逐字符估算。
+const HOVER_FONT = '600 10.5px "JetBrains Mono", Consolas, monospace'
+let _measureCtx = null
 function portLabelWidth(text) {
+  try {
+    if (!_measureCtx) _measureCtx = document.createElement('canvas').getContext('2d')
+    if (_measureCtx) {
+      _measureCtx.font = HOVER_FONT
+      return _measureCtx.measureText(text).width
+    }
+  } catch { /* 回退估算 */ }
   let w = 0
   for (const ch of text) {
     if (ch === '/' || ch === '↔' || ch === ' ') w += 7.2
@@ -632,8 +642,11 @@ function drawHoverEdgeLabel(hoverEdge) {
     }))
     g.add(new echarts.graphic.Text({
       style: {
-        text: pair, x: 0, y: 0, textAlign: 'center', textVerticalAlign: 'middle',
-        fill: ink, font: `600 ${fs}px "JetBrains Mono", Consolas, monospace`,
+        text: pair, x: 0, y: 0,
+        // zrender 5 的 Text 样式属性是 align / verticalAlign（textAlign/textVerticalAlign
+        // 是旧版名，会被静默忽略 → 文字按默认左上角锚定，与中心锚定的背景胶囊错位）
+        align: 'center', verticalAlign: 'middle',
+        fill: ink, font: HOVER_FONT,
         lineHeight: lineH,
       },
     }))

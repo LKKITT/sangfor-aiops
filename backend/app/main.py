@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import db, dbcore
 from app.adapters.factory import close_all_clients, start_keepalive
-from app.api import backups, chat, devices, updates
+from app.api import backups, chat, customers, devices, updates
 from app.api import channel, knowledge, netdev, settings as settings_api
 from app.config import settings
 from app.services import config_service, update_service, wecom_bot_service, zhuge_kb_service
@@ -122,14 +122,18 @@ async def _tenant_context_middleware(request: Request, call_next):
 
 @app.get("/api/tenants")
 def list_tenants() -> dict:
-    """已知客户列表：设备/网络设备/会话中出现过的租户并集（含 default）。"""
+    """已知客户列表：设备/网络设备/会话中出现过的租户并集 + 客户管理登记的客户（含 default）。
+
+    names 为编码 → 客户名称映射（客户管理登记过的展示名），前端选择器据此显示中文名。
+    """
     with db._connect() as conn:
         rows = conn.execute(
             "SELECT DISTINCT tenant_id FROM devices"
             " UNION SELECT DISTINCT tenant_id FROM netdev_devices"
             " UNION SELECT DISTINCT tenant_id FROM conversations").fetchall()
-    tenants = sorted({(r[0] or "default") for r in rows} | {"default"})
-    return {"tenants": tenants}
+    names = {c["code"]: c["name"] for c in db.list_customers()}
+    tenants = sorted({(r[0] or "default") for r in rows} | {"default"} | set(names))
+    return {"tenants": tenants, "names": names}
 app.include_router(devices.router)
 app.include_router(backups.router)
 app.include_router(chat.router)
@@ -138,6 +142,7 @@ app.include_router(knowledge.router)
 app.include_router(settings_api.router)
 app.include_router(channel.router)
 app.include_router(netdev.router)
+app.include_router(customers.router)
 
 
 @app.get("/api/health")

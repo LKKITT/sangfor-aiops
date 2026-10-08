@@ -119,4 +119,4 @@ def test_devices_response_contract(device_id):
     dev = next(d for d in body if d["id"] == device_id)
     assert dev["password"] == "***"
     assert set(dev) <= {"id", "name", "type", "mode", "base_url", "username",
-                        "password", "readonly", "settings_json", "created_at"}
+                        "password", "readonly", "group_name", "settings_json", "created_at"}

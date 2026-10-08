@@ -40,14 +40,17 @@ def get_device(device_id: str) -> Optional[dict]:
 
 
 def upsert_device(device: dict) -> dict:
-    # 新增时打租户标；更新（ON CONFLICT）不改归属
-    device = {**device, "tenant_id": device.get("tenant_id") or get_tenant()}
+    # 新增时打租户标；更新（ON CONFLICT）不改归属。group_name 留空归默认分组。
+    device = {**device,
+              "tenant_id": device.get("tenant_id") or get_tenant(),
+              "group_name": (device.get("group_name") or "").strip() or "默认分组"}
     with _connect() as conn:
         conn.execute(
-            """INSERT INTO devices (id,name,type,mode,base_url,username,password,readonly,settings_json,created_at,tenant_id)
-               VALUES (:id,:name,:type,:mode,:base_url,:username,:password,:readonly,:settings_json,:created_at,:tenant_id)
+            """INSERT INTO devices (id,name,type,mode,base_url,username,password,readonly,group_name,settings_json,created_at,tenant_id)
+               VALUES (:id,:name,:type,:mode,:base_url,:username,:password,:readonly,:group_name,:settings_json,:created_at,:tenant_id)
                ON CONFLICT(id) DO UPDATE SET name=:name, type=:type, mode=:mode, base_url=:base_url,
-                 username=:username, password=:password, readonly=:readonly, settings_json=:settings_json""",
+                 username=:username, password=:password, readonly=:readonly, group_name=:group_name,
+                 settings_json=:settings_json""",
             device,
         )
     return get_device(device["id"])
@@ -1025,3 +1028,55 @@ def save_netdev_topology_positions(group: str, positions: dict) -> None:
             " VALUES (?,?,?,?,?)",
             [(group, str(dev_id), float(pos[0]), float(pos[1]), now())
              for dev_id, pos in (positions or {}).items()])
+
+
+# ---------------- customers（客户管理；全局共享，不参与租户隔离） ----------------
+
+def list_customers() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM customers ORDER BY created_at").fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_customer_by_code(code: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM customers WHERE code=?", (code,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def get_customer(customer_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def insert_customer(customer: dict) -> dict:
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO customers (id, code, name, contact, phone, email, note, created_at, updated_at)
+               VALUES (:id, :code, :name, :contact, :phone, :email, :note, :created_at, :updated_at)""",
+            customer,
+        )
+    return get_customer(customer["id"])
+
+
+def update_customer(customer_id: str, fields: dict) -> Optional[dict]:
+    fields = {**fields, "updated_at": now()}
+    sets = ", ".join(f"{k}=:{k}" for k in fields)
+    with _connect() as conn:
+        conn.execute(f"UPDATE customers SET {sets} WHERE id=:id", {**fields, "id": customer_id})
+    return get_customer(customer_id)
+
+
+def delete_customer(customer_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM customers WHERE id=?", (customer_id,))
+
+
+def count_tenant_usage(code: str) -> dict:
+    """客户编码在业务表中的引用量（删除前校验，避免留下悬空数据）。"""
+    with _connect() as conn:
+        def _count(table: str) -> int:
+            return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE tenant_id=?", (code,)).fetchone()[0]
+    return {"devices": _count("devices"), "netdev_devices": _count("netdev_devices"),
+            "conversations": _count("conversations")}

@@ -24,6 +24,7 @@ class DeviceIn(BaseModel):
     username: str = ""
     password: str = ""
     readonly: bool = False
+    group_name: str = ""               # 安全设备分组；留空归默认分组
 
 
 class DevicePatch(BaseModel):
@@ -34,6 +35,7 @@ class DevicePatch(BaseModel):
     base_url: str | None = None
     username: str | None = None
     password: str | None = None
+    group_name: str | None = None      # 安全设备分组；留空归默认分组
 
 
 class DeviceOut(BaseModel):
@@ -47,6 +49,7 @@ class DeviceOut(BaseModel):
     username: str = ""
     password: str = "***"
     readonly: int = 0
+    group_name: str = "默认分组"
     settings_json: str = "{}"
     created_at: str = ""
 
@@ -78,7 +81,8 @@ async def add_device(payload: DeviceIn) -> dict:
         "id": db.new_id("dev_"), "name": payload.name, "type": payload.type,
         "mode": payload.mode, "base_url": payload.base_url,
         "username": payload.username, "password": payload.password,
-        "readonly": int(payload.readonly), "settings_json": "{}", "created_at": db.now(),
+        "readonly": int(payload.readonly), "group_name": payload.group_name,
+        "settings_json": "{}", "created_at": db.now(),
     })
     db.audit("device.create", {"name": payload.name, "mode": payload.mode})
     return {**device, "password": "***"}

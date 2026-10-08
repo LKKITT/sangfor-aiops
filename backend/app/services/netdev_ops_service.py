@@ -27,7 +27,8 @@ SNAPSHOT_SECTIONS = {
     "h3c": [
         ("status", "设备状态", ["display version", "display cpu-usage", "display memory"]),
         ("interfaces", "接口概览", ["display interface brief", "display ip interface brief"]),
-        ("vlan", "VLAN", ["display vlan brief"]),
+        # display vlan 在 Comware 5/7 全系可用；display vlan brief 部分老固件不支持
+        ("vlan", "VLAN", ["display vlan"]),
         ("routes", "路由表", ["display ip routing-table"]),
         ("arp", "ARP 表", ["display arp"]),
         ("mac", "MAC 地址表", ["display mac-address"]),
@@ -71,6 +72,20 @@ def _pick_body(full_output: str, command: str, all_cmds: list[str]) -> str:
     return seg[:nxt].strip()
 
 
+# 设备回显的"命令不支持"类错误（整段仅此提示时该分区无数据，不该当成正文展示）
+_CMD_ERR_RE = re.compile(
+    r"^(%|unrecognized command|invalid input|unknown command|incomplete command|"
+    r"too many parameters)", re.I)
+
+
+def _is_cmd_error(body: str) -> bool:
+    """命令不被设备支持：正文很短且首行是错误提示（正常配置/表项远长于此）。"""
+    lines = (body or "").strip().splitlines()
+    if not lines or len(body) > 300:
+        return False
+    return bool(_CMD_ERR_RE.match(lines[0].strip()))
+
+
 async def collect_snapshot(device: dict, force: bool = False) -> dict:
     """配置可视化快照：一次 SSH 会话采集全部分区（display/show 只读），进程内 TTL 缓存。"""
     device_id = device["id"]
@@ -97,8 +112,8 @@ async def collect_snapshot(device: dict, force: bool = False) -> dict:
         order: list[str] = []
         for key, title, cmd in keyed:
             body = _pick_body(r.get("output", ""), cmd, all_cmds)
-            if not body:
-                continue   # 设备不支持的命令（如无 environment）直接不出分区
+            if not body or _is_cmd_error(body):
+                continue   # 空输出 / 设备不支持该命令（如老固件）直接不出分区
             if key not in merged:
                 merged[key] = {"key": key, "title": title, "command": cmd,
                                "parts": [body]}

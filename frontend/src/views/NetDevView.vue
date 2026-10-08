@@ -245,54 +245,85 @@
       </template>
     </el-dialog>
 
-    <!-- 交互式控制台 -->
+    <!-- 交互式控制台：左侧终端 + 右侧 AI 运维助手 -->
     <el-dialog v-model="consoleVisible" :title="`控制台 — ${consoleDevice?.name || ''}（${consoleDevice?.host}）`"
-               width="880px" top="6vh" destroy-on-close :close-on-click-modal="false" append-to-body
+               width="min(1340px, 96vw)" top="3vh" destroy-on-close :close-on-click-modal="false" append-to-body
                @opened="initConsole" @close="closeConsole">
-      <div ref="termEl" class="nd-term"></div>
-      <div class="nd-sub" style="margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap">
-        <span class="nd-dot" :class="consoleWsOk ? 'nd-dot-ok' : 'nd-dot-bad'"></span>
-        {{ consoleWsOk ? '已连接设备 CLI（输入 help 或 ? 可查看命令）' : '连接中…' }}
-        · 关闭弹窗即断开 SSH 会话
-        <span class="nd-copy-hint">鼠标选中即复制 · Ctrl+Shift+C 复制 · Ctrl+V 粘贴</span>
-        <el-button size="small" :type="aiPanel === 'cmd' ? 'primary' : 'default'"
-                   @click="aiPanel = aiPanel === 'cmd' ? '' : 'cmd'">命令速查</el-button>
-        <el-button size="small" :type="aiPanel === 'ai' ? 'primary' : 'default'"
-                   :loading="aiBusy" @click="runAiAnalysis">AI 分析最近回显</el-button>
-      </div>
-      <div v-if="aiPanel" class="nd-aipanel"
-           style="margin-top: 8px; border: 1px solid #d8dfec; border-radius: 8px; padding: 10px; max-height: 300px; overflow: auto">
-        <template v-if="aiPanel === 'cmd'">
-          <el-input v-model="cmdQuery" size="small" clearable placeholder="过滤命令（如 display / interface / show）"
-                    style="max-width: 300px; margin-bottom: 8px" />
-          <div style="display: flex; flex-wrap: wrap; gap: 6px">
-            <button v-for="c in consoleSuggests" :key="c.cmd" type="button"
-                    style="cursor: pointer; border: 1px solid #c9d4e8; background: #f4f7fd; border-radius: 6px; padding: 3px 8px; font-family: Consolas, monospace; font-size: 12px"
-                    :title="c.desc" @click="insertToTerm(c.cmd)">
-              {{ c.cmd }}<span style="opacity: .65; margin-left: 6px">{{ c.desc }}</span>
-            </button>
-            <span v-if="!consoleSuggests.length" style="opacity: .65; font-size: 12px">无匹配命令</span>
+      <div class="nd-console">
+        <div class="nd-console-main">
+          <div ref="termEl" class="nd-term"></div>
+          <div class="nd-console-status">
+            <span class="nd-dot" :class="consoleWsOk ? 'nd-dot-ok' : 'nd-dot-bad'"></span>
+            <span>{{ consoleWsOk ? '已连接设备 CLI' : '连接中…' }} · 关闭弹窗即断开 SSH 会话</span>
+            <span class="nd-copy-hint">选中即复制 · Ctrl+Shift+C 复制 · Ctrl+V 粘贴</span>
           </div>
-          <div style="margin-top: 6px; font-size: 12px; opacity: .7">点击命令仅插入终端，回车执行由你确认</div>
-        </template>
-        <template v-else>
-          <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px">
-            <el-input v-model="aiCurrentCmd" size="small" placeholder="当前命令（可选，帮助 AI 定位上下文）"
-                      style="max-width: 300px" />
-            <el-button size="small" type="primary" :loading="aiBusy" @click="runAiAnalysis">分析最近回显</el-button>
+        </div>
+
+        <aside class="nd-side">
+          <div class="nd-side-head">
+            <el-radio-group v-model="sideTab" size="small">
+              <el-radio-button value="ai"><el-icon><MagicStick /></el-icon>&nbsp;AI 助手</el-radio-button>
+              <el-radio-button value="cmd"><el-icon><Files /></el-icon>&nbsp;命令速查</el-radio-button>
+            </el-radio-group>
           </div>
-          <div v-if="aiError" style="color: #c0392b; font-size: 13px">{{ aiError }}</div>
-          <template v-else-if="aiResult">
-            <pre style="white-space: pre-wrap; font-family: inherit; margin: 0 0 8px; font-size: 13px; line-height: 1.6">{{ aiResult.analysis }}</pre>
-            <div v-if="aiResult.commands && aiResult.commands.length" style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
-              <span style="font-size: 12px; opacity: .7">建议命令（点击插入终端，回车执行）：</span>
-              <button v-for="c in aiResult.commands" :key="c" type="button"
-                      style="cursor: pointer; border: 1px solid #9fd6cb; background: #eefaf7; border-radius: 6px; padding: 3px 8px; font-family: Consolas, monospace; font-size: 12px"
-                      @click="insertToTerm(c)">{{ c }}</button>
+
+          <!-- AI 助手：意图输入 → 自动执行只读命令 → 基于回显作答 -->
+          <template v-if="sideTab === 'ai'">
+            <div class="nd-quick">
+              <button v-for="q in QUICK_OPS" :key="q" type="button" class="nd-quick-chip"
+                      :disabled="aiBusy" @click="sendAssist(q)">{{ q }}</button>
+              <button type="button" class="nd-quick-chip is-analyze" :disabled="aiBusy"
+                      title="把终端最近约 150 行回显（已脱敏）交给 AI 研判"
+                      @click="runAiAnalysis">⚡ 分析最近回显</button>
+            </div>
+            <div ref="threadEl" class="nd-thread">
+              <div v-if="!aiMessages.length" class="nd-thread-empty">
+                用一句话描述你要做的运维操作，例如「查看 CPU 利用率」「分析最近的 20 条日志」。<br/>
+                AI 需要设备数据时会自动代你执行<b>只读命令</b>（display/show），修改类命令仅插入终端、由你人工回车。
+              </div>
+              <template v-for="m in aiMessages" :key="m.id">
+                <div v-if="m.role === 'user'" class="nd-msg nd-msg-user">{{ m.text }}</div>
+                <div v-else-if="m.role === 'step'" class="nd-msg-step" :class="`is-${m.tone || 'info'}`">
+                  <el-icon v-if="m.tone === 'err'"><CircleCloseFilled /></el-icon>
+                  <el-icon v-else><InfoFilled /></el-icon>
+                  <span class="mono">{{ m.text }}</span>
+                  <span v-if="m.note" class="nd-msg-note">{{ m.note }}</span>
+                </div>
+                <div v-else class="nd-msg nd-msg-ai">
+                  <div class="md-body" v-html="render(m.text)"></div>
+                  <div v-if="m.commands?.length" class="nd-msg-cmds">
+                    <span class="nd-msg-cmds-label">建议命令（点击插入终端，回车执行）：</span>
+                    <button v-for="c in m.commands" :key="c" type="button" class="nd-cmd-chip mono"
+                            @click="insertToTerm(c)">{{ c }}</button>
+                  </div>
+                </div>
+              </template>
+              <div v-if="aiBusy" class="nd-thinking">
+                <el-icon class="is-loading"><Loading /></el-icon>{{ aiStep || 'AI 处理中…' }}
+              </div>
+            </div>
+            <div class="nd-input">
+              <el-input v-model="aiInput" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }"
+                        resize="none" placeholder="输入运维请求，如：查看接口流量TOP5"
+                        :disabled="aiBusy" @keydown.enter.exact.prevent="sendAssist()" />
+              <el-button type="primary" :loading="aiBusy" @click="sendAssist()">发送</el-button>
             </div>
           </template>
-          <div v-else style="font-size: 13px; opacity: .7">将把最近约 150 行终端回显（已脱敏）交给 AI 分析；建议命令只插入终端，回车执行由你确认。</div>
-        </template>
+
+          <!-- 命令速查：本地字典零延迟补全，点击仅插入终端 -->
+          <template v-else>
+            <el-input v-model="cmdQuery" size="small" clearable placeholder="过滤命令（如 display / interface / show）"
+                      style="margin-bottom: 8px" />
+            <div class="nd-cmdlist">
+              <button v-for="c in consoleSuggests" :key="c.cmd" type="button" class="nd-cmd-row"
+                      :title="c.desc" @click="insertToTerm(c.cmd)">
+                <span class="mono">{{ c.cmd }}</span><span class="nd-cmd-desc">{{ c.desc }}</span>
+              </button>
+              <div v-if="!consoleSuggests.length" class="nd-thread-empty">无匹配命令</div>
+            </div>
+            <div class="nd-cmd-tip">点击命令仅插入终端，回车执行由你确认</div>
+          </template>
+        </aside>
       </div>
     </el-dialog>
   </div>
@@ -302,10 +333,12 @@
 import '@xterm/xterm/css/xterm.css'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Monitor, Plus, Promotion, CaretRight, DataLine, Download, Upload, Search } from '@element-plus/icons-vue'
+import { Monitor, Plus, Promotion, CaretRight, DataLine, Download, Upload, Search,
+         MagicStick, Files, CircleCloseFilled, InfoFilled, Loading } from '@element-plus/icons-vue'
 import { NetDev } from '../api.js'
 import NetDevTopology from './NetDevTopology.vue'
 import { suggestCommands } from './netdevConsoleDict'
+import { renderMarkdown } from '../chat/markdown'
 
 const tab = ref('devices')
 const devices = ref([])
@@ -333,14 +366,31 @@ const consoleVisible = ref(false)
 const consoleDevice = ref(null)
 const consoleWsOk = ref(false)
 const termEl = ref(null)
-// ---- 控制台 AI 辅助状态（命令速查 / 回显分析；建议命令仅插入终端，不自动执行） ----
-const aiPanel = ref('')
+// ---- 控制台右侧 AI 助手：意图对话线程 + 命令速查 ----
+// 只读命令（display/show 等）AI 可代发执行；修改类命令仅插入终端由人工回车。
+const sideTab = ref('ai')
 const cmdQuery = ref('')
+const aiMessages = ref([])      // { id, role: user|assistant|step, text, commands?, note?, tone? }
+const aiInput = ref('')
 const aiBusy = ref(false)
-const aiCurrentCmd = ref('')
-const aiResult = ref(null)
-const aiError = ref('')
+const aiStep = ref('')
+const threadEl = ref(null)
 const consoleSuggests = computed(() => suggestCommands(consoleDevice.value?.vendor || '', cmdQuery.value))
+const QUICK_OPS = ['查看 CPU 利用率', '查看内存利用率', '查看接口状态概览', '分析最近的 20 条日志',
+                   '查看版本与运行时间', '查看 ARP 与 MAC 表', '巡检设备关键状态']
+
+const render = renderMarkdown
+let _msgSeq = 0
+function pushMsg(m) {
+  aiMessages.value.push({ id: ++_msgSeq, ...m })
+  nextTick(() => {
+    const el = threadEl.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+// 可选的上下文命令（帮助 AI 定位当前在排查什么）
+const aiCurrentCmd = ref('')
 
 function insertToTerm(text) {
   if (!consoleTerm) { ElMessage.warning('控制台未连接'); return }
@@ -361,20 +411,107 @@ function readTermTail(lines = 150) {
   } catch { return '' }
 }
 
-async function runAiAnalysis() {
-  if (!consoleDevice.value) return
-  aiPanel.value = 'ai'
-  const output = readTermTail(150)
-  if (!output.trim()) { aiError.value = '终端回显为空：请先执行一条命令再分析'; return }
+// 自动代发护栏（与后端白名单同口径双保险）：仅查询类命令可代发
+const ASSIST_ALLOW_RE = /^(display|show|screen-length|terminal length|ping|tracert|traceroute|dir|more|head|tail)\b|^\s*\/\S+.*\b(print|monitor)\b/i
+const ASSIST_DENY_RE = /\b(config|conf\b|undo|reset|reboot|reload|save|delete|copy|debug|clear|shutdown|restore|upgrade|erase|write|system-view|patch|license)\b|^no\s/i
+const isReadonlyCommand = (cmd) => ASSIST_ALLOW_RE.test(cmd) && !ASSIST_DENY_RE.test(cmd)
+
+// 返回 true = 非只读被拦截（已插入终端未回车）；false = 已代发执行
+function autoRunCommand(cmd) {
+  if (!consoleWs || consoleWs.readyState !== WebSocket.OPEN) return true
+  if (!isReadonlyCommand(cmd)) {
+    consoleTerm?.write(cmd)
+    return true
+  }
+  consoleWs.send(JSON.stringify({ type: 'data', text: cmd + '\n' }))
+  return false
+}
+
+// 等待终端回显趋于静止：xterm buffer 行数不再变化 quietMs 视为本条命令输出完成
+function waitTermQuiet(quietMs = 700, maxMs = 9000) {
+  return new Promise(resolve => {
+    let lastLen = -1
+    let lastChange = Date.now()
+    const t0 = Date.now()
+    const timer = setInterval(() => {
+      let len = -1
+      try { len = consoleTerm?.buffer.active.length ?? -1 } catch { /* 终端已释放 */ }
+      if (len !== lastLen) { lastLen = len; lastChange = Date.now() }
+      if (Date.now() - lastChange >= quietMs || Date.now() - t0 >= maxMs) {
+        clearInterval(timer)
+        resolve()
+      }
+    }, 120)
+  })
+}
+
+async function sendAssist(textRaw) {
+  const text = (textRaw ?? aiInput.value).trim()
+  if (!text || aiBusy.value || !consoleDevice.value) return
+  if (!consoleWsOk.value) { ElMessage.warning('控制台尚未连接，待连接建立后再使用 AI 助手'); return }
+  if (textRaw === undefined) aiInput.value = ''
+  pushMsg({ role: 'user', text })
+  sideTab.value = 'ai'
   aiBusy.value = true
-  aiError.value = ''
-  aiResult.value = null
+  const done = []
+  // 轮次上限内每轮执行后把新回显喂回模型；末轮 force_answer 让模型基于已采集回显收尾，
+  // 避免「巡检类」多命令请求把轮次耗尽后只得到一句上限提示。
+  const MAX_ROUNDS = 6
   try {
-    aiResult.value = await NetDev.consoleAnalyze(consoleDevice.value.id, output, aiCurrentCmd.value)
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      aiStep.value = round === 0 ? '正在思考下一步…' : `正在汇总分析（第 ${round + 1}/${MAX_ROUNDS} 步）…`
+      const r = await NetDev.consoleAssist({
+        device_id: consoleDevice.value.id, request: text,
+        output: readTermTail(150), done_commands: done,
+        force_answer: round === MAX_ROUNDS - 1,
+      })
+      if (r.action === 'execute' && r.commands?.length) {
+        for (const cmd of r.commands) {
+          aiStep.value = `正在执行 ${cmd}`
+          const blocked = autoRunCommand(cmd)
+          if (blocked) {
+            pushMsg({ role: 'step', tone: 'warn', text: `非只读命令「${cmd}」已插入终端，请人工回车执行` })
+            continue
+          }
+          done.push(cmd)
+          pushMsg({ role: 'step', text: cmd, note: r.note })
+          await waitTermQuiet()
+        }
+        continue   // 带着新回显再问一轮
+      }
+      pushMsg({ role: 'assistant', text: r.answer || '（无有效回答）', commands: r.commands || [] })
+      return
+    }
+    pushMsg({ role: 'assistant',
+              text: '自动执行已到上限。请基于当前回显继续人工排查，或给出更具体的请求。',
+              commands: [] })
   } catch (e) {
-    aiError.value = String(e.message || e)
+    pushMsg({ role: 'step', tone: 'err', text: String(e.message || e) })
   } finally {
     aiBusy.value = false
+    aiStep.value = ''
+  }
+}
+
+async function runAiAnalysis() {
+  if (!consoleDevice.value || aiBusy.value) return
+  sideTab.value = 'ai'
+  const output = readTermTail(150)
+  if (!output.trim()) {
+    pushMsg({ role: 'step', tone: 'warn', text: '终端回显为空：请先执行一条命令再分析' })
+    return
+  }
+  pushMsg({ role: 'user', text: '分析最近回显' })
+  aiBusy.value = true
+  try {
+    aiStep.value = '正在分析最近回显…'
+    const r = await NetDev.consoleAnalyze(consoleDevice.value.id, output, aiCurrentCmd.value)
+    pushMsg({ role: 'assistant', text: r.analysis, commands: r.commands || [] })
+  } catch (e) {
+    pushMsg({ role: 'step', tone: 'err', text: String(e.message || e) })
+  } finally {
+    aiBusy.value = false
+    aiStep.value = ''
   }
 }
 let consoleWs = null
@@ -631,6 +768,10 @@ function exportResult() {
 async function openConsole(row) {
   consoleDevice.value = row
   consoleWsOk.value = false
+  // AI 助手线程按会话重置：历史残留会误导下一台设备的排障
+  aiMessages.value = []
+  aiInput.value = ''
+  sideTab.value = 'ai'
   consoleVisible.value = true
 }
 
@@ -654,7 +795,7 @@ async function initConsole() {
     const [{ Terminal }, { FitAddon }] = await Promise.all([
       import('@xterm/xterm'), import('@xterm/addon-fit')])
     const term = new Terminal({
-      fontSize: 13, fontFamily: 'Consolas, "Courier New", monospace',
+      fontSize: 14, fontFamily: 'Consolas, "Courier New", monospace',
       theme: { background: '#0D1424', foreground: '#d6e2f0', cursor: '#4fc3f7' },
       cursorBlink: true, scrollback: 5000,
     })
@@ -775,10 +916,86 @@ onMounted(async () => {
 .nd-ops { display: grid; grid-template-columns: 1fr 1fr; gap: 0 6px; }
 .nd-ops :deep(.el-button) { margin: 0; padding: 5px 0; justify-content: center; }
 
-/* 控制台 */
-.nd-term { height: 520px; background: #0D1424; border: 1px solid #1C2742; border-radius: var(--sfa-r-md); overflow: hidden; }
-.nd-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+/* 控制台：左终端 + 右 AI 助手双栏（PC 端尽量占满可视区，避免拥挤局促） */
+.nd-console { display: flex; gap: 14px; align-items: stretch;
+  height: clamp(620px, calc(100vh - 170px), 960px); }
+.nd-console-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.nd-term { flex: 1; min-height: 0; background: #0D1424; border: 1px solid #1C2742; border-radius: var(--sfa-r-md); overflow: hidden; }
+.nd-console-status { display: flex; align-items: center; gap: 7px; color: var(--sfa-text-3); font-size: 12px; flex-wrap: wrap; }
+.nd-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 .nd-dot-ok { background: #0FB9A4; box-shadow: 0 0 6px rgba(15, 185, 164, .8); }
 .nd-dot-bad { background: #F5A90B; }
 .nd-copy-hint { color: var(--sfa-text-4); font-size: 11px; margin-left: auto; }
+
+.nd-side { width: 400px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--sfa-border-soft); border-radius: var(--sfa-r-md);
+  background: var(--sfa-surface); padding: 12px; min-height: 0; }
+.nd-side-head { display: flex; align-items: center; justify-content: space-between; }
+
+.nd-quick { display: flex; flex-wrap: wrap; gap: 5px; }
+.nd-quick-chip { cursor: pointer; border: 1px solid var(--sfa-border-soft); background: var(--sfa-tint-primary, #F4F7FD);
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--sfa-text-2);
+  transition: all var(--dur-1) var(--ease-out); }
+.nd-quick-chip:hover:not(:disabled) { border-color: var(--sfa-primary); color: var(--sfa-primary); }
+.nd-quick-chip:disabled { opacity: .55; cursor: not-allowed; }
+.nd-quick-chip.is-analyze { border-color: rgba(15, 185, 164, .4); background: rgba(15, 185, 164, .08); color: var(--sfa-ok-ink); }
+
+.nd-thread { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 2px; }
+.nd-thread-empty { margin: auto 0; text-align: center; color: var(--sfa-text-4); font-size: 12px; line-height: 1.9; padding: 0 8px; }
+.nd-msg { font-size: 12.5px; line-height: 1.7; border-radius: 10px; padding: 7px 10px; max-width: 96%; word-break: break-word; }
+.nd-msg-user { align-self: flex-end; background: var(--sfa-tint-primary, rgba(59, 99, 255, .08));
+  border: 1px solid rgba(59, 99, 255, .18); }
+.nd-msg-ai { align-self: flex-start; background: var(--sfa-bg-deep, #F6F8FC); border: 1px solid var(--sfa-border-soft); }
+.nd-msg-ai .md-body { font-size: 12.5px; }
+.nd-msg-ai .md-body :deep(h1), .nd-msg-ai .md-body :deep(h2),
+.nd-msg-ai .md-body :deep(h3), .nd-msg-ai .md-body :deep(h4) {
+  margin: 8px 0 4px; font-size: 13px; font-weight: 700; line-height: 1.5; }
+.nd-msg-ai .md-body :deep(h1):first-child, .nd-msg-ai .md-body :deep(h2):first-child,
+.nd-msg-ai .md-body :deep(h3):first-child, .nd-msg-ai .md-body :deep(p):first-child { margin-top: 0; }
+.nd-msg-ai .md-body :deep(p) { margin: 4px 0; }
+.nd-msg-ai .md-body :deep(ul), .nd-msg-ai .md-body :deep(ol) { margin: 4px 0; padding-left: 18px; }
+.nd-msg-ai .md-body :deep(li) { margin: 2.5px 0; }
+.nd-msg-ai .md-body :deep(table) { border-collapse: collapse; margin: 6px 0; width: 100%; font-size: 12px; }
+.nd-msg-ai .md-body :deep(th), .nd-msg-ai .md-body :deep(td) {
+  border: 1px solid var(--sfa-border-soft); padding: 4px 8px; text-align: left; }
+.nd-msg-ai .md-body :deep(th) { background: var(--sfa-tint-primary, rgba(59, 99, 255, .06)); font-weight: 650; }
+.nd-msg-ai .md-body :deep(blockquote) { margin: 6px 0; padding: 2px 10px; border-left: 3px solid var(--sfa-primary);
+  color: var(--sfa-text-3); }
+.nd-msg-ai .md-body :deep(hr) { border: none; border-top: 1px solid var(--sfa-border-soft); margin: 8px 0; }
+.nd-msg-ai .md-body :deep(pre) { background: #0D1424; color: #C6D2EC; padding: 8px 10px;
+  border-radius: 8px; overflow-x: auto; font-size: 11.5px; margin: 6px 0; }
+.nd-msg-ai .md-body :deep(pre code) { background: transparent; padding: 0; color: inherit; }
+.nd-msg-ai .md-body :deep(code) { background: var(--sfa-code-bg, rgba(148,163,199,.15)); padding: 0 4px; border-radius: 4px; font-size: 11.5px; }
+.nd-msg-cmds { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.nd-msg-cmds-label { font-size: 11px; color: var(--sfa-text-4); width: 100%; }
+.nd-cmd-chip { cursor: pointer; border: 1px solid rgba(15, 185, 164, .4); background: rgba(15, 185, 164, .08);
+  color: var(--sfa-ok-ink); border-radius: 6px; padding: 2px 8px; font-size: 11.5px; }
+.nd-cmd-chip:hover { background: rgba(15, 185, 164, .16); }
+.nd-msg-step { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--sfa-text-3);
+  padding: 2px 4px; flex-wrap: wrap; }
+.nd-msg-step .el-icon { color: var(--sfa-primary); flex-shrink: 0; }
+.nd-msg-step.is-warn { color: var(--sfa-warn-ink, #B7791F); }
+.nd-msg-step.is-warn .el-icon { color: var(--sfa-warn-ink, #B7791F); }
+.nd-msg-step.is-err { color: var(--sfa-danger); }
+.nd-msg-step.is-err .el-icon { color: var(--sfa-danger); }
+.nd-msg-note { font-size: 10.5px; color: var(--sfa-text-4); }
+.nd-thinking { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--sfa-primary); padding: 2px 4px; }
+
+.nd-input { display: flex; gap: 6px; align-items: flex-end; }
+.nd-input :deep(.el-textarea__inner) { font-size: 12.5px; }
+
+.nd-cmdlist { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.nd-cmd-row { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border: 1px solid var(--sfa-border-soft); background: transparent; border-radius: 8px;
+  padding: 5px 9px; font-size: 12px; text-align: left; transition: all var(--dur-1) var(--ease-out); }
+.nd-cmd-row:hover { border-color: var(--sfa-primary); background: var(--sfa-tint-primary, #F4F7FD); }
+.nd-cmd-desc { opacity: .65; font-size: 11px; flex-shrink: 0; }
+.nd-cmd-tip { font-size: 11px; color: var(--sfa-text-4); }
+
+@media (max-width: 980px) {
+  .nd-console { flex-direction: column; height: auto; }
+  .nd-term { min-height: 380px; }
+  .nd-side { width: 100%; }
+  .nd-thread { max-height: 320px; }
+}
 </style>

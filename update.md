@@ -4,6 +4,14 @@
 
 ## 2026-10-08
 
+### feat: 客户管理/安全设备管理页，控制台 AI 助手只读代执行（主线同步 v1 后继续演进）
+- 客户管理：`/api/customers` 档案 CRUD（code 隔离键 + 名称/联系人/邮箱 + 各业务表使用量统计，删除前校验引用防悬空）；平台设置新增「客户管理」页签，侧栏客户切换器显示登记名优先
+- 安全设备管理：独立页面（SecurityView），深信服设备新增 group_name 分组字段与分组筛选
+- 控制台 AI 助手升级 `/console/assist`：自然语言意图 → 自动代执行**只读**命令（display/show/ping… 白名单 + 危险词黑名单双保险），done_commands 防循环、轮次上限强制收尾作答；与 `/console/analyze`（回显研判）分工
+- 297/297 测试通过
+
+## 2026-10-08
+
 ### fix: launcher 一键启动失败修复（弱网依赖安装失败静默中断）
 - 现象：全新目录点「启动全部」无响应/起不来——首次运行需建 venv + pip 安装 + npm 安装（数分钟），而这些步骤全部静默（DEVNULL + check=True），pip 官方源超时（files.pythonhosted.org ReadTimeout，实测复现）后异常被 GUI 吞掉，按钮复位但什么都没启动；另 check_deps 未剥离 requirements 行内注释（mcp>=1.2,<2 # 中文说明）报 Invalid requirement
 - 修复：launcher 依赖安装改为可见进度 + 官方源失败自动换清华镜像（pip）/npmmirror（npm）重试，失败弹窗展示日志尾部并复位按钮；start_all 按返回值短路；venv/uvicorn/npm 环节纳入异常保护；check_deps 剥行内注释 + 自动安装同样加镜像回退

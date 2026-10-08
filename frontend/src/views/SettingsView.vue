@@ -245,6 +245,73 @@
           启用的技能会在 AI 对话中以清单注入，模型按需加载说明后遵循执行；删除仅限本应用导入目录内的技能。
         </div>
       </el-tab-pane>
+
+      <!-- ================= 客户管理 ================= -->
+      <el-tab-pane label="客户管理" name="customers">
+        <el-alert type="info" :closable="false" style="margin-bottom: 12px; font-size: 12px"
+                  title="客户即工作区（租户）：编码用于隔离设备、会话等数据（侧栏「客户」切换器选择）；名称/联系人是展示档案。内置「默认客户」可编辑、不可删除；新客户保存后即可在侧栏切换。" />
+        <div class="mcp-toolbar">
+          <el-button type="primary" size="small" @click="openCustomerEditor()">
+            <el-icon><Plus /></el-icon>&nbsp;添加客户
+          </el-button>
+          <el-button size="small" :loading="loadingCustomers" @click="loadCustomers">
+            <el-icon><Refresh /></el-icon>&nbsp;刷新
+          </el-button>
+        </div>
+        <el-table :data="customers" size="small" v-loading="loadingCustomers"
+                  :empty-text="loadingCustomers ? '加载中…' : '尚未登记客户，点击「添加客户」创建；未登记的租户仍可继续使用'">
+          <el-table-column prop="name" label="客户名称" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="code" label="编码" width="130" show-overflow-tooltip>
+            <template #default="{ row }"><span class="mono">{{ row.code }}</span></template>
+          </el-table-column>
+          <el-table-column prop="contact" label="联系人" width="100" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.contact || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="phone" label="电话" width="130" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.phone || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="email" label="邮箱" min-width="150" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.email || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="关联数据" width="150">
+            <template #default="{ row }">
+              <span class="cust-usage">设备 {{ row.usage.devices }} · 网络设备 {{ row.usage.netdev_devices }} · 会话 {{ row.usage.conversations }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.note || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="110" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" text type="primary" @click="openCustomerEditor(row)">编辑</el-button>
+              <el-button v-if="row.code !== 'default'" size="small" text type="danger" @click="removeCustomer(row)">删除</el-button>
+              <el-tooltip v-else content="内置默认客户不可删除，名称等信息可编辑" placement="top">
+                <span class="cust-default-tag">内置</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-dialog v-model="customerEditor" :title="customerForm.id ? '编辑客户' : '添加客户'" width="480px" append-to-body>
+          <el-form label-width="86px">
+            <el-form-item label="客户名称" required>
+              <el-input v-model="customerForm.name" placeholder="如：某某科技有限公司" />
+            </el-form-item>
+            <el-form-item label="编码" required>
+              <el-input v-model="customerForm.code" :disabled="!!customerForm.id"
+                        placeholder="字母/数字/下划线/中划线，如 cust_acme（创建后不可改）" />
+            </el-form-item>
+            <el-form-item label="联系人"><el-input v-model="customerForm.contact" /></el-form-item>
+            <el-form-item label="电话"><el-input v-model="customerForm.phone" /></el-form-item>
+            <el-form-item label="邮箱"><el-input v-model="customerForm.email" /></el-form-item>
+            <el-form-item label="备注"><el-input v-model="customerForm.note" type="textarea" :rows="2" /></el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="customerEditor = false">取消</el-button>
+            <el-button type="primary" :loading="savingCustomer" @click="saveCustomer">保存</el-button>
+          </template>
+        </el-dialog>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -252,8 +319,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Settings } from '../api.js'
-import { store, loadHealth } from '../store.js'
+import { Settings, Customers } from '../api.js'
+import { store, loadHealth, refreshTenants } from '../store.js'
 
 const activeTab = ref('basic')
 
@@ -505,10 +572,68 @@ async function removeSkill(s) {
   await loadSkills()
 }
 
+// ================= 客户管理 =================
+const customers = ref([])
+const loadingCustomers = ref(false)
+const customerEditor = ref(false)
+const customerForm = ref({})
+const savingCustomer = ref(false)
+
+async function loadCustomers() {
+  loadingCustomers.value = true
+  try {
+    customers.value = (await Customers.list()).customers || []
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+  loadingCustomers.value = false
+}
+
+function openCustomerEditor(row = null) {
+  customerForm.value = row
+    ? { id: row.id, code: row.code, name: row.name, contact: row.contact || '',
+        phone: row.phone || '', email: row.email || '', note: row.note || '' }
+    : { id: '', code: '', name: '', contact: '', phone: '', email: '', note: '' }
+  customerEditor.value = true
+}
+
+async function saveCustomer() {
+  const f = customerForm.value
+  if (!f.name?.trim()) return ElMessage.warning('请填写客户名称')
+  if (!f.id && !f.code?.trim()) return ElMessage.warning('请填写客户编码')
+  savingCustomer.value = true
+  try {
+    if (f.id) {
+      await Customers.update(f.id, { name: f.name, contact: f.contact, phone: f.phone, email: f.email, note: f.note })
+      ElMessage.success('客户信息已更新')
+    } else {
+      await Customers.create(f)
+      ElMessage.success('客户已创建，可在左上角「客户」切换器中选择')
+    }
+    customerEditor.value = false
+    await loadCustomers()
+    await refreshTenants()   // 侧栏客户切换器同步新客户
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+  savingCustomer.value = false
+}
+
+async function removeCustomer(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除客户「${row.name}」吗？\n仅删除客户档案，关联数据（设备/会话）不会被删除，但删除后侧栏将不再显示该客户显示名。`,
+      '删除客户', { type: 'warning' })
+  } catch { return }   // 用户取消
+  try {
+    await Customers.remove(row.id)
+    ElMessage.success('客户已删除')
+    await loadCustomers()
+    await refreshTenants()
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+}
+
 onMounted(() => {
   loadSettings()
   loadMcp()
   loadSkills()
+  loadCustomers()
 })
 </script>
 
@@ -536,4 +661,6 @@ onMounted(() => {
 .mcp-test-result.err { color: var(--sfa-danger); }
 .mono { font-family: var(--sfa-mono); }
 .ndc-trunc { font-size: 12px; color: var(--sfa-warning, var(--sfa-warn-ink)); }
+.cust-usage { font-size: 11.5px; color: var(--sfa-text-3); font-feature-settings: "tnum" 1; }
+.cust-default-tag { font-size: 11px; color: var(--sfa-text-4); }
 </style>

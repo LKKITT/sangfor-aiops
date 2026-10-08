@@ -74,12 +74,7 @@
           </el-table-column>
           <el-table-column prop="msg_count" label="消息" width="60" align="center" />
           <el-table-column prop="last_message" label="最后提问" min-width="200" show-overflow-tooltip />
-          <el-table-column label="AI 摘要" min-width="180" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span v-if="row.summary" class="muted">{{ row.summary }}</span>
-              <span v-else class="muted">—</span>
-            </template>
-          </el-table-column>
+          <!-- AI 摘要列已按需求隐藏：后端摘要沉淀功能保留，仅不在列表中展示 -->
           <el-table-column label="最后活跃" width="140">
             <template #default="{ row }">{{ (row.updated_at || '').slice(0, 16) }}</template>
           </el-table-column>

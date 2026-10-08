@@ -10,6 +10,7 @@ const routes = [
   { path: '/backup', name: 'backup', component: () => import('../views/BackupView.vue') },
   { path: '/updates', name: 'updates', component: () => import('../views/UpdatesView.vue') },
   { path: '/netdev', name: 'netdev', component: () => import('../views/NetDevView.vue') },
+  { path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') },
   { path: '/knowledge', name: 'knowledge', component: () => import('../views/KnowledgeView.vue') },
   { path: '/graph', name: 'graph', component: () => import('../views/GraphView.vue') },
   { path: '/chatlog', name: 'chatlog', component: () => import('../views/ChatLogView.vue') },
@@ -24,6 +25,6 @@ export const router = createRouter({
 
 export const NAV_KEYS = {
   chat: '/chat', config: '/config', checkup: '/checkup', backup: '/backup',
-  updates: '/updates', netdev: '/netdev', knowledge: '/knowledge',
+  updates: '/updates', netdev: '/netdev', security: '/security', knowledge: '/knowledge',
   chatlog: '/chatlog', settings: '/settings',
 }

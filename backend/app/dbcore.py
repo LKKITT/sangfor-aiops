@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS devices (
     username TEXT NOT NULL DEFAULT '',
     password TEXT NOT NULL DEFAULT '',
     readonly INTEGER NOT NULL DEFAULT 0,
+    group_name TEXT NOT NULL DEFAULT '默认分组',   -- 安全设备管理分组（自定义，留空归默认分组）
     settings_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
@@ -147,6 +148,17 @@ CREATE TABLE IF NOT EXISTS channel_bindings (
     updated_at TEXT NOT NULL,
     UNIQUE(channel, sender_id)
 );
+CREATE TABLE IF NOT EXISTS customers (
+    id TEXT PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,                  -- 租户编码（隔离键，创建后不可改；匹配 [A-Za-z0-9_-]{1,32}）
+    name TEXT NOT NULL,                         -- 客户名称（展示用，支持中文）
+    contact TEXT NOT NULL DEFAULT '',           -- 联系人
+    phone TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS netdev_devices (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -264,6 +276,14 @@ def init_db() -> None:
             tcols = [r["name"] for r in conn.execute(f"PRAGMA table_info({t})")]
             if tcols and "tenant_id" not in tcols:
                 conn.execute(f"ALTER TABLE {t} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+        # 安全设备分组（存量设备归默认分组）
+        dev_cols = [r["name"] for r in conn.execute("PRAGMA table_info(devices)")]
+        if dev_cols and "group_name" not in dev_cols:
+            conn.execute("ALTER TABLE devices ADD COLUMN group_name TEXT NOT NULL DEFAULT '默认分组'")
+        # 客户管理：确保内置「默认客户」档案存在（可在客户管理中编辑名称/联系人等）
+        conn.execute(
+            "INSERT OR IGNORE INTO customers (id, code, name, contact, phone, email, note, created_at, updated_at)"
+            " VALUES ('cus_default', 'default', '默认客户', '', '', '', '', ?, ?)", (now(), now()))
 
 
 def now() -> str:
