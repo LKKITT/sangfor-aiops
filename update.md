@@ -4,6 +4,13 @@
 
 ## 2026-10-08
 
+### fix: launcher 一键启动失败修复（弱网依赖安装失败静默中断）
+- 现象：全新目录点「启动全部」无响应/起不来——首次运行需建 venv + pip 安装 + npm 安装（数分钟），而这些步骤全部静默（DEVNULL + check=True），pip 官方源超时（files.pythonhosted.org ReadTimeout，实测复现）后异常被 GUI 吞掉，按钮复位但什么都没启动；另 check_deps 未剥离 requirements 行内注释（mcp>=1.2,<2 # 中文说明）报 Invalid requirement
+- 修复：launcher 依赖安装改为可见进度 + 官方源失败自动换清华镜像（pip）/npmmirror（npm）重试，失败弹窗展示日志尾部并复位按钮；start_all 按返回值短路；venv/uvicorn/npm 环节纳入异常保护；check_deps 剥行内注释 + 自动安装同样加镜像回退
+- 验证：check_deps rc=0（依赖完整含 mcp 1.x）；按 launcher 同款命令实测后端 8610 启动 OK（租户迁移生效）、前端 5173 启动 OK；286→（含新增）287 个测试通过
+
+## 2026-10-08
+
 ### feat: 控制台 AI 辅助（命令速查/回显分析）+ 多租户客户切换
 
 **方向2：网络设备控制台 AI 辅助**

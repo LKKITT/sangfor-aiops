@@ -129,29 +129,54 @@ def start_backend():
     if not python_exe.exists():
         lbl_status.config(text="正在创建虚拟环境...")
         lbl_status.update()
-        subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
-        lbl_status.config(text="正在安装依赖...")
+        try:
+            subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
+        except Exception as e:
+            messagebox.showerror("后端启动失败", f"创建虚拟环境失败：{e}")
+            return False
+
+    # 依赖安装：官方源失败自动换清华镜像重试（弱网/首次部署 pip 常超时，
+    # 静默失败曾导致 venv 半途而废、后端无法启动且无任何提示）
+    lbl_status.config(text="正在安装/检查 Python 依赖（可能需要几分钟）...")
+    lbl_status.update()
+    pip_base = [str(python_exe), "-m", "pip", "install", "-r", str(req_file)]
+    r = subprocess.run(pip_base, capture_output=True, text=True)
+    if r.returncode != 0:
+        lbl_status.config(text="官方源安装失败，改用清华镜像重试...")
         lbl_status.update()
-        subprocess.run([str(python_exe), "-m", "pip", "install", "-q", "-r", str(req_file)], check=True)
+        r = subprocess.run(pip_base + ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"],
+                           capture_output=True, text=True)
+    if r.returncode != 0:
+        tail = ((r.stderr or "") + (r.stdout or ""))[-600:]
+        messagebox.showerror("后端依赖安装失败", f"pip 返回码 {r.returncode}（已尝试镜像重试）\n\n{tail}")
+        return False
 
     # 依赖补装：以 requirements.txt 为准（含知识库技能依赖 requests/pycryptodome/
     # websocket-client），venv 已存在时也会检查缺失并自动安装
-    lbl_status.config(text="正在检查 Python 依赖（requirements.txt）...")
+    lbl_status.config(text="正在核对 Python 依赖（requirements.txt）...")
     lbl_status.update()
     check_script = SCRIPTS_DIR / "check_deps.py"
-    subprocess.run([str(python_exe), str(check_script), "--quiet"], cwd=str(PROJECT_DIR),
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    chk = subprocess.run([str(python_exe), str(check_script), "--quiet"], cwd=str(PROJECT_DIR),
+                         capture_output=True, text=True)
+    if chk.returncode != 0:
+        tail = ((chk.stderr or "") + (chk.stdout or ""))[-600:]
+        messagebox.showerror("后端依赖核对失败", f"check_deps 返回码 {chk.returncode}\n\n{tail}")
+        return False
 
     cmd = [str(python_exe), "-m", "uvicorn", "app.main:app",
            "--host", cfg["backend_host"], "--port", str(cfg["backend_port"])]
     lbl_status.config(text=f"正在启动后端 {cfg['backend_host']}:{cfg['backend_port']}...")
     lbl_status.update()
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    backend_process = subprocess.Popen(
-        cmd, cwd=str(BACKEND_DIR),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=flags,
-    )
+    try:
+        backend_process = subprocess.Popen(
+            cmd, cwd=str(BACKEND_DIR),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+    except Exception as e:
+        messagebox.showerror("后端启动失败", f"无法启动后端进程：{e}")
+        return False
     return True
 
 
@@ -162,11 +187,20 @@ def start_frontend():
         return True
 
     if not (FRONTEND_DIR / "node_modules").exists():
-        lbl_status.config(text="正在安装前端依赖...")
+        lbl_status.config(text="正在安装前端依赖（可能需要几分钟）...")
         lbl_status.update()
-        subprocess.run(["npm", "install", "--no-fund", "--no-audit"],
-                       cwd=str(FRONTEND_DIR), shell=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run(["npm", "install", "--no-fund", "--no-audit"],
+                           cwd=str(FRONTEND_DIR), shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
+            lbl_status.config(text="npm 官方源失败，改用 npmmirror 镜像重试...")
+            lbl_status.update()
+            r = subprocess.run(["npm", "install", "--no-fund", "--no-audit",
+                                "--registry=https://registry.npmmirror.com"],
+                               cwd=str(FRONTEND_DIR), shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
+            tail = ((r.stderr or "") + (r.stdout or ""))[-600:]
+            messagebox.showerror("前端依赖安装失败", f"npm 返回码 {r.returncode}（已尝试镜像重试）\n\n{tail}")
+            return False
 
     lbl_status.config(text=f"正在启动前端 :{cfg['frontend_port']}...")
     lbl_status.update()
@@ -199,11 +233,16 @@ def _open_browser(url):
 def start_all():
     btn_start.config(state="disabled", text="启动中...")
     btn_start.update()
-    apply_config()
-    start_backend()
-    start_frontend()
-    root.after(3000, lambda: _open_browser(f"http://localhost:{cfg['frontend_port']}"))
-    btn_start.config(state="normal", text="启动全部")
+    try:
+        apply_config()
+        if not start_backend():
+            return   # 失败详情已弹窗，按钮在 finally 复位
+        start_frontend()
+        root.after(3000, lambda: _open_browser(f"http://localhost:{cfg['frontend_port']}"))
+    except Exception as e:
+        messagebox.showerror("启动失败", f"启动过程出现未预期的错误：{e}")
+    finally:
+        btn_start.config(state="normal", text="启动全部")
 
 
 def stop_all():

@@ -33,7 +33,9 @@ def _req_lines() -> list[str]:
     for raw in REQ_FILE.read_text("utf-8").splitlines():
         line = raw.strip()
         if line and not line.startswith("#"):
-            lines.append(line)
+            line = line.split(" #", 1)[0].strip()   # 剥行内注释（如 mcp>=1.2,<2  # 锁定说明）
+            if line:
+                lines.append(line)
     return lines
 
 
@@ -68,6 +70,12 @@ def install(pkgs: list[str], quiet: bool = False) -> bool:
         print(f"[deps] 缺失依赖：{', '.join(pkgs)}")
         print("[deps] 正在自动安装...")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", *pkgs])
+    if r.returncode != 0:
+        # 官方源超时/失败自动换清华镜像重试（弱网环境单次安装常超时）
+        if not quiet:
+            print("[deps] 官方源安装失败，改用清华镜像重试...")
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                            "-i", "https://pypi.tuna.tsinghua.edu.cn/simple", *pkgs])
     return r.returncode == 0
 
 
