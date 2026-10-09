@@ -581,6 +581,30 @@ for (const c of loadFailedStore()) if (!failed.includes(c)) failed.push(c)
           done.push(cmd)
           pushMsg({ role: 'step', text: cmd, note: r.note })
           await waitTermQuiet()
+          // 会话在命令执行中掉线（如 transceiver diagnosis 输出中 中途断开）：
+          // 重连后重试本条命令一次——掉线非命令之过，不应跳过导致信息缺失
+          if (!consoleWs || consoleWs.readyState !== WebSocket.OPEN) {
+            aiStep.value = '会话中断，正在重连并重试本条命令…'
+            connectSession()
+            if (!(await waitWsOpen(8000))) {
+              const i = done.indexOf(cmd); if (i >= 0) done.splice(i, 1)
+              pushMsg({ role: 'step', tone: 'err',
+                        text: `会话中断且重连失败，「${cmd}」未完成，请检查设备网络后重试` })
+              continue
+            }
+            const base2 = outLines.length
+            autoRunCommand(cmd)
+            await waitTermQuiet()
+            if (CMD_ERROR_RE.test(readLinesSince(base2))) {
+              const i = done.indexOf(cmd); if (i >= 0) done.splice(i, 1)
+              failed.push(cmd)
+              rememberFailed(cmd)
+              pushMsg({ role: 'step', tone: 'warn', text: `「${cmd}」重试后仍报错，AI 将改用其它命令` })
+              continue
+            }
+            pushMsg({ role: 'step', text: cmd, note: '（会话中断后已自动重试成功）' })
+            continue
+          }
           if (CMD_ERROR_RE.test(readLinesSince(base))) {
             failed.push(cmd)
             rememberFailed(cmd)   // 静默记忆：AI 下一轮自动换用等价命令，不打扰用户

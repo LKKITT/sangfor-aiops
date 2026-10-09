@@ -93,6 +93,10 @@ def ssh_connect_kwargs(device: dict) -> dict:
         # （表现为控制台"会话已断开"），15s×4 次的 keepalive 可避免
         "keepalive_interval": 15,
         "keepalive_count_max": 4,
+        # 解码容错：老设备（Comware 5 等）的 transceiver diagnosis/DDM 输出含非 UTF-8
+        # 字节，严格解码会抛 UnicodeDecodeError 直接杀死 SSH 会话（表现为该命令
+        # 一执行就"会话已断开"）——替换为占位符保证会话存活
+        "errors": "replace",
         "encryption_algs": LEGACY_ENCRYPTION_ALGS,
         "kex_algs": LEGACY_KEX_ALGS,
         "server_host_key_algs": LEGACY_HOST_KEY_ALGS,

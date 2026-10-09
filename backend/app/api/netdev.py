@@ -207,7 +207,7 @@ async def ws_terminal(ws: WebSocket, device_id: str) -> None:
     try:
         conn = await asyncio.wait_for(asyncssh_connect(device), timeout=12)
         proc = await conn.create_process(term_type="xterm-256color",
-                                         term_size=(120, 32))
+                                         term_size=(120, 32), errors="replace")
     except Exception as e:   # noqa: BLE001 —— 认证/网络/参数异常统一友好下发
         log.warning("控制台连接失败 device=%s: %s", device_id, e)
         await ws.send_text(json.dumps({"type": "error", "text": f"SSH 连接失败：{e}"}))
@@ -232,8 +232,13 @@ async def ws_terminal(ws: WebSocket, device_id: str) -> None:
                 await ws.send_text(json.dumps({"type": "data", "text": data}))
         except (WebSocketDisconnect, asyncio.CancelledError):
             pass
-        except Exception:   # noqa: BLE001
-            log.debug("控制台输出泵退出 device=%s", device_id, exc_info=True)
+        except Exception as e:   # noqa: BLE001 —— SSH 读取崩溃必须可见（曾为 debug 级致排障无据）
+            log.warning("控制台输出泵异常退出 device=%s: %s", device_id, e)
+            try:
+                await ws.send_text(json.dumps(
+                    {"type": "error", "text": f"设备会话异常断开：{e}"}))
+            except Exception:   # noqa: BLE001
+                pass
 
     async def pump_in() -> None:
         while True:
