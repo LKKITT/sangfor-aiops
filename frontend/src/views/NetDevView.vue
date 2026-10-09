@@ -292,9 +292,9 @@
                 <div v-else class="nd-msg nd-msg-ai">
                   <div class="md-body" v-html="render(m.text)"></div>
                   <div v-if="m.commands?.length" class="nd-msg-cmds">
-                    <span class="nd-msg-cmds-label">建议命令（点击插入终端，回车执行）：</span>
+                    <span class="nd-msg-cmds-label">建议命令（只读命令点击直接执行）：</span>
                     <button v-for="c in m.commands" :key="c" type="button" class="nd-cmd-chip mono"
-                            @click="insertToTerm(c)">{{ c }}</button>
+                            @click="runSuggested(c)">{{ c }}</button>
                   </div>
                 </div>
               </template>
@@ -366,6 +366,7 @@ const consoleVisible = ref(false)
 const consoleDevice = ref(null)
 const consoleWsOk = ref(false)
 const termEl = ref(null)
+let consoleReconnects = 0   // 控制台闪断自动重连计数（成功连接后清零）
 // ---- 控制台右侧 AI 助手：意图对话线程 + 命令速查 ----
 // 只读命令（display/show 等）AI 可代发执行；修改类命令仅插入终端由人工回车。
 const sideTab = ref('ai')
@@ -412,9 +413,19 @@ function readTermTail(lines = 150) {
 }
 
 // 自动代发护栏（与后端白名单同口径双保险）：仅查询类命令可代发
-const ASSIST_ALLOW_RE = /^(display|show|screen-length|terminal length|ping|tracert|traceroute|dir|more|head|tail)\b|^\s*\/\S+.*\b(print|monitor)\b/i
+const ASSIST_ALLOW_RE = /^(display|show|screen-length|terminal length|ping|tracert|traceroute|dir|more|head|tail|transceiver)\b|^\s*display\s+(counters|packet-drop|optic|diagnostic|environment|transceiver)\b|^\s*show\s+(counters|environment|diagnostic|interfaces?\s+transceiver|interface\s+transceiver)\b|^\s*\/\S+.*\b(print|monitor)\b/i
 const ASSIST_DENY_RE = /\b(config|conf\b|undo|reset|reboot|reload|save|delete|copy|debug|clear|shutdown|restore|upgrade|erase|write|system-view|patch|license)\b|^no\s/i
 const isReadonlyCommand = (cmd) => ASSIST_ALLOW_RE.test(cmd) && !ASSIST_DENY_RE.test(cmd)
+
+// 建议命令点击：只读命令直接代发执行；非只读仅插入终端（人工回车）
+async function runSuggested(cmd) {
+  const blocked = autoRunCommand(cmd)
+  if (blocked) { ElMessage.warning('非只读命令已插入终端，请人工回车执行'); return }
+  pushMsg({ role: 'step', text: cmd })
+  await waitTermQuiet()
+}
+// 设备侧命令报错标记：命中则该命令视为失败，传给 AI 避免反复执行不存在/错误的命令
+const CMD_ERROR_RE = /% (unrecognized|invalid|wrong) |unrecognized command found|invalid input|incomplete command|too many parameters|命令不存在|不存在或参数|参数错误|Error: /i
 
 // 返回 true = 非只读被拦截（已插入终端未回车）；false = 已代发执行
 function autoRunCommand(cmd) {
@@ -453,7 +464,7 @@ async function sendAssist(textRaw) {
   pushMsg({ role: 'user', text })
   sideTab.value = 'ai'
   aiBusy.value = true
-  const done = []
+  const done = [], failed = [], manual = []
   // 轮次上限内每轮执行后把新回显喂回模型；末轮 force_answer 让模型基于已采集回显收尾，
   // 避免「巡检类」多命令请求把轮次耗尽后只得到一句上限提示。
   const MAX_ROUNDS = 6
@@ -462,7 +473,7 @@ async function sendAssist(textRaw) {
       aiStep.value = round === 0 ? '正在思考下一步…' : `正在汇总分析（第 ${round + 1}/${MAX_ROUNDS} 步）…`
       const r = await NetDev.consoleAssist({
         device_id: consoleDevice.value.id, request: text,
-        output: readTermTail(150), done_commands: done,
+        output: readTermTail(150), done_commands: done, failed_commands: failed,
         force_answer: round === MAX_ROUNDS - 1,
       })
       if (r.action === 'execute' && r.commands?.length) {
@@ -471,15 +482,26 @@ async function sendAssist(textRaw) {
           const blocked = autoRunCommand(cmd)
           if (blocked) {
             pushMsg({ role: 'step', tone: 'warn', text: `非只读命令「${cmd}」已插入终端，请人工回车执行` })
+            manual.push(cmd)
             continue
           }
           done.push(cmd)
           pushMsg({ role: 'step', text: cmd, note: r.note })
           await waitTermQuiet()
+          if (CMD_ERROR_RE.test(readTermTail(30))) {
+            failed.push(cmd)
+            pushMsg({ role: 'step', tone: 'warn',
+                      text: `「${cmd}」设备报语法错误或不存在，已告知 AI 不再重试` })
+          }
         }
         continue   // 带着新回显再问一轮
       }
       pushMsg({ role: 'assistant', text: r.answer || '（无有效回答）', commands: r.commands || [] })
+      if (r.manual_commands?.length) {
+        pushMsg({ role: 'step', tone: 'warn',
+                  text: `非只读命令需人工执行（已插入终端不回车）：${r.manual_commands.join('；')}` })
+        r.manual_commands.forEach(c => insertToTerm(c))
+      }
       return
     }
     pushMsg({ role: 'assistant',
@@ -855,8 +877,16 @@ async function initConsole() {
         ws.close()
       }
     }
-    ws.onopen = () => { term.focus(); term.emitResize() }
-    ws.onclose = () => term.write('\r\n\x1b[33m— 会话已断开 —\x1b[0m\r\n')
+    ws.onopen = () => { consoleReconnects = 0; term.focus(); term.emitResize() }
+    ws.onclose = () => {
+      term.write('\r\n\x1b[33m— 会话已断开 —\x1b[0m\r\n')
+      // 闪断自动重连一次（手动关闭弹窗时 consoleVisible 已为 false，不会走到这里）
+      if (consoleVisible.value && consoleReconnects < 1) {
+        consoleReconnects += 1
+        term.write('\x1b[33m正在自动重连…\x1b[0m\r\n')
+        setTimeout(() => { try { initConsole() } catch { /* 忽略 */ } }, 1500)
+      }
+    }
     ws.onerror = () => term.write('\r\n\x1b[31m— WebSocket 连接失败 —\x1b[0m\r\n')
   } catch (e) {
     ElMessage.error(`控制台初始化失败：${e.message || e}`)

@@ -500,14 +500,17 @@ class ConsoleAssistIn(BaseModel):
     device_id: str
     request: str
     output: str = ""
-    done_commands: list[str] = []   # 本轮已自动执行过的命令（防循环重复执行）
+    done_commands: list[str] = []       # 本轮已自动执行过的命令（防循环重复执行）
+    failed_commands: list[str] = []     # 设备报语法/不存在错误的命令（禁止再规划）
     force_answer: bool = False      # 前端达到自动执行轮次上限时置位：要求直接基于已有回显收尾作答
 
 
 # 只读白名单：查询类首词 + MikroTik print/monitor 风格；配合危险词黑名单双保险。
 # 自动执行是代用户敲回车，必须默认拒绝——不在白单内的一律转人工确认。
 _ASSIST_READONLY_ALLOW = re.compile(
-    r"^\s*(display|show|screen-length|terminal\s+length|ping|tracert|traceroute|dir|more|head|tail)\b"
+    r"^\s*(display|show|screen-length|terminal\s+length|ping|tracert|traceroute|dir|more|head|tail|transceiver)\b"
+    r"|^\s*display\s+(counters|packet-drop|optic|diagnostic|environment|transceiver)\b"
+    r"|^\s*show\s+(counters|environment|diagnostic|interfaces?\s+transceiver|interface\s+transceiver)\b"
     r"|^\s*/\S+.*\b(print|monitor)\b", re.I)
 _ASSIST_DANGEROUS = re.compile(
     r"\b(config|conf\b|undo|reset|reboot|reload|save|delete|copy|debug|clear|shutdown"
@@ -529,13 +532,17 @@ def filter_readonly_commands(commands: list[str]) -> tuple[list[str], list[str]]
 
 
 def build_assist_prompt(dev: dict, request: str, output: str,
-                        done_commands: list[str], force_answer: bool = False) -> str:
+                        done_commands: list[str], force_answer: bool = False,
+                        failed_commands: list[str] | None = None) -> str:
     prof = netdev_service.profile_of(dev.get("vendor", ""))
     done = "\n".join(f"- {c}" for c in done_commands) if done_commands else "（无）"
+    failed = "\n".join(f"- {c}" for c in failed_commands) if failed_commands else "（无）"
+    failed_rule = (f"\n在设备上报过语法错误或命令不存在的命令（**禁止再次规划**，"
+                   f"换用该厂商等价命令或直接放弃该项）：\n{failed}\n") if failed_commands else ""
     if force_answer:
         return (
             f"你是网络设备运维助手。设备：{prof.display}（{dev.get('host', '')}），"
-            f"用户请求：{request}\n已执行过的命令：\n{done}\n"
+            f"用户请求：{request}\n已执行过的命令：\n{done}\n{failed_rule}"
             f"终端最近回显（已脱敏，可能截断）：\n{output or '（空）'}\n\n"
             "自动执行轮次已用完，现在必须收尾作答：基于以上已采集回显直接给出结论。"
             "只输出 {\"action\": \"answer\", \"answer\": \"markdown\"}；"
@@ -546,20 +553,28 @@ def build_assist_prompt(dev: dict, request: str, output: str,
         f"你是网络设备运维助手，在交互式控制台旁辅助工程师。"
         f"设备：{prof.display}（管理地址 {dev.get('host', '')}:{dev.get('port', 22)}，型号 {dev.get('model') or '未知'}）。\n"
         f"用户请求：{request}\n"
-        f"本轮已执行过的命令：\n{done}\n"
+        f"本轮已执行过的命令：\n{done}\n{failed_rule}"
         f"终端最近回显（已脱敏，可能截断）：\n{output or '（空）'}\n\n"
         "决定下一步，只输出 JSON 之一：\n"
         '{"action": "execute", "commands": ["命令"], "note": "≤20字执行理由"}\n'
         '{"action": "answer", "answer": "markdown 结论/分析", "commands": ["可选建议命令"]}\n'
         "规则：\n"
         "1) 查看状态/日志/利用率/版本等需要设备数据 → execute：只读查询命令，"
-        f"严格 {prof.display} CLI 语法，一次最多 4 条，不得与已执行命令重复；\n"
-        "2) 巡检/多处查看类请求：规划好命令清单尽快收集（最多 3 轮），收集齐后立即 answer，不要零碎分轮；\n"
-        "3) 日志类查询优先用带条数的命令形式（如 display logbuffer size 20 / show logging | last 20），避免全量日志刷屏；\n"
+        f"严格 {prof.display} CLI 语法（禁止混用其它厂商语法），接口名不含空格"
+        "（如 Ten-GigabitEthernet1/0/25）；\n"
+        "2) **精简与定向**：一次 execute 集中给齐所需查询（最多 4 条），优先带接口名/编号的定向查询"
+        "（如 display interface Ten-GigabitEthernet1/0/25 而非全量接口列表），"
+        "不得与已执行命令语义重复；\n"
+        "3) 诊断类只读命令示例——H3C：transceiver diagnose interface X（光模块）、"
+        "display packet-drop interface X（错误/丢包统计）；华为：display transceiver interface X；"
+        "思科：show interfaces transceiver / show interfaces counters errors；\n"
+        "4) 巡检/多处查看类请求：一次给齐命令清单尽快收集（最多 3 轮），收集齐后立即 answer；"
+        "日志类查询优先带条数（display logbuffer size 20 / show logging | last 20）避免刷屏；\n"
         "4) 回显信息足够作答，或请求本身是解释/建议/排查思路 → answer：直接给结论；\n"
         "   日志/回显分析按「结论 → 关键发现（逐条，标注严重级别）→ 建议」组织，"
         "只归纳要点，不要逐条复述原始日志；\n"
-        "5) commands 禁止任何修改/配置类命令（save/conf/undo/set/reset/reboot 等）；\n"
+        "5) commands 禁止任何修改/配置类命令（save/conf/undo/set/reset/reboot 等）；"
+        "只规划确定存在于该厂商 CLI 的命令，无把握的不放；\n"
         "6) 直接输出结果：禁止寒暄、禁止复述请求、禁止「我将为您」类空话。"
     )
 
@@ -587,7 +602,8 @@ async def console_assist(payload: ConsoleAssistIn):
         model=llm["model"], temperature=0.2, max_tokens=1600,
         messages=[{"role": "system", "content": "你是网络设备运维助手，只输出 JSON。"},
                   {"role": "user", "content": build_assist_prompt(
-                      dev, request_text, output, payload.done_commands, payload.force_answer)}])
+                      dev, request_text, output, payload.done_commands, payload.force_answer,
+                      payload.failed_commands)}])
     text = (resp.choices[0].message.content or "").strip()
 
     def _fallback_answer() -> dict:
@@ -604,8 +620,9 @@ async def console_assist(payload: ConsoleAssistIn):
         result = _fallback_answer()
     elif parsed.get("action") == "execute" and not payload.force_answer:
         cmds = [str(c).strip() for c in (parsed.get("commands") or []) if str(c).strip()][:4]
-        done = {c.strip() for c in payload.done_commands}
-        ok, blocked = filter_readonly_commands([c for c in cmds if c not in done])
+        exclude = ({c.strip() for c in payload.done_commands}
+                   | {c.strip() for c in payload.failed_commands})
+        ok, blocked = filter_readonly_commands([c for c in cmds if c not in exclude])
         if not ok and blocked:
             # 只给出了非只读命令 → 不代发，转为回答并附人工确认命令
             result = {"action": "answer",
@@ -624,8 +641,11 @@ async def console_assist(payload: ConsoleAssistIn):
         if not answer:
             result = _fallback_answer()
         else:
+            # 建议命令按只读/人工拆分：只读命令前端点击直接执行，其余仅插入终端
             commands = [str(c).strip() for c in (parsed.get("commands") or []) if str(c).strip()][:4]
-            result = {"action": "answer", "answer": answer, "commands": commands}
+            readonly_cmds, manual_cmds = filter_readonly_commands(commands)
+            result = {"action": "answer", "answer": answer,
+                      "commands": readonly_cmds, "manual_commands": manual_cmds}
 
     db.audit("netdev.console.assist",
              {"args": {"device": dev.get("name", ""), "request": request_text[:120],
