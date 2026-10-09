@@ -13,6 +13,14 @@
 
 ## 2026-10-10
 
+### fix: 控制台 AI 输出协议从 JSON 改为行级分隔格式（根治排版混乱/结果显示不全）
+- 根因：模型输出的"伪 JSON"（answer 值内未转义引号/真实换行）令 json.loads 必败，整段原始 JSON 被当作回答甩给用户（即截图中的排版混乱与"显示不全"）
+- 治本：提示词改用行级分隔格式协议（ACTION/NOTE/COMMANDS/ANALYSIS/ANSWER 标记行，无需任何转义）；新增 `_split_sections` 分段解析器，解析顺序为分隔格式 → 旧 JSON 兼容 → 兜底原文（三层不丢内容）
+- /console/analyze 与 /console/assist 同步切换；前端响应结构不变（analysis/answer/commands）
+- 297/297 测试通过；需重启服务生效
+
+## 2026-10-10
+
 ### fix: `dis transceiver diagnosis` 执行即断连治本（SSH 解码容错）
 - 根因：asyncssh 默认以 UTF-8 严格模式解码设备输出；老 H3C（Comware 5）的 transceiver diagnosis/DDM 输出含非 UTF-8 字节，`read()` 抛 UnicodeDecodeError → 输出泵异常退出 → WS 被服务端关闭（"会话已断开"）——普通 display 命令无此字节故不触发；该异常此前只记 debug 级日志，排障无据
 - 修复：SSH 连接统一 `errors="replace"`（非法字节替换为占位符，会话存活），WS 会话显式同参数；输出泵异常退出提升为 warning 级日志并向前端下发"设备会话异常断开"提示

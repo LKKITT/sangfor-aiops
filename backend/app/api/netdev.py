@@ -437,10 +437,9 @@ def build_console_prompt(dev: dict, output: str, current_command: str) -> str:
         f"型号 {dev.get('model') or '未知'}）。\n"
         f"最近执行的命令：{current_command or '（无）'}\n"
         f"终端回显（已脱敏，可能被截断）：\n{output}\n\n"
-        "请分析：1) 回显说明设备处于什么状态（正常/异常及依据）；"
-        "2) 可能原因按概率排序最多 3 条；"
-        "3) 建议下一步命令最多 4 条（仅该厂商 CLI 语法，commands 数组只放命令本身，不要解释）。\n"
-        '只输出 JSON：{"analysis": "markdown 文本", "commands": ["命令1", "命令2"]}'
+        "请分析并严格按以下分隔格式输出（标记行大写冒号原样保留，禁止 JSON、禁止 ``` 包裹）：\n"
+        "COMMANDS:\n建议命令1\n建议命令2（最多 4 条，仅该厂商 CLI 语法；无建议则留空）\n"
+        "ANALYSIS:\n<markdown 分析正文：状态研判 → 可能原因（按概率最多 3 条）→ 建议>"
     )
 
 
@@ -467,29 +466,35 @@ async def console_analyze(payload: ConsoleAnalyzeIn):
                   {"role": "user", "content": build_console_prompt(dev, output, payload.current_command)}])
     text = (resp.choices[0].message.content or "").strip()
     analysis, commands = text, []
-    # 模型常把 JSON 包进 ```json 围栏、且 analysis 值里带真实换行（JSON 规范不允许）——
-    # 剥围栏 + strict=False 容忍字符串内控制字符，双保险提升解析成功率
-    stripped = re.sub(r"```(?:json)?", "", text).strip()
-    try:
-        m = re.search(r"\{.*\}", stripped, re.S)
-        parsed = json.loads(m.group(0), strict=False) if m else None
-    except Exception:   # noqa: BLE001 —— 非 JSON 回退为纯文本分析
-        parsed = None
-    if isinstance(parsed, dict):
-        analysis = str(parsed.get("analysis") or stripped)
-        commands = [str(c).strip() for c in (parsed.get("commands") or []) if str(c).strip()][:4]
+    # 解析顺序：分隔格式（新协议）→ 旧 JSON（兼容）→ 兜底原文
+    sections = _split_sections(text)
+    if sections and (sections["analysis"] or sections["commands"]):
+        analysis = sections["analysis"] or text
+        commands = sections["commands"][:4]
     else:
-        # 宽松提取兜底：模型输出常是"伪 JSON"（analysis 值里带未转义引号/换行，json.loads 必败）。
-        # 按字段标记做正则提取，保证 analysis 与 commands 不因格式问题整体丢失。
-        m_analysis = re.search(r'"analysis"\s*:\s*"(.*?)"\s*,\s*"commands"', stripped, re.S)
-        m_commands = re.search(r'"commands"\s*:\s*\[(.*?)\]', stripped, re.S)
-        if m_analysis or m_commands:
-            if m_analysis:
-                analysis = m_analysis.group(1).replace('\\n', '\n').replace('\\"', '"')
-            if m_commands:
-                commands = [c.strip().strip('"').replace('\\"', '"')
-                            for c in re.split(r'"\s*,\s*"?', m_commands.group(1))
-                            if c.strip().strip('"')][:4]
+        # 模型常把 JSON 包进 ```json 围栏、且 analysis 值里带真实换行（JSON 规范不允许）——
+        # 剥围栏 + strict=False 容忍字符串内控制字符，双保险提升解析成功率
+        stripped = re.sub(r"```(?:json)?", "", text).strip()
+        try:
+            m = re.search(r"\{.*\}", stripped, re.S)
+            parsed = json.loads(m.group(0), strict=False) if m else None
+        except Exception:   # noqa: BLE001 —— 非 JSON 回退为纯文本分析
+            parsed = None
+        if isinstance(parsed, dict):
+            analysis = str(parsed.get("analysis") or stripped)
+            commands = [str(c).strip() for c in (parsed.get("commands") or []) if str(c).strip()][:4]
+        else:
+            # 宽松提取兜底：模型输出常是"伪 JSON"（analysis 值里带未转义引号/换行，json.loads 必败）。
+            # 按字段标记做正则提取，保证 analysis 与 commands 不因格式问题整体丢失。
+            m_analysis = re.search(r'"analysis"\s*:\s*"(.*?)"\s*,\s*"commands"', stripped, re.S)
+            m_commands = re.search(r'"commands"\s*:\s*\[(.*?)\]', stripped, re.S)
+            if m_analysis or m_commands:
+                if m_analysis:
+                    analysis = m_analysis.group(1).replace('\\n', '\n').replace('\\"', '"')
+                if m_commands:
+                    commands = [c.strip().strip('"').replace('\\"', '"')
+                                for c in re.split(r'"\s*,\s*"?', m_commands.group(1))
+                                if c.strip().strip('"')][:4]
     db.audit("netdev.console.ai",
              {"args": {"device": dev.get("name", ""), "cmd": payload.current_command[:120],
                        "output_chars": len(output)}},
@@ -536,6 +541,37 @@ def filter_readonly_commands(commands: list[str]) -> tuple[list[str], list[str]]
     return ok, blocked
 
 
+def _split_sections(text: str) -> dict | None:
+    """按行级大写标记切分 LLM 输出（ACTION/NOTE/COMMANDS/ANALYSIS/ANSWER）。
+
+    该格式无需任何转义，解析成功率远高于 JSON；非该格式返回 None（调用方回退
+    旧 JSON 解析）。COMMANDS 段按行收集命令。
+    """
+    if not text or not re.search(r"^\s*(ACTION|COMMANDS|ANALYSIS|ANSWER|NOTE)\s*:", text, re.M | re.I):
+        return None
+    sections: dict[str, list[str]] = {}
+    cur, buf = None, []
+    for ln in text.splitlines():
+        m = re.match(r"^\s*(ACTION|NOTE|COMMANDS|ANALYSIS|ANSWER)\s*:\s*(.*)$", ln, re.I)
+        if m:
+            if cur:
+                sections[cur] = "\n".join(buf).strip()
+            cur, buf = m.group(1).upper(), ([m.group(2)] if m.group(2).strip() else [])
+        elif cur:
+            buf.append(ln)
+    if cur:
+        sections[cur] = "\n".join(buf).strip()
+    if not sections:
+        return None
+    return {
+        "action": (sections.get("ACTION") or "").strip().lower() or None,
+        "note": sections.get("NOTE", "").strip()[:60],
+        "commands": [c.strip() for c in sections.get("COMMANDS", "").splitlines() if c.strip()],
+        "answer": sections.get("ANSWER", "").strip(),
+        "analysis": sections.get("ANALYSIS", "").strip(),
+    }
+
+
 def build_assist_prompt(dev: dict, request: str, output: str,
                         done_commands: list[str], force_answer: bool = False,
                         failed_commands: list[str] | None = None) -> str:
@@ -550,9 +586,9 @@ def build_assist_prompt(dev: dict, request: str, output: str,
             f"用户请求：{request}\n已执行过的命令：\n{done}\n{failed_rule}"
             f"终端最近回显（已脱敏，可能截断）：\n{output or '（空）'}\n\n"
             "自动执行轮次已用完，现在必须收尾作答：基于以上已采集回显直接给出结论。"
-            "只输出 {\"action\": \"answer\", \"answer\": \"markdown\"}；"
-            "已确认的信息给结论，缺失的部分在末尾用「待人工确认」短列出。"
-            "禁止 execute、禁止寒暄。"
+            "严格按以下分隔格式输出（标记行大写冒号原样保留）：\nACTION: answer\nANSWER:\n<markdown 结论；"
+            "已确认的信息给结论，缺失的部分在末尾用「待人工确认」短列出>\n"
+            "禁止 execute、禁止寒暄、禁止 JSON。"
         )
     return (
         f"你是网络设备运维助手，在交互式控制台旁辅助工程师。"
@@ -560,10 +596,12 @@ def build_assist_prompt(dev: dict, request: str, output: str,
         f"用户请求：{request}\n"
         f"本轮已执行过的命令：\n{done}\n{failed_rule}"
         f"终端最近回显（已脱敏，可能截断）：\n{output or '（空）'}\n\n"
-        "决定下一步，只输出 JSON 之一：\n"
-        '{"action": "execute", "commands": ["命令"], "note": "≤20字执行理由"}\n'
-        '{"action": "answer", "answer": "markdown 结论/分析", "commands": ["可选建议命令"]}\n'
-        "规则：\n"
+        "决定下一步，严格按以下分隔格式输出（标记行大写冒号原样保留，禁止 JSON、禁止 ``` 包裹）：\n"
+        "ACTION: execute 或 answer\n"
+        "NOTE: ≤20字执行理由（仅 execute 时）\n"
+        "COMMANDS:\n命令1\n命令2（仅 execute 时；最多 4 条）\n"
+        "ANSWER:\n<markdown 结论/分析（仅 answer 时）>\n"
+        "分隔格式说明结束。规则：\n"
         "1) 查看状态/日志/利用率/版本等需要设备数据 → execute：只读查询命令，"
         f"严格 {prof.display} CLI 语法（禁止混用其它厂商语法），接口名不含空格"
         "（如 Ten-GigabitEthernet1/0/25）；\n"
@@ -627,16 +665,20 @@ async def console_assist(payload: ConsoleAssistIn):
                 "answer": text or "（AI 本轮未返回有效内容——若终端刚重连过，请重新发起请求）",
                 "commands": []}
 
+    # 解析顺序：分隔格式（新协议，无转义问题）→ 旧 JSON（兼容）→ 兜底回答
     stripped = re.sub(r"```(?:json)?", "", text).strip()
-    parsed = None
-    try:
-        m = re.search(r"\{.*\}", stripped, re.S)
-        parsed = json.loads(m.group(0), strict=False) if m else None
-    except Exception:   # noqa: BLE001
-        parsed = None
-    if not (isinstance(parsed, dict) and "action" in parsed):
-        # 宽松提取兜底：模型输出的"伪 JSON"常见违规点是 answer 值内带未转义引号/换行，
-        # strict json.loads 必败 → 按字段标记正则提取，避免把原始 JSON 整段甩给用户
+    parsed = _split_sections(stripped)
+    if parsed is None or not parsed.get("action"):
+        try:
+            m = re.search(r"\{.*\}", stripped, re.S)
+            jd = json.loads(m.group(0), strict=False) if m else None
+            if isinstance(jd, dict) and jd.get("action"):
+                parsed = {"action": jd["action"], "note": jd.get("note", ""),
+                          "commands": jd.get("commands") or [], "answer": jd.get("answer", "")}
+        except Exception:   # noqa: BLE001
+            parsed = None
+    if parsed is None or not parsed.get("action"):
+        # 宽松提取兜底：伪 JSON（值内未转义引号/换行）
         m_action = re.search(r'"action"\s*:\s*"(execute|answer)"', stripped)
         m_answer = re.search(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)"', stripped)
         m_commands = re.search(r'"commands"\s*:\s*\[(.*?)\]', stripped, re.S)
@@ -648,7 +690,7 @@ async def console_assist(payload: ConsoleAssistIn):
             if m_commands:
                 parsed["commands"] = [c.replace('\\"', '"').replace("\\n", "\n").strip()
                                       for c in re.findall(r'"((?:[^"\\]|\\.)*)"', m_commands.group(1))]
-    if not isinstance(parsed, dict) or "action" not in parsed:
+    if parsed is None or not parsed.get("action"):
         result = _fallback_answer()
     elif parsed.get("action") == "execute" and not payload.force_answer:
         cmds = [str(c).strip() for c in (parsed.get("commands") or []) if str(c).strip()][:4]
