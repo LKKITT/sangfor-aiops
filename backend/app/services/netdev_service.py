@@ -89,6 +89,10 @@ def ssh_connect_kwargs(device: dict) -> dict:
         "username": device.get("username", ""),
         "password": device.get("password", ""),
         "known_hosts": None,
+        # 空闲保活：AI 分析/思考的几十秒间隙里，NAT/防火墙/设备侧常掐断空闲 SSH 会话
+        # （表现为控制台"会话已断开"），15s×4 次的 keepalive 可避免
+        "keepalive_interval": 15,
+        "keepalive_count_max": 4,
         "encryption_algs": LEGACY_ENCRYPTION_ALGS,
         "kex_algs": LEGACY_KEX_ALGS,
         "server_host_key_algs": LEGACY_HOST_KEY_ALGS,

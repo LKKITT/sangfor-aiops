@@ -608,14 +608,31 @@ async def console_assist(payload: ConsoleAssistIn):
 
     def _fallback_answer() -> dict:
         # 模型未按 JSON 输出时整段当回答兜底（分析类请求不至于空手而归）
-        return {"action": "answer", "answer": text or "（模型未返回有效内容，请重试）", "commands": []}
+        return {"action": "answer",
+                "answer": text or "（AI 本轮未返回有效内容——若终端刚重连过，请重新发起请求）",
+                "commands": []}
 
     stripped = re.sub(r"```(?:json)?", "", text).strip()
+    parsed = None
     try:
         m = re.search(r"\{.*\}", stripped, re.S)
         parsed = json.loads(m.group(0), strict=False) if m else None
     except Exception:   # noqa: BLE001
         parsed = None
+    if not (isinstance(parsed, dict) and "action" in parsed):
+        # 宽松提取兜底：模型输出的"伪 JSON"常见违规点是 answer 值内带未转义引号/换行，
+        # strict json.loads 必败 → 按字段标记正则提取，避免把原始 JSON 整段甩给用户
+        m_action = re.search(r'"action"\s*:\s*"(execute|answer)"', stripped)
+        m_answer = re.search(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)"', stripped)
+        m_commands = re.search(r'"commands"\s*:\s*\[(.*?)\]', stripped, re.S)
+        if m_action or m_answer:
+            parsed = {"action": m_action.group(1) if m_action else "answer"}
+            if m_answer:
+                parsed["answer"] = (m_answer.group(1).replace("\\n", "\n")
+                                    .replace('\\"', '"').replace("\\\\", "\\"))
+            if m_commands:
+                parsed["commands"] = [c.replace('\\"', '"').replace("\\n", "\n").strip()
+                                      for c in re.findall(r'"((?:[^"\\]|\\.)*)"', m_commands.group(1))]
     if not isinstance(parsed, dict) or "action" not in parsed:
         result = _fallback_answer()
     elif parsed.get("action") == "execute" and not payload.force_answer:

@@ -4,6 +4,16 @@
 
 ## 2026-10-08
 
+### fix: 控制台 AI 会话断开治本（SSH keepalive）+ 失败命令跨会话记忆 + 回答排版修复
+- 会话断开根因：asyncssh 默认不发 keepalive——AI 分析/思考的几十秒间隙里，SSH 空闲会话被 NAT/防火墙/设备侧掐断（表现为跑到一半"会话已断开"）。ssh_connect_kwargs 统一加 keepalive_interval=15 ×4（批量执行/WS 控制台共用，一并受益）
+- 前端重连上限 1→3 次；断开期间保留终端与 AI 上下文
+- 失败命令跨会话记忆：按厂商存 localStorage（上限 30 条），新开控制台自动载入并提示"AI 不会再尝试"；AI 建议的替代命令继续探索
+- 错误扫描改增量基线：只检查本条命令执行后的新增回显行（旧回显残留错误文本曾造成失败误判）
+- 回答排版修复：console/assist 解析加宽松字段提取兜底（answer 值内未转义引号/换行导致整段原始 JSON 甩给用户）——现在正确输出 markdown，建议命令只读可直接执行
+- 297/297 测试通过
+
+## 2026-10-08
+
 ### fix: 控制台 AI 助手四项优化（只读诊断/精简查询/厂商防错/建议直执行）
 - 只读白名单补齐诊断类命令：H3C `transceiver diagnose interface X`（光模块）、`display packet-drop/display counters`（错误统计）、思科 `show interfaces transceiver / counters errors`、环境诊断等——此前被误判"非只读"转人工插入导致流程中断
 - 防反复执行错误命令：新增 `failed_commands` 通道——前端识别设备侧报错标记（Unrecognized/Invalid/命令不存在等）后将失败命令回传，后端列入提示词**禁止再次规划**并从代发清单剔除

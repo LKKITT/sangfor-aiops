@@ -427,6 +427,33 @@ async function runSuggested(cmd) {
 // 设备侧命令报错标记：命中则该命令视为失败，传给 AI 避免反复执行不存在/错误的命令
 const CMD_ERROR_RE = /% (unrecognized|invalid|wrong) |unrecognized command found|invalid input|incomplete command|too many parameters|命令不存在|不存在或参数|参数错误|Error: /i
 
+// 失败命令跨会话记忆：按厂商存 localStorage，AI 永不再尝试已证明不存在的命令
+function failedStoreKey() {
+  return `sfa_failed_cmds_${(consoleDevice.value?.vendor || 'generic').toLowerCase()}`
+}
+function loadFailedStore() {
+  try { return JSON.parse(localStorage.getItem(failedStoreKey()) || '[]') } catch { return [] }
+}
+function rememberFailed(cmd) {
+  try {
+    const arr = loadFailedStore()
+    if (!arr.includes(cmd)) localStorage.setItem(failedStoreKey(), JSON.stringify([...arr, cmd].slice(-30)))
+  } catch { /* 存储异常不影响流程 */ }
+}
+// 只读取新增行（避免把上一条命令残留的错误文本误判为本次失败）
+function readLinesSince(baseLine) {
+  try {
+    if (!consoleTerm) return ''
+    const buf = consoleTerm.buffer.active
+    const out = []
+    for (let i = Math.max(0, baseLine); i < buf.length; i++) {
+      const l = buf.getLine(i)
+      if (l) out.push(l.translateToString(true))
+    }
+    return out.join('\n')
+  } catch { return '' }
+}
+
 // 返回 true = 非只读被拦截（已插入终端未回车）；false = 已代发执行
 function autoRunCommand(cmd) {
   if (!consoleWs || consoleWs.readyState !== WebSocket.OPEN) return true
@@ -465,6 +492,9 @@ async function sendAssist(textRaw) {
   sideTab.value = 'ai'
   aiBusy.value = true
   const done = [], failed = [], manual = []
+for (const c of loadFailedStore()) if (!failed.includes(c)) failed.push(c)
+if (failed.length) pushMsg({ role: 'step', tone: 'warn',
+  text: `已载入该厂商历史失败命令 ${failed.length} 条（AI 不会再尝试）：${failed.join('；')}` })
   // 轮次上限内每轮执行后把新回显喂回模型；末轮 force_answer 让模型基于已采集回显收尾，
   // 避免「巡检类」多命令请求把轮次耗尽后只得到一句上限提示。
   const MAX_ROUNDS = 6
@@ -479,6 +509,8 @@ async function sendAssist(textRaw) {
       if (r.action === 'execute' && r.commands?.length) {
         for (const cmd of r.commands) {
           aiStep.value = `正在执行 ${cmd}`
+          // 基线：只扫描本条命令执行后的新增行（旧回显里的错误文本会造成误判）
+          const base = (() => { try { return consoleTerm?.buffer.active.length ?? 0 } catch { return 0 } })()
           const blocked = autoRunCommand(cmd)
           if (blocked) {
             pushMsg({ role: 'step', tone: 'warn', text: `非只读命令「${cmd}」已插入终端，请人工回车执行` })
@@ -488,10 +520,11 @@ async function sendAssist(textRaw) {
           done.push(cmd)
           pushMsg({ role: 'step', text: cmd, note: r.note })
           await waitTermQuiet()
-          if (CMD_ERROR_RE.test(readTermTail(30))) {
+          if (CMD_ERROR_RE.test(readLinesSince(base))) {
             failed.push(cmd)
+            rememberFailed(cmd)
             pushMsg({ role: 'step', tone: 'warn',
-                      text: `「${cmd}」设备报语法错误或不存在，已告知 AI 不再重试` })
+                      text: `「${cmd}」设备报语法错误或不存在，已记忆并告知 AI 不再重试` })
           }
         }
         continue   // 带着新回显再问一轮
@@ -881,7 +914,7 @@ async function initConsole() {
     ws.onclose = () => {
       term.write('\r\n\x1b[33m— 会话已断开 —\x1b[0m\r\n')
       // 闪断自动重连一次（手动关闭弹窗时 consoleVisible 已为 false，不会走到这里）
-      if (consoleVisible.value && consoleReconnects < 1) {
+      if (consoleVisible.value && consoleReconnects < 3) {
         consoleReconnects += 1
         term.write('\x1b[33m正在自动重连…\x1b[0m\r\n')
         setTimeout(() => { try { initConsole() } catch { /* 忽略 */ } }, 1500)
