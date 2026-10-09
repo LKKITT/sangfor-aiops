@@ -366,7 +366,8 @@ const consoleVisible = ref(false)
 const consoleDevice = ref(null)
 const consoleWsOk = ref(false)
 const termEl = ref(null)
-let consoleReconnects = 0   // 控制台闪断自动重连计数（成功连接后清零）
+let consoleReconnects = 0
+let lastConsoleDeviceId = ''   // 控制台闪断自动重连计数（成功连接后清零）
 // ---- 控制台右侧 AI 助手：意图对话线程 + 命令速查 ----
 // 只读命令（display/show 等）AI 可代发执行；修改类命令仅插入终端由人工回车。
 const sideTab = ref('ai')
@@ -400,16 +401,7 @@ function insertToTerm(text) {
 }
 
 function readTermTail(lines = 150) {
-  try {
-    if (!consoleTerm) return ''
-    const buf = consoleTerm.buffer.active
-    const out = []
-    for (let i = Math.max(0, buf.length - lines); i < buf.length; i++) {
-      const l = buf.getLine(i)
-      if (l) out.push(l.translateToString(true))
-    }
-    return out.join('\n').replace(/\n{3,}/g, '\n\n').slice(-8000)
-  } catch { return '' }
+  return tailLines(lines).slice(-8000)
 }
 
 // 自动代发护栏（与后端白名单同口径双保险）：仅查询类命令可代发
@@ -442,16 +434,64 @@ function rememberFailed(cmd) {
 }
 // 只读取新增行（避免把上一条命令残留的错误文本误判为本次失败）
 function readLinesSince(baseLine) {
-  try {
-    if (!consoleTerm) return ''
-    const buf = consoleTerm.buffer.active
-    const out = []
-    for (let i = Math.max(0, baseLine); i < buf.length; i++) {
-      const l = buf.getLine(i)
-      if (l) out.push(l.translateToString(true))
+  return outLines.slice(Math.max(0, baseLine)).join(String.fromCharCode(10))
+}
+
+// ---- 回显环形缓冲：跨重连保留全部输出（AI 上下文不因断连丢失） ----
+const outLines = []
+let _linePartial = ''
+
+function pushOutRing(text) {
+  _linePartial += text
+  const parts = _linePartial.split('\n')
+  _linePartial = parts.pop()          // 末行可能不完整，留到下一段
+  for (const ln of parts) {
+    outLines.push(ln)
+    if (outLines.length > 600) outLines.shift()
+  }
+}
+
+function tailLines(n) {
+  return outLines.slice(-Math.max(1, n)).join('\n')
+}
+
+// ---- 连接会话：可重复调用（重连复用现有终端，仅重建 WS） ----
+function connectSession() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const ws = new WebSocket(`${proto}://${location.host}/api/netdev/ws/${consoleDevice.value.id}`)
+  consoleWs = ws
+  ws.onmessage = ev => {
+    let msg
+    try { msg = JSON.parse(ev.data) } catch { return }
+    if (msg.type === 'data') {
+      if (!consoleWsOk.value) consoleWsOk.value = true
+      pushOutRing(msg.text)
+      consoleTerm?.write(msg.text)
+    } else if (msg.type === 'error') {
+      consoleTerm?.write(`\r\n\x1b[31m${msg.text}\x1b[0m\r\n`)
+      ws.close()
     }
-    return out.join('\n')
-  } catch { return '' }
+  }
+  ws.onopen = () => { consoleReconnects = 0; consoleTerm?.emitResize?.(); consoleTerm?.focus?.() }
+  ws.onclose = () => {
+    consoleTerm?.write('\r\n\x1b[33m— 会话已断开 —\x1b[0m\r\n')
+    // 闪断自动重连（最多 3 次；手动关闭弹窗时 consoleVisible 已为 false）
+    if (consoleVisible.value && consoleReconnects < 3) {
+      consoleReconnects += 1
+      consoleTerm?.write('\x1b[33m正在自动重连…\x1b[0m\r\n')
+      setTimeout(() => { try { connectSession() } catch { /* 忽略 */ } }, 1500)
+    }
+  }
+  ws.onerror = () => consoleTerm?.write('\r\n\x1b[31m— WebSocket 连接失败 —\x1b[0m\r\n')
+}
+
+async function waitWsOpen(timeoutMs = 8000) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeoutMs) {
+    if (consoleWs && consoleWs.readyState === WebSocket.OPEN) return true
+    await new Promise(r => setTimeout(r, 250))
+  }
+  return !!(consoleWs && consoleWs.readyState === WebSocket.OPEN)
 }
 
 // 返回 true = 非只读被拦截（已插入终端未回车）；false = 已代发执行
@@ -492,6 +532,7 @@ async function sendAssist(textRaw) {
   sideTab.value = 'ai'
   aiBusy.value = true
   const done = [], failed = [], manual = []
+let emptyRetried = false
 for (const c of loadFailedStore()) if (!failed.includes(c)) failed.push(c)
 if (failed.length) pushMsg({ role: 'step', tone: 'warn',
   text: `已载入该厂商历史失败命令 ${failed.length} 条（AI 不会再尝试）：${failed.join('；')}` })
@@ -501,16 +542,33 @@ if (failed.length) pushMsg({ role: 'step', tone: 'warn',
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       aiStep.value = round === 0 ? '正在思考下一步…' : `正在汇总分析（第 ${round + 1}/${MAX_ROUNDS} 步）…`
+    // 会话自愈：WS 断开先重连（回显在环形缓冲中保留，AI 上下文不丢）
+    if (!consoleWs || consoleWs.readyState !== WebSocket.OPEN) {
+      aiStep.value = '控制台连接断开，正在重连…'
+      connectSession()
+      if (!(await waitWsOpen(8000))) {
+        pushMsg({ role: 'step', tone: 'err', text: '控制台重连失败，请检查设备网络后重试' })
+        break
+      }
+    }
       const r = await NetDev.consoleAssist({
         device_id: consoleDevice.value.id, request: text,
         output: readTermTail(150), done_commands: done, failed_commands: failed,
         force_answer: round === MAX_ROUNDS - 1,
       })
+      // 模型偶发空响应：自动重试一次（重连刚恢复时首调易失败）
+      if (r?.action === 'answer' && String(r.answer || '').startsWith('（AI 本轮未返回有效内容')
+          && !emptyRetried) {
+        emptyRetried = true
+        round -= 1
+        await new Promise(rs => setTimeout(rs, 900))
+        continue
+      }
       if (r.action === 'execute' && r.commands?.length) {
         for (const cmd of r.commands) {
           aiStep.value = `正在执行 ${cmd}`
           // 基线：只扫描本条命令执行后的新增行（旧回显里的错误文本会造成误判）
-          const base = (() => { try { return consoleTerm?.buffer.active.length ?? 0 } catch { return 0 } })()
+          const base = outLines.length
           const blocked = autoRunCommand(cmd)
           if (blocked) {
             pushMsg({ role: 'step', tone: 'warn', text: `非只读命令「${cmd}」已插入终端，请人工回车执行` })
@@ -847,6 +905,11 @@ async function initConsole() {
   try {
     await nextTick()
     if (!termEl.value || !consoleDevice.value) return
+    termEl.value.innerHTML = ''   // 重连重建终端：清理旧画布，避免 DOM 堆叠
+    if (lastConsoleDeviceId !== consoleDevice.value.id) {
+      outLines.length = 0; _linePartial = ''   // 换设备：清空回显缓冲，避免上下文串台
+      lastConsoleDeviceId = consoleDevice.value.id
+    }   // 重连重建终端：清理旧画布，避免 DOM 堆叠
     const [{ Terminal }, { FitAddon }] = await Promise.all([
       import('@xterm/xterm'), import('@xterm/addon-fit')])
     const term = new Terminal({
@@ -896,31 +959,7 @@ async function initConsole() {
     term.onResize(({ cols, rows }) =>
       consoleWs?.send(JSON.stringify({ type: 'resize', cols, rows })))
     consoleTerm = term
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${location.host}/api/netdev/ws/${consoleDevice.value.id}`)
-    consoleWs = ws
-    ws.onmessage = ev => {
-      let msg
-      try { msg = JSON.parse(ev.data) } catch { return }
-      if (msg.type === 'data') {
-        if (!consoleWsOk.value) consoleWsOk.value = true
-        term.write(msg.text)
-      } else if (msg.type === 'error') {
-        term.write(`\r\n\x1b[31m${msg.text}\x1b[0m\r\n`)
-        ws.close()
-      }
-    }
-    ws.onopen = () => { consoleReconnects = 0; term.focus(); term.emitResize() }
-    ws.onclose = () => {
-      term.write('\r\n\x1b[33m— 会话已断开 —\x1b[0m\r\n')
-      // 闪断自动重连一次（手动关闭弹窗时 consoleVisible 已为 false，不会走到这里）
-      if (consoleVisible.value && consoleReconnects < 3) {
-        consoleReconnects += 1
-        term.write('\x1b[33m正在自动重连…\x1b[0m\r\n')
-        setTimeout(() => { try { initConsole() } catch { /* 忽略 */ } }, 1500)
-      }
-    }
-    ws.onerror = () => term.write('\r\n\x1b[31m— WebSocket 连接失败 —\x1b[0m\r\n')
+    connectSession()
   } catch (e) {
     ElMessage.error(`控制台初始化失败：${e.message || e}`)
   }
