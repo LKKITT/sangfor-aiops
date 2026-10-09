@@ -380,6 +380,10 @@ const threadEl = ref(null)
 const consoleSuggests = computed(() => suggestCommands(consoleDevice.value?.vendor || '', cmdQuery.value))
 const QUICK_OPS = ['查看 CPU 利用率', '查看内存利用率', '查看接口状态概览', '分析最近的 20 条日志',
                    '查看版本与运行时间', '查看 ARP 与 MAC 表', '巡检设备关键状态']
+// 按钮文案 → 实际请求文本（巡检明确范围：不查日志，避免冗长输出）
+const QUICK_OP_REQUESTS = {
+  '巡检设备关键状态': '巡检设备关键状态：版本/运行时间/CPU/内存/接口状态概览（用 brief）/环境；不要查询日志',
+}
 
 const render = renderMarkdown
 let _msgSeq = 0
@@ -533,9 +537,8 @@ async function sendAssist(textRaw) {
   aiBusy.value = true
   const done = [], failed = [], manual = []
 let emptyRetried = false
+// 历史失败命令静默载入（仅约束 AI 规划，不打扰用户）
 for (const c of loadFailedStore()) if (!failed.includes(c)) failed.push(c)
-if (failed.length) pushMsg({ role: 'step', tone: 'warn',
-  text: `已载入该厂商历史失败命令 ${failed.length} 条（AI 不会再尝试）：${failed.join('；')}` })
   // 轮次上限内每轮执行后把新回显喂回模型；末轮 force_answer 让模型基于已采集回显收尾，
   // 避免「巡检类」多命令请求把轮次耗尽后只得到一句上限提示。
   const MAX_ROUNDS = 6
@@ -552,7 +555,7 @@ if (failed.length) pushMsg({ role: 'step', tone: 'warn',
       }
     }
       const r = await NetDev.consoleAssist({
-        device_id: consoleDevice.value.id, request: text,
+        device_id: consoleDevice.value.id, request: (QUICK_OP_REQUESTS[text] || text),
         output: readTermTail(150), done_commands: done, failed_commands: failed,
         force_answer: round === MAX_ROUNDS - 1,
       })
@@ -580,9 +583,7 @@ if (failed.length) pushMsg({ role: 'step', tone: 'warn',
           await waitTermQuiet()
           if (CMD_ERROR_RE.test(readLinesSince(base))) {
             failed.push(cmd)
-            rememberFailed(cmd)
-            pushMsg({ role: 'step', tone: 'warn',
-                      text: `「${cmd}」设备报语法错误或不存在，已记忆并告知 AI 不再重试` })
+            rememberFailed(cmd)   // 静默记忆：AI 下一轮自动换用等价命令，不打扰用户
           }
         }
         continue   // 带着新回显再问一轮
