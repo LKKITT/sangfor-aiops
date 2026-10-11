@@ -16,6 +16,25 @@
     <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
               title="当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择一台深信服设备" />
 
+    <div v-if="globalMode" class="page-card" style="margin-bottom: 12px">
+      <div class="col-title" style="margin-bottom: 8px">全部设备备份总览</div>
+      <div v-if="bkOverview" style="display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 10px">
+        <div class="sfa-stat"><div class="num">{{ bkOverview.total_backups }}</div><div class="lbl">备份总数</div></div>
+        <div class="sfa-stat"><div class="num">{{ bkOverview.devices }}</div><div class="lbl">有备份的设备</div></div>
+      </div>
+      <el-table v-if="bkOverview && bkOverview.items.length" :data="bkOverview.items" size="small" border stripe
+                style="cursor: pointer" @row-click="(r) => drillDevice(r.device_id)">
+        <el-table-column prop="device_name" label="设备" min-width="180" />
+        <el-table-column prop="count" label="备份数" width="90" align="center" />
+        <el-table-column prop="latest_at" label="最近备份" min-width="170" />
+        <el-table-column prop="latest_label" label="最近备份标签" min-width="200" show-overflow-tooltip />
+        <el-table-column label="操作" width="90" align="center">
+          <template #default><el-button size="small" link type="primary">进入 →</el-button></template>
+        </el-table-column>
+      </el-table>
+      <div v-else style="opacity: .7">暂无任何备份记录；选择具体设备后可创建首个备份</div>
+    </div>
+
     <div v-if="!netdevMode" class="cols">
       <div class="page-card col-list">
         <div class="col-title">备份时间线</div>
@@ -115,6 +134,7 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import { apiGet } from '../api.js'
 import NetDevBackupPanel from '../components/NetDevBackupPanel.vue'
 import ContextBar from '../components/ContextBar.vue'
 import { Backups } from '../api.js'
@@ -135,6 +155,13 @@ const highlightId = ref('')
 
 const netdevMode = computed(() => isNetDev(currentDevice()))
 const globalMode = computed(() => isGlobal(currentDevice()))
+// 全局模式：全部设备备份总览
+const bkOverview = ref(null)
+async function loadBkOverview() {
+  try { bkOverview.value = await apiGet('/api/backups-overview') } catch { bkOverview.value = null }
+}
+watch(globalMode, v => { if (v) loadBkOverview() }, { immediate: true })
+function drillDevice(id) { store.currentDeviceId = id }
 const guardText = computed(() => netdevMode.value
   ? '当前选中的是网络设备：配置备份/恢复仅支持深信服设备；网络设备可用 AI 对话查询配置'
   : '当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择一台深信服设备')

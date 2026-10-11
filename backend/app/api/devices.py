@@ -407,6 +407,43 @@ async def run_checkup(device_id: str) -> dict:
     return report
 
 
+@router.get("/checkups-overview")
+def checkups_overview() -> dict:
+    """全局模式看板：按设备聚合最近一次体检（评分/等级/风险计数）。
+
+    数据源为 update_cache 的 checkup_report（最近一次体检缓存）；未体检过的设备
+    不出现在列表中。跨客户聚合当前租户可见设备。
+    """
+    items: list[dict] = []
+    with db._connect() as conn:
+        rows = conn.execute(
+            "SELECT c.device_id, c.payload_json, c.updated_at,"
+            " COALESCE(d.name, nd.name, '') AS device_name,"
+            " CASE WHEN d.id IS NOT NULL THEN 'sangfor' ELSE 'netdev' END AS family"
+            " FROM update_cache c"
+            " LEFT JOIN devices d ON d.id = c.device_id"
+            " LEFT JOIN netdev_devices nd ON nd.id = c.device_id"
+            " WHERE c.cache_key = 'checkup_report'").fetchall()
+    for r in rows:
+        try:
+            rep = json.loads(r["payload_json"] or "{}")
+        except Exception:   # noqa: BLE001
+            continue
+        if not isinstance(rep, dict) or "score" not in rep:
+            continue
+        items.append({"device_id": r["device_id"], "device_name": r["device_name"] or r["device_id"],
+                      "family": r["family"], "score": rep.get("score"),
+                      "grade": rep.get("grade", ""), "counts": rep.get("counts", {}),
+                      "checked_at": r["updated_at"]})
+    items.sort(key=lambda x: (x["score"] if isinstance(x["score"], (int, float)) else 999))
+    n = len(items)
+    return {"devices": n,
+            "avg_score": (round(sum(x["score"] for x in items
+                                    if isinstance(x["score"], (int, float))) / n, 1) if n else None),
+            "high_risk": sum(int((x["counts"] or {}).get("high", 0)) for x in items),
+            "items": items}
+
+
 @router.get("/{device_id}/checkup/last")
 def last_checkup(device_id: str) -> dict:
     _require(device_id)

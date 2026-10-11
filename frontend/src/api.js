@@ -157,6 +157,11 @@ export const Customers = {
   remove: (id) => apiDelete(`/api/customers/${id}`),
 }
 
+export const Overview = {
+  backups: () => apiGet('/api/backups-overview', 30000),
+  checkups: () => apiGet('/api/checkups-overview', 30000),
+}
+
 export const NetDev = {
   consoleAnalyze: (device_id, output, current_command) =>
     apiPost('/api/netdev/console/analyze', { device_id, output, current_command }, 90000),

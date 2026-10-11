@@ -19,7 +19,7 @@
           <el-option v-for="t in tenants" :key="t" :value="t"
                      :label="t === 'default' ? '默认客户' : t" />
         </el-select>
-        <el-select v-model="filters.device_id" clearable placeholder="全部设备（含全局会话）"
+        <el-select v-model="filters.device_id" clearable filterable placeholder="全部设备（含全局会话）"
                    style="width: 190px" @change="applyFilters">
           <el-option value="global" label="全局会话（未绑定设备）" />
           <el-option-group label="深信服设备">

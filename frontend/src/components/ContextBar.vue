@@ -4,7 +4,7 @@
     <span class="ctx-name">{{ device?.name || '未选择设备' }}</span>
     <el-tag size="small" :type="badgeType" effect="plain">{{ badgeText }}</el-tag>
     <el-tag v-if="showReadonly" size="small" type="warning" effect="plain">只读模式</el-tag>
-    <el-select v-model="store.currentDeviceId" size="small" class="ctx-select" placeholder="切换目标设备">
+    <el-select v-model="store.currentDeviceId" size="small" class="ctx-select" placeholder="切换目标设备" filterable>
       <el-option :value="GLOBAL_DEVICE_ID" label="全局（所有设备）" />
       <el-option-group label="深信服设备">
         <el-option v-for="d in store.devices" :key="d.id" :value="d.id"

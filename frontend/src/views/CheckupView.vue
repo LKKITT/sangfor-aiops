@@ -16,6 +16,28 @@
       <NetDevCheckupPanel v-if="netdevMode" :device="currentDevice()" />
       <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
                 title="当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择一台深信服设备" />
+      <div v-if="globalMode" class="page-card" style="margin-top: 12px">
+        <div class="col-title" style="margin-bottom: 8px">全部设备体检总览</div>
+        <div v-if="ckOverview" style="display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 10px">
+          <div class="sfa-stat"><div class="num">{{ ckOverview.avg_score ?? '—' }}</div><div class="lbl">平均得分</div></div>
+          <div class="sfa-stat"><div class="num">{{ ckOverview.high_risk }}</div><div class="lbl">高危问题合计</div></div>
+          <div class="sfa-stat"><div class="num">{{ ckOverview.devices }}</div><div class="lbl">已体检设备</div></div>
+        </div>
+        <el-table v-if="ckOverview && ckOverview.items.length" :data="ckOverview.items" size="small" border stripe
+                  style="cursor: pointer" @row-click="(r) => drillDevice(r.device_id)">
+          <el-table-column prop="device_name" label="设备" min-width="180" />
+          <el-table-column prop="score" label="得分" width="80" align="center" />
+          <el-table-column prop="grade" label="等级" width="80" align="center" />
+          <el-table-column label="高危/中危/低危" width="140" align="center">
+            <template #default="{ row }">{{ row.counts?.high ?? 0 }} / {{ row.counts?.medium ?? 0 }} / {{ row.counts?.low ?? 0 }}</template>
+          </el-table-column>
+          <el-table-column prop="checked_at" label="体检时间" min-width="170" />
+          <el-table-column label="操作" width="90" align="center">
+            <template #default><el-button size="small" link type="primary">进入 →</el-button></template>
+          </el-table-column>
+        </el-table>
+        <div v-else style="opacity: .7">暂无体检记录；选择具体设备后运行体检，结果将汇总至此</div>
+      </div>
     </div>
 
     <div v-if="report" class="cols">
@@ -78,6 +100,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import { apiGet } from '../api.js'
 import NetDevCheckupPanel from '../components/NetDevCheckupPanel.vue'
 import ContextBar from '../components/ContextBar.vue'
 import { Devices } from '../api.js'
@@ -123,6 +146,13 @@ async function runCheckup() {
   } catch (e) { ElMessage.error(String(e.message || e)) } finally { running.value = false }
 }
 
+// 全局模式：全部设备最近体检总览
+const ckOverview = ref(null)
+async function loadCkOverview() {
+  try { ckOverview.value = await apiGet('/api/checkups-overview') } catch { ckOverview.value = null }
+}
+watch(globalMode, v => { if (v) loadCkOverview() }, { immediate: true })
+function drillDevice(id) { store.currentDeviceId = id }
 watch(() => store.currentDeviceId, () => { report.value = null })
 onMounted(async () => {
   const dev = currentDevice()

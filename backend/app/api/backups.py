@@ -29,6 +29,40 @@ class BackupIn(BaseModel):
     kind: str = "manual"
 
 
+@router.get("/backups-overview")
+def backups_overview() -> dict:
+    """全局模式看板：按设备聚合备份统计（次数/最近一次/类型分布）。
+
+    全局共享视图：跨客户聚合当前租户可见的全部深信服与网络设备（备份属租户隔离数据）。
+    """
+    from collections import defaultdict
+    per_device: dict[str, dict] = defaultdict(
+        lambda: {"count": 0, "latest_at": "", "kinds": {}, "latest_label": ""})
+    with db._connect() as conn:
+        rows = conn.execute(
+            "SELECT b.device_id, b.label, b.kind, b.created_at,"
+            " COALESCE(d.name, nd.name, '') AS device_name,"
+            " CASE WHEN d.id IS NOT NULL THEN 'sangfor' ELSE 'netdev' END AS family"
+            " FROM backups b LEFT JOIN devices d ON d.id = b.device_id"
+            " LEFT JOIN netdev_devices nd ON nd.id = b.device_id"
+            " ORDER BY b.created_at").fetchall()
+    for r in rows:
+        ent = per_device[r["device_id"]]
+        ent["device_id"] = r["device_id"]
+        ent["device_name"] = r["device_name"] or r["device_id"]
+        ent["family"] = r["family"]
+        ent["count"] += 1
+        ent["kinds"][r["kind"]] = ent["kinds"].get(r["kind"], 0) + 1
+        if r["created_at"] > ent["latest_at"]:
+            ent["latest_at"], ent["latest_label"] = r["created_at"], r["label"]
+    items = sorted(per_device.values(), key=lambda x: x["latest_at"], reverse=True)
+    total = sum(x["count"] for x in items)
+    return {"total_backups": total, "devices": len(items),
+            "stale_devices": sum(1 for x in items
+                                 if not x["latest_at"] or x["latest_at"] < db.now()[:10]),
+            "items": items}
+
+
 @router.post("/devices/{device_id}/backups")
 async def create_backup(device_id: str, payload: BackupIn) -> dict:
     if not db.get_device(device_id):

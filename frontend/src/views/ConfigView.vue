@@ -243,9 +243,11 @@
       <!-- ========== AC 特有 tabs ========== -->
       <template v-if="isAC">
         <el-tab-pane :label="`在线用户（${acOnlineUsers.length}）`" name="ac-online-users">
+          <el-input v-model="acUserFilter" size="small" clearable placeholder="筛选：IP / MAC / 用户名（支持部分字符，不区分大小写）"
+                    style="max-width: 340px; margin-bottom: 8px" aria-label="筛选在线用户" />
           <el-alert v-if="acOnlineUsers.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
                     title="暂无在线用户数据" />
-          <el-table :data="acOnlineUsers" size="small" border stripe>
+          <el-table :data="acOnlineUsersFiltered" size="small" border stripe>
             <el-table-column type="index" label="#" width="50" />
             <el-table-column prop="name" label="用户" min-width="120" />
             <el-table-column prop="ip" label="IP 地址" min-width="130">
@@ -443,9 +445,11 @@
           <el-button size="small" type="primary" :loading="bindSearching" @click="searchBindings">搜索</el-button>
           <el-button v-if="bindKeyword" size="small" text @click="clearBindSearch">清除</el-button>
         </div>
+        <el-input v-model="bindingFilter" size="small" clearable placeholder="即时筛选已加载结果：IP / MAC / 用户名"
+                  style="max-width: 340px; margin-bottom: 8px" aria-label="即时筛选用户绑定" />
         <el-alert v-if="bindings.length === 0" type="info" :closable="false" style="margin-bottom: 8px"
                   :title="bindHint" />
-        <el-table :data="bindings" size="small" border stripe>
+        <el-table :data="bindingsFiltered" size="small" border stripe>
           <el-table-column prop="user" label="用户" min-width="140" />
           <el-table-column prop="ip" label="IP" min-width="130" />
           <el-table-column prop="mac" label="MAC" min-width="150" />
