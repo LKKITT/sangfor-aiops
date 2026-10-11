@@ -991,10 +991,8 @@ async function initConsole() {
       return
     }
     if (!termEl.value || !consoleDevice.value) {
-      window.__dbg.push('early: termEl=' + !!termEl.value + ' dev=' + !!consoleDevice.value)
       return
     }
-    window.__dbg.push('after guard')
     termEl.value.innerHTML = ''   // 重连重建终端：清理旧画布，避免 DOM 堆叠
     if (lastConsoleDeviceId !== consoleDevice.value.id) {
       restoreOutBuffer(consoleDevice.value.id)   // 换设备：恢复该设备的回显缓冲（上下文按设备保留）
