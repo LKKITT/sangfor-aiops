@@ -417,13 +417,15 @@ def checkups_overview() -> dict:
     items: list[dict] = []
     with db._connect() as conn:
         rows = conn.execute(
-            "SELECT c.device_id, c.payload_json, c.updated_at,"
+            "SELECT c.product AS device_id, c.payload_json, c.fetched_at,"
             " COALESCE(d.name, nd.name, '') AS device_name,"
             " CASE WHEN d.id IS NOT NULL THEN 'sangfor' ELSE 'netdev' END AS family"
             " FROM update_cache c"
-            " LEFT JOIN devices d ON d.id = c.device_id"
-            " LEFT JOIN netdev_devices nd ON nd.id = c.device_id"
-            " WHERE c.cache_key = 'checkup_report'").fetchall()
+            " LEFT JOIN devices d ON d.id = c.product"
+            " LEFT JOIN netdev_devices nd ON nd.id = c.product"
+            " WHERE c.kind = 'checkup_report'"
+            " ORDER BY c.fetched_at").fetchall()
+    latest: dict[str, dict] = {}
     for r in rows:
         try:
             rep = json.loads(r["payload_json"] or "{}")
@@ -431,10 +433,12 @@ def checkups_overview() -> dict:
             continue
         if not isinstance(rep, dict) or "score" not in rep:
             continue
-        items.append({"device_id": r["device_id"], "device_name": r["device_name"] or r["device_id"],
-                      "family": r["family"], "score": rep.get("score"),
-                      "grade": rep.get("grade", ""), "counts": rep.get("counts", {}),
-                      "checked_at": r["updated_at"]})
+        latest[r["device_id"]] = {   # 顺序遍历，后写覆盖 = 每设备最新一条
+            "device_id": r["device_id"], "device_name": r["device_name"] or r["device_id"],
+            "family": r["family"], "score": rep.get("score"),
+            "grade": rep.get("grade", ""), "counts": rep.get("counts", {}),
+            "checked_at": r["fetched_at"]}
+    items = list(latest.values())
     items.sort(key=lambda x: (x["score"] if isinstance(x["score"], (int, float)) else 999))
     n = len(items)
     return {"devices": n,

@@ -341,7 +341,7 @@
 
 <script setup>
 import '@xterm/xterm/css/xterm.css'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Monitor, Plus, Promotion, CaretRight, DataLine, Download, Upload, Search,
          MagicStick, Files, CircleCloseFilled, InfoFilled, Loading } from '@element-plus/icons-vue'
@@ -377,6 +377,9 @@ const consoleDevice = ref(null)
 const consoleWsOk = ref(false)
 const termEl = ref(null)
 let consoleReconnects = 0
+watch(consoleVisible, v => {
+  if (v) nextTick(() => { initConsole() })
+})
 let lastConsoleDeviceId = ''   // 控制台闪断自动重连计数（成功连接后清零）
 // ---- 控制台右侧 AI 助手：意图对话线程 + 命令速查 ----
 // 只读命令（display/show 等）AI 可代发执行；修改类命令仅插入终端由人工回车。
@@ -982,7 +985,16 @@ function consoleById(deviceId) {
 async function initConsole() {
   try {
     await nextTick()
-    if (!termEl.value || !consoleDevice.value) return
+    // 幂等守卫：同一设备已建立会话时不重建（watch 与 @opened 双入口防抖）
+    if (consoleTerm && consoleWs && consoleWs.readyState === WebSocket.OPEN
+        && lastConsoleDeviceId === consoleDevice.value?.id) {
+      return
+    }
+    if (!termEl.value || !consoleDevice.value) {
+      window.__dbg.push('early: termEl=' + !!termEl.value + ' dev=' + !!consoleDevice.value)
+      return
+    }
+    window.__dbg.push('after guard')
     termEl.value.innerHTML = ''   // 重连重建终端：清理旧画布，避免 DOM 堆叠
     if (lastConsoleDeviceId !== consoleDevice.value.id) {
       restoreOutBuffer(consoleDevice.value.id)   // 换设备：恢复该设备的回显缓冲（上下文按设备保留）

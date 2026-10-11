@@ -76,9 +76,8 @@
 
       <main class="main">
         <router-view v-slot="{ Component }">
-          <transition name="view" mode="out-in">
-            <component :is="Component" />
-          </transition>
+          <!-- 不包 transition：out-in 的 leave 完成检测在本环境不可靠（曾致视图切换卡死白屏） -->
+          <component :is="Component" :key="$route.fullPath" />
         </router-view>
       </main>
     </div>
@@ -254,7 +253,7 @@ watch(() => store.uiAddDeviceTick, v => { if (v > 0) router.push('/security') })
 
 /* 视图转场：旧视图立即卸载（防快速切换卡死），新视图淡入上浮 */
 .view-enter-active { transition: opacity .24s var(--ease-out), transform .3s var(--ease-out); }
-.view-leave-active { display: none; }
+.view-leave-active { opacity: 0; transition: opacity .12s linear; }  /* display:none 会让 Vue 等不到 transitionend，leave 永不结束 → out-in 卡死旧视图 */
 .view-enter-from { opacity: 0; transform: translateY(10px); }
 
 /* ================= 移动端顶栏（默认隐藏） ================= */

@@ -215,7 +215,7 @@ def parse_lldp(vendor: str, output: str) -> list[dict]:
 
 
 _IFACE_RE = re.compile(
-    r"\b([A-Za-z][A-Za-z0-9]{0,7}(?:/\d+)+|Vlanif\d+|MEth\d[\w/\-]*|Eth-Trunk\d+|LoopBack\d+|Vlan\d+)\b",
+    r"\b((?:Bridge-Aggregation|Route-Aggregation|Eth-Trunk|BAGG|RAGG|Vlan-interface|Vlanif|InLoopBack|LoopBack|Tunnel|Null)\d+|(?:M-GigabitEthernet|Twenty-Five-GigabitEthernet|Forty-GigabitEthernet|HundredGigabitEthernet|Ten-GigabitEthernet|X?GigabitEthernet|X?GE|MEth|WGE|Po|Eth)\d+(?:/\d+)*|Vlan\d+|(?:ge|xe|et|fe|ae|reth|em|xi|irb|cbp|dsp|pip|lsi)-\d+(?:/\d+)*(?:.\d+)?|[A-Za-z][A-Za-z0-9]{0,14}(?:/\d+)+)\b",
     re.I)
 
 
@@ -718,6 +718,21 @@ async def search_asset(group: str, query: str) -> dict:
             if group:
                 ip_hits = _search_neighbors(q, devices, caches, group)
                 if ip_hits:
+                    # 网关定向精确查询（人工流程复刻）：全量采集可能截断/老化漏条目，
+                    # 对"同网段有邻居"的网关设备逐台 `arp | include <IP>` 精确查 MAC
+                    gw_ids = list({h["device_id"] for h in ip_hits})[:3]
+                    target_mac = await _directed_arp_lookup(gw_ids, q)
+                    if target_mac:
+                        access_hits2, learn_points2 = _locate_mac_in_group(
+                            group, target_mac, devices,
+                            {c["device_id"]: c for c in db.list_netdev_topology_cache(group)})
+                        hits2 = access_hits2 + learn_points2
+                        for h in hits2:
+                            h["ip"] = h.get("ip") or q
+                            h["mac"] = target_mac
+                        if hits2:
+                            return {"kind": "asset", "hits": hits2[:20], "arp_refs": [],
+                                    "primary_hit": hits2[0]["device_name"]}
                     # 邻居只作线索（neighbors 字段），不冒充定位结果误导用户
                     return {"kind": "none", "hits": [], "arp_refs": [],
                             "primary_hit": None,
@@ -746,6 +761,22 @@ async def search_asset(group: str, query: str) -> dict:
                         return {"kind": "asset", "hits": g_hits[:20], "arp_refs": [],
                                 "primary_hit": g_hits[0]["device_name"],
                                 "reason": f"在本分组未找到，已扩全量定位到 {q}"}
+            # 仍无命中：网关定向精确查询（全量模式）
+            g_neighbors = _search_neighbors(q, devices, caches, group)
+            if g_neighbors:
+                gw_ids = list({h["device_id"] for h in g_neighbors})[:3]
+                target_mac = await _directed_arp_lookup(gw_ids, q)
+                if target_mac:
+                    access_hits2, learn_points2 = _locate_mac_in_group(
+                        "", target_mac, devices,
+                        {c["device_id"]: c for c in db.list_netdev_topology_cache()})
+                    hits2 = access_hits2 + learn_points2
+                    for h in hits2:
+                        h["ip"] = h.get("ip") or q
+                        h["mac"] = target_mac
+                    if hits2:
+                        return {"kind": "asset", "hits": hits2[:20], "arp_refs": [],
+                                "primary_hit": hits2[0]["device_name"]}
             # 仍无命中：给同 /24 网段活跃邻居（帮助确认网段/网关是否正确，或引导重新采集）
             neighbors = _search_neighbors(q, devices, caches, group)
             prefix = ".".join(q.split(".")[:3]) if is_ip else ""
@@ -805,6 +836,41 @@ async def search_asset(group: str, query: str) -> dict:
     return {"kind": "asset", "hits": all_hits[:50], "arp_refs": arp_refs,
             "primary_hit": primary["device_name"] if primary else None,
             "mac": target_mac}
+
+
+_DIRECTED_ARP_CMD = {"h3c": "display arp | include {q}",
+                     "huawei": "display arp | include {q}",
+                     "cisco": "show ip arp | include {q}",
+                     "ruijie": "show ip arp | include {q}",
+                     "zte": "show arp | include {q}"}
+
+
+async def _directed_arp_lookup(device_ids: list[str], q: str) -> str | None:
+    """网关定向精确 ARP 查询：`arp | include <IP>` → 归一化 MAC。
+
+    复刻人工排查流程（先看网关 ARP 拿 MAC），绕开全量采集截断/老化的完整性问题。
+    只读查询；最多尝试 3 台，单台失败静默。
+    """
+    for did in device_ids:
+        dev = db.get_netdev_device(did)
+        if not dev:
+            continue
+        vendor = (dev.get("vendor") or "other").lower()
+        cmd_tpl = _DIRECTED_ARP_CMD.get(vendor)
+        if not cmd_tpl:
+            continue
+        try:
+            r = await netdev_service.run_commands(
+                dev, [cmd_tpl.format(q=q)], timeout=20, reuse_conn=True)
+            if not r.get("ok"):
+                continue
+            rows = parse_arp(vendor, r.get("output", ""))
+            for row in rows:
+                if row.get("ip") == q and _norm_mac(row.get("mac")):
+                    return _norm_mac(row.get("mac"))
+        except Exception:   # noqa: BLE001 —— 单台失败尝试下一台
+            continue
+    return None
 
 
 def _search_neighbors(q: str, devices: list[dict], caches: dict, group: str) -> list[dict]:

@@ -542,18 +542,6 @@ const bindingsFiltered = computed(() =>
 const acOnlineUsersFiltered = computed(() =>
   acOnlineUsers.value.filter(r => _fuzzy(r, acUserFilter.value, ['name', 'ip', 'mac', 'addr'])))
 // 全局模式：纳管设备总览看板
-const globalStats = ref(null)
-async function loadGlobalStats() {
-  try {
-    const [devs, nds] = await Promise.all([apiGet('/api/devices'), NetDev.devices()])
-    const byType = {}
-    for (const d of devs) byType[d.type] = (byType[d.type] || 0) + 1
-    const byVendor = {}
-    for (const d of nds) byVendor[d.vendor] = (byVendor[d.vendor] || 0) + 1
-    globalStats.value = { sangfor: devs.length, netdev: nds.length, byType, byVendor }
-  } catch { globalStats.value = null }
-}
-watch(globalMode, v => { if (v) loadGlobalStats() }, { immediate: true })
 const objects = ref([])
 const services = ref([])
 const routes = ref([])
@@ -586,6 +574,20 @@ const acUserRank = ref([])
 const netdevMode = computed(() => isNetDev(currentDevice()))
 const currentDeviceRef = currentDevice
 const globalMode = computed(() => isGlobal(currentDevice()))
+
+// 全局模式：纳管设备总览看板
+const globalStats = ref(null)
+async function loadGlobalStats() {
+  try {
+    const [devs, nds] = await Promise.all([apiGet('/api/devices'), NetDev.devices()])
+    const byType = {}
+    for (const d of devs) byType[d.type] = (byType[d.type] || 0) + 1
+    const byVendor = {}
+    for (const d of nds) byVendor[d.vendor] = (byVendor[d.vendor] || 0) + 1
+    globalStats.value = { sangfor: devs.length, netdev: nds.length, byType, byVendor }
+  } catch { globalStats.value = null }
+}
+watch(globalMode, v => { if (v) loadGlobalStats() }, { immediate: true })
 const guardText = computed(() => netdevMode.value
   ? '当前选中的是网络设备：请在「AI 对话」中用自然语言查询/配置，或在「网络设备管理」页批量执行与控制台操作'
   : '当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择一台深信服设备')

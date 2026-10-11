@@ -187,6 +187,24 @@ def task_detail(task_id: str) -> dict:
     return task
 
 
+# 控制台 SSH 会话池：WS 断开不杀 SSH，空闲超时才回收——
+# 设备切换/重开控制台时秒级恢复且不重新登录（用户要求保留会话状态）
+_CONSOLE_SESSIONS: dict[str, dict] = {}   # device_id -> {conn, proc, task, last_used}
+_CONSOLE_IDLE_TTL = 600                    # 空闲回收秒数
+
+
+def _reap_console_sessions() -> None:
+    import time as _time
+    now = _time.monotonic()
+    for did, sess in list(_CONSOLE_SESSIONS.items()):
+        if now - sess.get("last_used", now) > _CONSOLE_IDLE_TTL:
+            _CONSOLE_SESSIONS.pop(did, None)
+            try:
+                sess["conn"].close()
+            except Exception:   # noqa: BLE001
+                pass
+
+
 @router.websocket("/ws/{device_id}")
 async def ws_terminal(ws: WebSocket, device_id: str) -> None:
     """交互式控制台：浏览器 xterm.js ⇄ WebSocket ⇄ 设备 SSH 会话（双向透传）。
@@ -204,15 +222,27 @@ async def ws_terminal(ws: WebSocket, device_id: str) -> None:
         await ws.send_text(json.dumps({"type": "error", "text": "asyncssh 未安装"}))
         await ws.close()
         return
-    try:
-        conn = await asyncio.wait_for(asyncssh_connect(device), timeout=12)
-        proc = await conn.create_process(term_type="xterm-256color",
-                                         term_size=(120, 32), errors="replace")
-    except Exception as e:   # noqa: BLE001 —— 认证/网络/参数异常统一友好下发
-        log.warning("控制台连接失败 device=%s: %s", device_id, e)
-        await ws.send_text(json.dumps({"type": "error", "text": f"SSH 连接失败：{e}"}))
-        await ws.close()
-        return
+    _reap_console_sessions()
+    pooled = _CONSOLE_SESSIONS.get(device_id)
+    if pooled:
+        # 复用既有 SSH 会话（切换设备回来/重开控制台：不重新登录，上下文延续）
+        conn, proc = pooled["conn"], pooled["proc"]
+        pooled["last_used"] = _mono()
+        try:
+            await ws.send_text(json.dumps(
+                {"type": "data", "text": "\r\n\x1b[33m— 已恢复该设备的既有会话 —\x1b[0m\r\n"}))
+        except Exception:   # noqa: BLE001
+            pass
+    else:
+        try:
+            conn = await asyncio.wait_for(asyncssh_connect(device), timeout=12)
+            proc = await conn.create_process(term_type="xterm-256color",
+                                             term_size=(120, 32), errors="replace")
+        except Exception as e:   # noqa: BLE001 —— 认证/网络/参数异常统一友好下发
+            log.warning("控制台连接失败 device=%s: %s", device_id, e)
+            await ws.send_text(json.dumps({"type": "error", "text": f"SSH 连接失败：{e}"}))
+            await ws.close()
+            return
 
     # 连接即关闭分页（如 H3C screen-length disable）：dis cu 等长输出不再停在 ---- More ----。
     # 该命令是会话级显示设置（视图分页），不写入设备配置、不影响其他会话；
@@ -263,14 +293,30 @@ async def ws_terminal(ws: WebSocket, device_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        try:
-            conn.close()
-        except Exception:   # noqa: BLE001
-            pass
+        # 入池保留 SSH 会话（切换/重开秒恢复）；空闲超时由回收任务关闭
+        import time as _time
+        _CONSOLE_SESSIONS[device_id] = {"conn": conn, "proc": proc,
+                                        "last_used": _time.monotonic()}
+        if not any(t and not t.done() for t in
+                   (x.get("task") for x in _CONSOLE_SESSIONS.values())):
+            async def _reaper():
+                import asyncio as _aio
+                while _CONSOLE_SESSIONS:
+                    await _aio.sleep(60)
+                    _reap_console_sessions()
+            try:
+                asyncio.get_running_loop().create_task(_reaper())
+            except Exception:   # noqa: BLE001
+                pass
         try:
             await ws.close()
         except Exception:   # noqa: BLE001
             pass
+
+
+def _mono() -> float:
+    import time as _time
+    return _time.monotonic()
 
 
 def asyncssh_connect(device: dict):

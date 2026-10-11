@@ -159,7 +159,7 @@ export const Customers = {
 
 export const Overview = {
   backups: () => apiGet('/api/backups-overview', 30000),
-  checkups: () => apiGet('/api/checkups-overview', 30000),
+  checkups: () => apiGet('/api/devices/checkups-overview', 30000),
 }
 
 export const NetDev = {

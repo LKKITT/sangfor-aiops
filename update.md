@@ -13,6 +13,17 @@
 
 ## 2026-10-10
 
+### fix: 视图切换卡死白屏总根因 + 拓扑定位算法落地 + 控制台切换保画面
+- **视图切换卡死/白屏总根因**：`.view-leave-active { display:none }` 使 Vue 等不到 transitionend，out-in 模式 leave 永不结束、新视图永不进入——移除路由过渡包裹（稳定性取舍），另加 `:key="$route.fullPath"` 强制按路由刷新；浏览器实测连续切换 config/checkup/backup/netdev 四页全部正确渲染零卡死
+- **拓扑定位算法落地**（10.72.25.16 实测定位到 172.16.118.253 GE1/0/4）：
+  - 根因一：`_IFACE_RE` 不认 H3C 聚合口 BAGG1（.16 的网关 ARP 行接口即 BAGG1）——正则重构，补齐 BAGG/Bridge-Aggregation/Route-Aggregation/Ten-GigabitEthernet 等长名形式与 Juniper 连字符形式，负向（down/Learned/MAC 碎片）无误报
+  - 根因二：全量采集可能漏条目——新增 `_directed_arp_lookup`：未命中时对同网段邻居所在网关逐台 `arp | include <IP>` 精确查 MAC（复刻人工流程），再走 MAC 表定位；全链路实测命中 GE1/0/4 access=True
+- **控制台打开修复**：根因是埋点引入的 `watch` 未导入（NetDevView setup 崩溃整页白屏）；同时发现 @opened 事件不可靠——initConsole 改由 consoleVisible watcher 驱动 + 同设备幂等守卫
+- **控制台会话池化**：WS 断开不再杀 SSH 会话，入池空闲 600s 才回收——设备切换/重开控制台秒级恢复且不重新登录（后端，需重启生效）
+- 297/297 测试通过
+
+## 2026-10-10
+
 ### fix: 三项回归修复（配置可视化白屏/拓扑 500/控制台切换保留画面）
 - 配置可视化白屏根因：全局看板卡片插在 v-if/v-else-if/v-else 链中间，`<el-tabs v-else>` 成孤儿链（模板结构错误）——解耦为显式条件（横幅 v-if="globalMode"、el-tabs v-if="!netdevMode && !globalMode"）
 - 拓扑定位 500 根因：search_asset 的 async 签名在补丁中未实际写入（端点 await 了普通 dict）——已改 async；同时同网段邻居不再伪装成定位结果（改放 neighbors 线索字段），避免误导为其它设备的端口
