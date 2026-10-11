@@ -13,6 +13,13 @@
 
 ## 2026-10-10
 
+### fix: 控制台初始化失败（push 未定义）——调试残留清理
+- 上轮移除调试埋点时赋值行已删但 initConsole 内两处 `window.__dbg.push` 残留，首次打开控制台即抛
+  "Cannot read properties of undefined (reading 'push')" 并中断终端初始化
+- 已清除；浏览器实测：控制台正常打开、xterm 渲染、WS 已连接、设备切换下拉就位
+
+## 2026-10-10
+
 ### fix: 视图切换卡死白屏总根因 + 拓扑定位算法落地 + 控制台切换保画面
 - **视图切换卡死/白屏总根因**：`.view-leave-active { display:none }` 使 Vue 等不到 transitionend，out-in 模式 leave 永不结束、新视图永不进入——移除路由过渡包裹（稳定性取舍），另加 `:key="$route.fullPath"` 强制按路由刷新；浏览器实测连续切换 config/checkup/backup/netdev 四页全部正确渲染零卡死
 - **拓扑定位算法落地**（10.72.25.16 实测定位到 172.16.118.253 GE1/0/4）：
