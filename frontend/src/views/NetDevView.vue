@@ -955,12 +955,22 @@ async function switchConsoleDevice(newId) {
   if (consoleDevice.value && consoleDevice.value.id === newId) return
   try { consoleWs?.close() } catch { /* 忽略 */ }
   consoleWs = null
+  consoleWsOk.value = false
   saveOutBuffer()
   consoleDevice.value = target
-  lastConsoleDeviceId = ''          // 触发 initConsole 内的缓冲恢复
+  // 复用现有终端（不重建、不清屏）：恢复该设备的回显到画面，会话状态视觉延续
+  if (lastConsoleDeviceId !== target.id) {
+    restoreOutBuffer(target.id)
+    lastConsoleDeviceId = target.id
+    try {
+      consoleTerm?.write('\x1b[2J\x1b[H')
+      consoleTerm?.write(tailLines(400) + '\r\n')
+    } catch { /* 终端未就绪 */ }
+  }
   aiMessages.value.push({ id: ++_msgSeq, role: 'step',
                           text: `已切换到 ${target.name}（${target.host}），终端回显与 AI 上下文已按设备保留` })
-  initConsole()
+  connectSession()
+  await waitWsOpen(8000)
 }
 
 function consoleById(deviceId) {

@@ -671,7 +671,7 @@ def _locate_mac_in_group(group: str, target_mac: str, devices: list[dict],
     return access_hits, learn_points
 
 
-def search_asset(group: str, query: str) -> dict:
+async def search_asset(group: str, query: str) -> dict:
     """资产定位：IP / MAC → 权威接入交换机与端口。
 
     策略：
@@ -718,8 +718,12 @@ def search_asset(group: str, query: str) -> dict:
             if group:
                 ip_hits = _search_neighbors(q, devices, caches, group)
                 if ip_hits:
-                    return {"kind": "asset", "hits": ip_hits, "arp_refs": [],
-                            "primary_hit": ip_hits[0]["device_name"]}
+                    # 邻居只作线索（neighbors 字段），不冒充定位结果误导用户
+                    return {"kind": "none", "hits": [], "arp_refs": [],
+                            "primary_hit": None,
+                            "neighbors": ip_hits[:8],
+                            "reason": f"ARP/MAC 表中未找到 {q}（终端可能离线或网关未学习）；"
+                                      f"同网段当前有 {len(ip_hits)} 条活跃记录可供参考"}
                 global_devs = [d for d in db.list_netdev_devices() if d.get("host")]
                 global_caches = {c["device_id"]: c for c in db.list_netdev_topology_cache()}
                 global_mac = None
@@ -745,13 +749,13 @@ def search_asset(group: str, query: str) -> dict:
             # 仍无命中：给同 /24 网段活跃邻居（帮助确认网段/网关是否正确，或引导重新采集）
             neighbors = _search_neighbors(q, devices, caches, group)
             prefix = ".".join(q.split(".")[:3]) if is_ip else ""
-            near = [h for h in neighbors if h.get("ip", "").startswith(prefix + ".")][:8]
             reason = (f"ARP/MAC 表中未找到 {q}——终端可能离线、未上线或刚变更端口"
                       f"（可点「重新采集」更新后再试）")
-            if near:
-                reason += f"；同网段（{prefix}.x）当前学习到 {len(neighbors)} 条活跃记录，示例：{', '.join(h['ip'] for h in near[:4])}"
+            if neighbors:
+                reason += (f"；同网段（{prefix}.x）当前学习到 {len(neighbors)} 条活跃记录，"
+                           f"示例：{', '.join(h['ip'] for h in neighbors[:4])}")
             return {"kind": "none", "hits": [], "arp_refs": [], "primary_hit": None,
-                    "reason": reason}
+                    "neighbors": neighbors[:8], "reason": reason}
         # MAC 前缀输入
         if nq_mac and len(nq_mac) >= 6:
             partial = [h for h in _group_arp(group) if nq_mac in _norm_mac(h["mac"])][:20]

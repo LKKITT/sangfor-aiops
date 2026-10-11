@@ -12,8 +12,8 @@
       </div>
     </div>
     <NetDevConfigPanel v-if="netdevMode" :device="currentDevice()" />
-    <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
-              title="当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择" />
+    <el-alert v-if="globalMode" type="info" :closable="false" show-icon
+              title="当前为全局模式：下方为纳管设备总览；选择具体设备后显示该设备的配置全景" />
       <div v-if="globalMode" class="page-card" style="margin-bottom: 12px">
         <div class="col-title" style="margin-bottom: 8px"><el-icon><DataLine /></el-icon> 纳管设备总览</div>
         <div v-if="globalStats" style="display: flex; gap: 24px; flex-wrap: wrap">
@@ -26,7 +26,7 @@
         </div>
         <div v-else style="opacity: .7">加载中…</div>
       </div>
-    <el-tabs v-else v-model="tab" class="page-card config-tabs">
+    <el-tabs v-if="!netdevMode && !globalMode" v-model="tab" class="page-card config-tabs">
       <!-- ========== 设备状态（AF / AC 通用） ========== -->
       <el-tab-pane label="设备状态" name="status">
         <div v-if="status" class="status-wrap">
