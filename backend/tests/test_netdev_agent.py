@@ -181,7 +181,7 @@ def test_locate_terminal(monkeypatch, nd_h3c):
     async def fake_collect(group, force=False):
         return {"total": 1, "collected": 1, "failed": 0}
 
-    def fake_search(group, query):
+    async def fake_search(group, query):
         if query == "192.168.1.100":
             return {"kind": "asset",
                     "hits": [{"device_id": nd_h3c["id"], "device_name": "AI核心交换机",
@@ -595,7 +595,7 @@ def _locate_stale_asserts(monkeypatch, nd_h3c, gov):
         collected.append(group)
         return {"total": 1, "collected": 1, "failed": 0}
 
-    def fake_search(group, query):
+    async def fake_search(group, query):
         searches.append(group)
         if group == "AI测试组" and query == "10.72.25.16":
             return {"kind": "none", "hits": [], "arp_refs": [], "primary_hit": None,
