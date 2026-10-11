@@ -12,19 +12,19 @@
       <el-tab-pane v-for="s in filteredSections" :key="s.key" :name="s.key" lazy>
         <template #label>
           {{ s.title }}
-          <el-badge v-if="s.key === 'config' && filter" :value="hitCount(s)" size="small" class="ndc-badge" />
+          <el-badge v-if="filter" :value="hitCount(s)" size="small" class="ndc-badge" />
         </template>
         <div class="ndc-sec-tools">
           <template v-if="s.key === 'config'">
-            <el-input v-model="filter" size="small" clearable placeholder="本地过滤：输入关键词只看匹配行（如 interface / vlan）"
+            <el-input v-model="filter" size="small" clearable placeholder="本地过滤全部章节：IP / MAC / 接口名等关键词，只看匹配行"
                       class="ndc-filter" />
             <span class="ndc-meta">{{ hitCount(s) }} / {{ lineCount(s) }} 行</span>
           </template>
           <span v-else class="ndc-meta mono">采集命令：{{ s.command }}</span>
           <el-button size="small" text type="primary" @click="copySection(s)">复制本节</el-button>
         </div>
-        <div v-if="filter && s.key === 'config' && !hitCount(s)" class="ndc-empty">无匹配行</div>
-        <pre class="ndc-pre mono">{{ s.key === 'config' && filter ? matchLines(s) : s.output }}</pre>
+        <div v-if="filter && !hitCount(s)" class="ndc-empty">无匹配行</div>
+        <pre class="ndc-pre mono">{{ filter ? matchLines(s) : s.output }}</pre>
         <div v-if="s.truncated" class="ndc-trunc">本节输出超长已截断，完整内容请通过控制台/批量执行获取</div>
       </el-tab-pane>
     </el-tabs>
@@ -57,7 +57,7 @@ const filter = ref('')
 const deviceName = computed(() => props.device?.name || '')
 
 const filteredSections = computed(() =>
-  sections.value.map(s => (s.key === 'config' && filter.value ? { ...s } : s)))
+  sections.value.map(s => (filter.value ? { ...s } : s)))
 
 const lineCount = (s) => s.output.split('\n').length
 const matchLines = (s) => {

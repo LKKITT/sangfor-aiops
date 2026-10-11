@@ -246,9 +246,19 @@
     </el-dialog>
 
     <!-- 交互式控制台：左侧终端 + 右侧 AI 运维助手 -->
-    <el-dialog v-model="consoleVisible" :title="`控制台 — ${consoleDevice?.name || ''}（${consoleDevice?.host}）`"
+    <el-dialog :model-value="consoleVisible" :title="`控制台 — ${consoleDevice?.name || ''}（${consoleDevice?.host}）`"
                width="min(1340px, 96vw)" top="3vh" destroy-on-close :close-on-click-modal="false" append-to-body
                @opened="initConsole" @close="closeConsole">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px">
+        <span style="font-size: 13px; opacity: .75">切换设备：</span>
+        <el-select :model-value="consoleDevice?.id" filterable size="small" style="max-width: 320px"
+                   placeholder="选择并切换到其它设备" aria-label="切换控制台设备"
+                   @change="switchConsoleDevice">
+          <el-option v-for="d in devices" :key="d.id" :value="d.id"
+                     :label="`${d.name}（${d.host}）`" />
+        </el-select>
+        <span style="font-size: 12px; opacity: .6">切换保留终端回显与 AI 对话上下文（按设备记忆）</span>
+      </div>
       <div class="nd-console">
         <div class="nd-console-main">
           <div ref="termEl" class="nd-term"></div>
@@ -444,6 +454,24 @@ function readLinesSince(baseLine) {
 // ---- 回显环形缓冲：跨重连保留全部输出（AI 上下文不因断连丢失） ----
 const outLines = []
 let _linePartial = ''
+// 按设备保存回显缓冲：切换设备时暂存/恢复，AI 上下文跨切换保留
+const outBufferByDevice = new Map()
+
+function saveOutBuffer() {
+  if (consoleDevice.value) {
+    outBufferByDevice.set(consoleDevice.value.id, { outLines, partial: _linePartial })
+  }
+}
+
+function restoreOutBuffer(deviceId) {
+  const saved = outBufferByDevice.get(deviceId)
+  outLines.length = 0
+  _linePartial = ''
+  if (saved) {
+    outLines.push(...saved.outLines)
+    _linePartial = saved.partial
+  }
+}
 
 function pushOutRing(text) {
   _linePartial += text
@@ -920,6 +948,21 @@ function editById(deviceId) {
   openEdit(row)
 }
 
+async function switchConsoleDevice(newId) {
+  if (!newId || !consoleVisible.value) return
+  const target = devices.value.find(d => d.id === newId)
+  if (!target) { ElMessage.warning('目标设备不存在'); return }
+  if (consoleDevice.value && consoleDevice.value.id === newId) return
+  try { consoleWs?.close() } catch { /* 忽略 */ }
+  consoleWs = null
+  saveOutBuffer()
+  consoleDevice.value = target
+  lastConsoleDeviceId = ''          // 触发 initConsole 内的缓冲恢复
+  aiMessages.value.push({ id: ++_msgSeq, role: 'step',
+                          text: `已切换到 ${target.name}（${target.host}），终端回显与 AI 上下文已按设备保留` })
+  initConsole()
+}
+
 function consoleById(deviceId) {
   const row = devices.value.find(d => d.id === deviceId)
   if (!row) return ElMessage.warning('设备不存在或已被删除')
@@ -932,7 +975,7 @@ async function initConsole() {
     if (!termEl.value || !consoleDevice.value) return
     termEl.value.innerHTML = ''   // 重连重建终端：清理旧画布，避免 DOM 堆叠
     if (lastConsoleDeviceId !== consoleDevice.value.id) {
-      outLines.length = 0; _linePartial = ''   // 换设备：清空回显缓冲，避免上下文串台
+      restoreOutBuffer(consoleDevice.value.id)   // 换设备：恢复该设备的回显缓冲（上下文按设备保留）
       lastConsoleDeviceId = consoleDevice.value.id
     }   // 重连重建终端：清理旧画布，避免 DOM 堆叠
     const [{ Terminal }, { FitAddon }] = await Promise.all([
@@ -991,6 +1034,7 @@ async function initConsole() {
 }
 
 function closeConsole() {
+  saveOutBuffer()
   consoleWs?.close()
   consoleTerm?.dispose()
   consoleWs = null

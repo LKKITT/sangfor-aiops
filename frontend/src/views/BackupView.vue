@@ -35,7 +35,7 @@
       <div v-else style="opacity: .7">暂无任何备份记录；选择具体设备后可创建首个备份</div>
     </div>
 
-    <div v-if="!netdevMode" class="cols">
+    <div v-if="!netdevMode && !globalMode" class="cols">
       <div class="page-card col-list">
         <div class="col-title">备份时间线</div>
         <el-timeline>

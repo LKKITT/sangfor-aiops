@@ -14,6 +14,18 @@
     <NetDevConfigPanel v-if="netdevMode" :device="currentDevice()" />
     <el-alert v-else-if="globalMode" type="info" :closable="false" show-icon
               title="当前为全局模式：本页面需要指定具体设备，请在页顶设备切换器中选择" />
+      <div v-if="globalMode" class="page-card" style="margin-bottom: 12px">
+        <div class="col-title" style="margin-bottom: 8px"><el-icon><DataLine /></el-icon> 纳管设备总览</div>
+        <div v-if="globalStats" style="display: flex; gap: 24px; flex-wrap: wrap">
+          <div class="sfa-stat"><div class="num">{{ globalStats.sangfor }}</div><div class="lbl">深信服设备</div></div>
+          <div class="sfa-stat"><div class="num">{{ globalStats.netdev }}</div><div class="lbl">网络设备</div></div>
+          <div v-for="(v, k) in globalStats.byType" :key="k" class="sfa-stat">
+            <div class="num">{{ v }}</div><div class="lbl">{{ k.toUpperCase() }}</div></div>
+          <div v-for="(v, k) in globalStats.byVendor" :key="'nd-' + k" class="sfa-stat">
+            <div class="num">{{ v }}</div><div class="lbl">{{ k }}</div></div>
+        </div>
+        <div v-else style="opacity: .7">加载中…</div>
+      </div>
     <el-tabs v-else v-model="tab" class="page-card config-tabs">
       <!-- ========== 设备状态（AF / AC 通用） ========== -->
       <el-tab-pane label="设备状态" name="status">
@@ -509,6 +521,7 @@ const configDataCache = new Map()   // device_id -> {各数据源快照, fetched
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { store, currentDevice, isNetDev, isGlobal } from '../store.js'
+import { apiGet, NetDev } from '../api.js'
 import NetDevConfigPanel from '../components/NetDevConfigPanel.vue'
 import ContextBar from '../components/ContextBar.vue'
 
@@ -519,6 +532,28 @@ const nat = ref([])
 const zones = ref([])     // AF 安全区域
 const acl = ref([])
 const bindings = ref([])
+// 绑定/在线用户表格即时筛选（部分字符、不区分大小写）
+const bindingFilter = ref('')
+const acUserFilter = ref('')
+const _fuzzy = (row, q, fields) => !q || fields.some(f =>
+  String(row[f] ?? '').toLowerCase().includes(q.toLowerCase()))
+const bindingsFiltered = computed(() =>
+  bindings.value.filter(r => _fuzzy(r, bindingFilter.value, ['user', 'ip', 'mac', 'comment'])))
+const acOnlineUsersFiltered = computed(() =>
+  acOnlineUsers.value.filter(r => _fuzzy(r, acUserFilter.value, ['name', 'ip', 'mac', 'addr'])))
+// 全局模式：纳管设备总览看板
+const globalStats = ref(null)
+async function loadGlobalStats() {
+  try {
+    const [devs, nds] = await Promise.all([apiGet('/api/devices'), NetDev.devices()])
+    const byType = {}
+    for (const d of devs) byType[d.type] = (byType[d.type] || 0) + 1
+    const byVendor = {}
+    for (const d of nds) byVendor[d.vendor] = (byVendor[d.vendor] || 0) + 1
+    globalStats.value = { sangfor: devs.length, netdev: nds.length, byType, byVendor }
+  } catch { globalStats.value = null }
+}
+watch(globalMode, v => { if (v) loadGlobalStats() }, { immediate: true })
 const objects = ref([])
 const services = ref([])
 const routes = ref([])

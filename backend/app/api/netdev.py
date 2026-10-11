@@ -389,7 +389,7 @@ async def get_topology(group: str = "", force: int = 0) -> dict:
 @router.get("/topology/search")
 async def search_topology(group: str = "", q: str = "") -> dict:
     """资产定位：IP / MAC / 设备名 → 所在设备与端口。"""
-    return topo.search_asset(group, q)
+    return await topo.search_asset(group, q)
 
 
 @router.post("/topology/positions")
