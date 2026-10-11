@@ -406,7 +406,7 @@ async def _h_locate_terminal(client, args: dict, device: dict) -> dict:
     for g in groups:
         searched.add(g)
         await _ensure_fresh(g)
-        r = topo.search_asset(g, query)
+        r = await topo.search_asset(g, query)
         if r.get("hits"):
             hits.append({"group": g, **r})
         else:
@@ -417,7 +417,7 @@ async def _h_locate_terminal(client, args: dict, device: dict) -> dict:
             if g in searched or g == group:
                 continue
             await _ensure_fresh(g)
-            r = topo.search_asset(g, query)
+            r = await topo.search_asset(g, query)
             if r.get("hits"):
                 hits.append({"group": g, **r, "note": f"指定分组内未找到，在分组「{g}」中定位到"})
             else:

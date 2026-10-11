@@ -224,6 +224,9 @@ async def ws_terminal(ws: WebSocket, device_id: str) -> None:
         return
     _reap_console_sessions()
     pooled = _CONSOLE_SESSIONS.get(device_id)
+    if pooled and not pooled.get("alive", True):
+        pooled = None
+        _CONSOLE_SESSIONS.pop(device_id, None)
     if pooled:
         # 复用既有 SSH 会话（切换设备回来/重开控制台：不重新登录，上下文延续）
         conn, proc = pooled["conn"], pooled["proc"]
@@ -264,9 +267,15 @@ async def ws_terminal(ws: WebSocket, device_id: str) -> None:
             pass
         except Exception as e:   # noqa: BLE001 —— SSH 读取崩溃必须可见（曾为 debug 级致排障无据）
             log.warning("控制台输出泵异常退出 device=%s: %s", device_id, e)
+            # SSH 会话已死：必须移出会话池，否则复用死会话导致无回显/无输出
+            _CONSOLE_SESSIONS.pop(device_id, None)
+            try:
+                conn.close()
+            except Exception:   # noqa: BLE001
+                pass
             try:
                 await ws.send_text(json.dumps(
-                    {"type": "error", "text": f"设备会话异常断开：{e}"}))
+                    {"type": "error", "text": f"设备会话异常断开：{e}，已自动重建连接上下文"}))
             except Exception:   # noqa: BLE001
                 pass
 

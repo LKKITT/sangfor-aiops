@@ -997,6 +997,12 @@ async function initConsole() {
     if (lastConsoleDeviceId !== consoleDevice.value.id) {
       restoreOutBuffer(consoleDevice.value.id)   // 换设备：恢复该设备的回显缓冲（上下文按设备保留）
       lastConsoleDeviceId = consoleDevice.value.id
+      // 把历史回显画回终端画面（重开/切换后与切换前内容一致）
+      if (outLines.length) {
+        try {
+          consoleTerm?.write(tailLines(400) + '\r\n')
+        } catch { /* 终端未就绪 */ }
+      }
     }   // 重连重建终端：清理旧画布，避免 DOM 堆叠
     const [{ Terminal }, { FitAddon }] = await Promise.all([
       import('@xterm/xterm'), import('@xterm/addon-fit')])
